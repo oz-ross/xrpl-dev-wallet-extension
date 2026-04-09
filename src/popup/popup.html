@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XRPL Dev Wallet</title>
+</head>
+<body>
+
+  <!-- ===== IMPORT VIEW ===== -->
+  <div id="view-import" class="view">
+    <div class="brand">
+      <img src="icons/icon128.png" class="brand-icon-img" alt="XRPL Dev Wallet" />
+      <div class="brand-text">
+        <h1>XRPL Dev Wallet</h1>
+        <p>Import your wallet to get started</p>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="seed-input">Seed Phrase or Family Seed</label>
+      <div class="input-row">
+        <input type="password" id="seed-input" placeholder="sXXXXXXXXXXXXXXXXXXXX…" autocomplete="off" spellcheck="false" />
+        <button id="toggle-seed-btn" class="btn-icon" title="Show/hide seed">👁</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Network</label>
+      <div class="network-fixed">XRPL Devnet</div>
+    </div>
+
+    <div id="import-error" class="alert alert-error hidden"></div>
+
+    <button id="import-btn" class="btn btn-primary btn-full">Import Wallet</button>
+  </div>
+
+  <!-- ===== WALLET VIEW ===== -->
+  <div id="view-wallet" class="view hidden">
+    <div class="wallet-header">
+      <span id="network-badge" class="network-badge">Mainnet</span>
+      <div class="header-actions">
+        <button id="refresh-balance-btn" class="btn-icon" title="Refresh balance">↻</button>
+        <button id="logout-btn" class="btn-icon btn-danger-icon" title="Remove wallet from session">✕</button>
+      </div>
+    </div>
+
+    <div class="account-card">
+      <div class="account-label">Account</div>
+      <div class="account-row">
+        <span id="account-address" class="account-address" title="">—</span>
+        <button id="copy-address-btn" class="btn-icon" title="Copy address">⧉</button>
+      </div>
+      <div id="copy-toast" class="copy-toast hidden">Copied!</div>
+    </div>
+
+    <div class="balance-card">
+      <div class="balance-label">XRP Balance</div>
+      <div id="balance-amount" class="balance-amount">—</div>
+    </div>
+
+    <!-- WalletConnect section -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">WalletConnect</span>
+        <span id="wc-status" class="wc-status-dot wc-disconnected"></span>
+      </div>
+
+      <div id="wc-sessions-list"></div>
+
+      <button id="wc-connect-btn" class="btn btn-outline btn-full">+ Connect via WalletConnect</button>
+
+      <div id="wc-uri-group" class="uri-group hidden">
+        <input type="text" id="wc-uri-input" placeholder="Paste wc:… URI from the dApp" spellcheck="false" />
+        <div class="uri-actions">
+          <button id="wc-cancel-btn" class="btn btn-ghost">Cancel</button>
+          <button id="wc-pair-btn" class="btn btn-primary">Connect</button>
+        </div>
+      </div>
+
+      <div id="wc-error" class="alert alert-error hidden"></div>
+    </div>
+  </div>
+
+  <!-- ===== SESSION PROPOSAL VIEW ===== -->
+  <div id="view-session-proposal" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-proposal-btn" class="btn-back">‹</button>
+      <h2>Connection Request</h2>
+    </div>
+
+    <div id="proposal-app-card" class="app-card"></div>
+
+    <div class="permissions-box">
+      <div class="permissions-title">This app is requesting permission to:</div>
+      <ul class="permissions-list">
+        <li>View your account address</li>
+        <li>Request transaction signatures</li>
+      </ul>
+    </div>
+
+    <p class="permission-note">
+      Approving will not give the app access to your private key. You must approve every transaction individually.
+    </p>
+
+    <div class="action-row">
+      <button id="reject-session-btn" class="btn btn-danger">Reject</button>
+      <button id="approve-session-btn" class="btn btn-primary">Approve</button>
+    </div>
+  </div>
+
+  <!-- ===== TRANSACTION REVIEW VIEW ===== -->
+  <div id="view-transaction" class="view hidden">
+    <div class="view-header">
+      <h2>Transaction Request</h2>
+    </div>
+
+    <div id="tx-from-app" class="from-app"></div>
+
+    <div id="tx-details" class="tx-card"></div>
+
+    <div id="tx-warning" class="alert alert-warn hidden"></div>
+
+    <div class="action-row">
+      <button id="reject-tx-btn" class="btn btn-danger">Reject</button>
+      <button id="approve-tx-btn" class="btn btn-primary">Approve &amp; Sign</button>
+    </div>
+  </div>
+
+  <!-- ===== TRANSACTION STATUS VIEW ===== -->
+  <div id="view-tx-status" class="view hidden">
+    <div id="tx-status-icon" class="status-icon-wrap"></div>
+    <h2 id="tx-status-title">Processing…</h2>
+    <p id="tx-status-message" class="status-message"></p>
+
+    <div id="tx-hash-container" class="hash-container hidden">
+      <div class="hash-label">Transaction Hash</div>
+      <a id="tx-hash-link" class="tx-hash" target="_blank" rel="noreferrer"></a>
+    </div>
+
+    <button id="tx-done-btn" class="btn btn-primary btn-full hidden">Done</button>
+  </div>
+
+  <div class="dev-warning">
+    ⚠ This tool is for development purposes only — do not use mainnet or otherwise valuable keys / seeds!
+  </div>
+
+</body>
+</html>
