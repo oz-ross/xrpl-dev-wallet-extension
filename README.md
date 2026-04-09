@@ -43,15 +43,7 @@ cd xrpl-dev-wallet-extension
 npm install
 ```
 
-### 3. Add your WalletConnect Project ID
-
-Open `src/popup/popup.js` and replace the placeholder on this line:
-
-```js
-const WC_PROJECT_ID = 'YOUR_WALLETCONNECT_PROJECT_ID';
-```
-
-### 4. Generate icons
+### 3. Generate icons
 
 ```bash
 npm run generate-icons
@@ -59,7 +51,7 @@ npm run generate-icons
 
 > Requires the `XRPL - Black.png` source file to be present in the parent directory (`../XRPL - Black.png` relative to the project root).
 
-### 5. Build the extension
+### 4. Build the extension
 
 ```bash
 npm run build
@@ -67,7 +59,7 @@ npm run build
 
 The built extension is output to the `dist/` folder.
 
-### 6. Load in Chrome
+### 5. Load in Chrome
 
 1. Open Chrome and navigate to `chrome://extensions`
 2. Enable **Developer mode** (toggle in the top-right corner)
