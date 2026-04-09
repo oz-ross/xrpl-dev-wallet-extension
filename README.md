@@ -24,7 +24,6 @@ A Chrome extension wallet for the **XRPL Devnet**, built for developers. Import 
 - [Node.js](https://nodejs.org/) v18 or later
 - [npm](https://www.npmjs.com/) v9 or later
 - Google Chrome (or any Chromium-based browser)
-- A free **WalletConnect Project ID** from [cloud.walletconnect.com](https://cloud.walletconnect.com)
 
 ---
 
