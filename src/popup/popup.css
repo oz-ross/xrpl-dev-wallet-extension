@@ -850,6 +850,101 @@ a.tx-history-item:hover {
   flex-shrink: 0;
 }
 
+/* ===== AMM LP POSITIONS ===== */
+a.amm-balance-item {
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+}
+
+a.amm-balance-item:hover {
+  background: var(--surface-2);
+  border-radius: var(--radius-xs);
+  margin: 0 -6px;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.amm-balance-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.amm-balance-item:last-child { border-bottom: none; }
+
+.amm-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.amm-token-info {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.amm-pool {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--success);
+  flex-shrink: 0;
+}
+
+.amm-issuer {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.amm-balance-amount {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.amm-assets-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border-radius: var(--radius-xs);
+  border-left: 2px solid var(--success);
+}
+
+.amm-asset-share {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.amm-asset-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.amm-asset-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
 /* ===== TRANSACTION HISTORY ===== */
 .tx-history-empty {
   font-size: 12px;

@@ -237,6 +237,25 @@ function formatCurrencyCode(currency) {
   return currency.slice(0, 8) + '…';
 }
 
+async function tryFetchAmmInfo(issuerAddress) {
+  try {
+    const resp = await state.client.request({
+      command: 'amm_info',
+      amm_account: issuerAddress,
+      ledger_index: 'validated',
+    });
+    return resp.result.amm ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function formatPoolAsset(amount) {
+  if (!amount) return '?';
+  if (typeof amount === 'string') return 'XRP'; // drops string = XRP
+  return formatCurrencyCode(amount.currency);
+}
+
 async function loadIouBalances() {
   if (!state.wallet || !state.client) return;
   try {
@@ -246,10 +265,21 @@ async function loadIouBalances() {
       account: state.wallet.address,
       ledger_index: 'validated',
     });
-    renderIouBalances(resp.result.lines ?? []);
+    const lines = resp.result.lines ?? [];
+
+    // Check every issuer for AMM status in parallel
+    const ammResults = await Promise.all(lines.map(l => tryFetchAmmInfo(l.account)));
+    const regularLines = lines.filter((_, i) => ammResults[i] === null);
+    const ammLines     = lines
+      .map((l, i) => ammResults[i] ? { ...l, ammInfo: ammResults[i] } : null)
+      .filter(Boolean);
+
+    renderIouBalances(regularLines);
+    renderAmmBalances(ammLines);
   } catch (err) {
     if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
       renderIouBalances([]);
+      renderAmmBalances([]);
     } else {
       console.error('[iou balances]', err);
     }
@@ -281,6 +311,61 @@ function renderIouBalances(lines) {
           <span class="iou-issuer" title="${esc(line.account)}">${esc(truncAddr(line.account))}</span>
         </div>
         <div class="iou-balance-amount">${esc(balance)}</div>
+      </a>`;
+  }).join('');
+}
+
+function poolAssetShare(poolAmount, lpHeld, lpTotal) {
+  if (!lpTotal || lpTotal === 0) return 0;
+  const share = lpHeld / lpTotal;
+  if (typeof poolAmount === 'string') return parseFloat(dropsToXrp(poolAmount)) * share;
+  return parseFloat(poolAmount?.value ?? '0') * share;
+}
+
+function renderAmmBalances(lines) {
+  const card   = $('amm-balance-card');
+  const listEl = $('amm-balance-list');
+
+  const held = lines.filter(l => parseFloat(l.balance) > 0);
+
+  if (!held.length) {
+    card.classList.add('hidden');
+    return;
+  }
+
+  card.classList.remove('hidden');
+  const explorerAccount = NETWORKS[state.network].explorerAccount;
+  listEl.innerHTML = held.map(line => {
+    const { ammInfo } = line;
+    const label1  = formatPoolAsset(ammInfo.amount);
+    const label2  = formatPoolAsset(ammInfo.amount2);
+    const pool    = `${label1} / ${label2}`;
+    const lpHeld  = parseFloat(line.balance);
+    const lpTotal = parseFloat(ammInfo.lp_token?.value ?? '0');
+    const share1  = poolAssetShare(ammInfo.amount,  lpHeld, lpTotal);
+    const share2  = poolAssetShare(ammInfo.amount2, lpHeld, lpTotal);
+    const fmt     = (n, dp = 6) => n.toLocaleString(undefined, { maximumFractionDigits: dp });
+    const lpBal   = lpHeld.toLocaleString(undefined, { maximumFractionDigits: 6 });
+    const href    = `${explorerAccount}${line.account}`;
+    return `
+      <a class="amm-balance-item" href="${esc(href)}" target="_blank" rel="noreferrer">
+        <div class="amm-summary-row">
+          <div class="amm-token-info">
+            <span class="amm-pool">${esc(pool)}</span>
+            <span class="amm-issuer" title="${esc(line.account)}">${esc(truncAddr(line.account))}</span>
+          </div>
+          <div class="amm-balance-amount">${esc(lpBal)} LP</div>
+        </div>
+        <div class="amm-assets-row">
+          <div class="amm-asset-share">
+            <span class="amm-asset-label">${esc(label1)}</span>
+            <span class="amm-asset-value">${esc(fmt(share1))}</span>
+          </div>
+          <div class="amm-asset-share">
+            <span class="amm-asset-label">${esc(label2)}</span>
+            <span class="amm-asset-value">${esc(fmt(share2))}</span>
+          </div>
+        </div>
       </a>`;
   }).join('');
 }
