@@ -10,7 +10,8 @@
     "https://*.walletconnect.com/*",
     "wss://*.walletconnect.com/*",
     "https://*.walletconnect.org/*",
-    "wss://*.walletconnect.org/*"
+    "wss://*.walletconnect.org/*",
+    "https://faucet.devnet.rippletest.net/*"
   ],
   "action": {
     "default_popup": "popup.html",

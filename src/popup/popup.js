@@ -8,10 +8,6 @@ import { getSdkError } from '@walletconnect/utils';
 // CONFIG
 // ─────────────────────────────────────────────
 
-/**
- * Get your free Project ID at https://cloud.walletconnect.com
- * Replace this placeholder before building.
- */
 const WC_PROJECT_ID = '545f3b40384efe9b93401c1dd8d0ceb0';
 
 const NETWORKS = {
@@ -20,8 +16,14 @@ const NETWORKS = {
     wsUrl: 'wss://s.devnet.rippletest.net:51233',
     chainId: 'xrpl:2',
     explorer: 'https://devnet.xrpl.org/transactions/',
+    faucet: 'https://faucet.devnet.rippletest.net/accounts',
   },
 };
+
+// XRPL epoch offset (seconds between Unix epoch and XRPL epoch)
+const XRPL_EPOCH_OFFSET = 946684800;
+
+const AUTO_REFRESH_INTERVAL = 30_000; // ms
 
 // ─────────────────────────────────────────────
 // STATE
@@ -34,12 +36,13 @@ const state = {
   client: null,
   /** @type {import('@walletconnect/web3wallet').Web3Wallet|null} */
   web3wallet: null,
-  /** @type {'mainnet'|'testnet'} */
   network: 'devnet',
-  /** @type {any|null} WalletConnect session proposal */
+  /** @type {any|null} */
   pendingProposal: null,
-  /** @type {any|null} WalletConnect session_request event */
+  /** @type {any|null} */
   pendingRequest: null,
+  /** @type {ReturnType<typeof setInterval>|null} */
+  refreshTimer: null,
 };
 
 // ─────────────────────────────────────────────
@@ -49,13 +52,10 @@ const state = {
 function $(id) { return document.getElementById(id); }
 
 function showView(name) {
-  for (const el of document.querySelectorAll('.view')) {
-    el.classList.add('hidden');
-  }
+  for (const el of document.querySelectorAll('.view')) el.classList.add('hidden');
   $(`view-${name}`).classList.remove('hidden');
 }
 
-/** Escape HTML to prevent XSS when rendering external data */
 function esc(text) {
   const d = document.createElement('div');
   d.appendChild(document.createTextNode(String(text ?? '')));
@@ -68,12 +68,8 @@ function truncAddr(addr) {
 }
 
 function formatAmount(amount) {
-  if (typeof amount === 'string') {
-    return `${dropsToXrp(amount)} XRP`;
-  }
-  if (amount && typeof amount === 'object') {
-    return `${amount.value} ${amount.currency}`;
-  }
+  if (typeof amount === 'string') return `${dropsToXrp(amount)} XRP`;
+  if (amount && typeof amount === 'object') return `${amount.value} ${amount.currency}`;
   return String(amount);
 }
 
@@ -83,8 +79,11 @@ function showAlert(id, msg) {
   el.classList.remove('hidden');
 }
 
-function hideAlert(id) {
-  $(id).classList.add('hidden');
+function hideAlert(id) { $(id).classList.add('hidden'); }
+
+function xrplDateToLocal(xrplDate) {
+  if (!xrplDate) return null;
+  return new Date((xrplDate + XRPL_EPOCH_OFFSET) * 1000);
 }
 
 // ─────────────────────────────────────────────
@@ -93,8 +92,6 @@ function hideAlert(id) {
 
 async function importWallet() {
   const seed = $('seed-input').value.trim();
-  const network = 'devnet';
-
   hideAlert('import-error');
 
   if (!seed) {
@@ -109,23 +106,23 @@ async function importWallet() {
   try {
     const wallet = Wallet.fromSeed(seed);
 
-    // Persist in session storage (clears when browser closes, not on popup close)
     await chrome.storage.session.set({
       walletSeed: seed,
       walletAddress: wallet.address,
-      network,
+      network: 'devnet',
     });
 
     state.wallet = wallet;
-    state.network = network;
+    state.network = 'devnet';
 
     await connectXRPL();
     updateWalletUI();
     showView('wallet');
 
-    // Non-blocking: fetch balance and init WC
     refreshBalance();
+    loadTxHistory();
     initWalletConnect();
+    startAutoRefresh();
 
   } catch (err) {
     showAlert('import-error', `Invalid seed: ${err.message}`);
@@ -141,12 +138,14 @@ async function restoreSession() {
 
   try {
     state.wallet = Wallet.fromSeed(walletSeed);
-    state.network = network || 'mainnet';
+    state.network = network || 'devnet';
     await connectXRPL();
     updateWalletUI();
     showView('wallet');
     refreshBalance();
+    loadTxHistory();
     await initWalletConnect();
+    startAutoRefresh();
     return true;
   } catch {
     await chrome.storage.session.clear();
@@ -156,6 +155,7 @@ async function restoreSession() {
 
 function logout() {
   if (!confirm('Remove wallet from this session?\nYou will need to re-import your seed.')) return;
+  stopAutoRefresh();
   chrome.storage.session.clear();
   state.wallet = null;
   state.web3wallet = null;
@@ -169,19 +169,33 @@ function logout() {
 // WALLET — XRPL CLIENT
 // ─────────────────────────────────────────────
 
+function updateConnectionDot(status) {
+  const dot = $('xrpl-connection-dot');
+  if (!dot) return;
+  dot.className = `connection-dot dot-${status}`;
+  const labels = {
+    connected:    'Connected to XRPL Devnet',
+    connecting:   'Connecting to XRPL Devnet…',
+    disconnected: 'Disconnected from XRPL Devnet',
+  };
+  dot.title = labels[status] ?? status;
+}
+
 async function connectXRPL() {
+  updateConnectionDot('connecting');
   if (state.client?.isConnected()) {
     state.client.disconnect().catch(() => {});
   }
   const { wsUrl } = NETWORKS[state.network];
   state.client = new Client(wsUrl);
+  state.client.on('connected',    () => updateConnectionDot('connected'));
+  state.client.on('disconnected', () => updateConnectionDot('disconnected'));
   await state.client.connect();
+  updateConnectionDot('connected');
 }
 
 async function ensureConnected() {
-  if (!state.client?.isConnected()) {
-    await connectXRPL();
-  }
+  if (!state.client?.isConnected()) await connectXRPL();
 }
 
 async function refreshBalance() {
@@ -213,12 +227,151 @@ function updateWalletUI() {
 }
 
 // ─────────────────────────────────────────────
+// AUTO-REFRESH
+// ─────────────────────────────────────────────
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  state.refreshTimer = setInterval(() => {
+    refreshBalance();
+    loadTxHistory();
+  }, AUTO_REFRESH_INTERVAL);
+}
+
+function stopAutoRefresh() {
+  if (state.refreshTimer) {
+    clearInterval(state.refreshTimer);
+    state.refreshTimer = null;
+  }
+}
+
+// ─────────────────────────────────────────────
+// FAUCET
+// ─────────────────────────────────────────────
+
+async function fundFromFaucet() {
+  if (!state.wallet) return;
+  const btn = $('faucet-btn');
+  const statusEl = $('faucet-status');
+  btn.disabled = true;
+  btn.textContent = '💧 Requesting…';
+  statusEl.className = 'faucet-status';
+  statusEl.textContent = '';
+  statusEl.classList.remove('hidden');
+
+  try {
+    const resp = await fetch(NETWORKS[state.network].faucet, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ destination: state.wallet.address }),
+    });
+
+    if (!resp.ok) throw new Error(`Faucet returned HTTP ${resp.status}`);
+
+    statusEl.textContent = '✓ Faucet request sent — balance will update shortly.';
+    statusEl.className = 'faucet-status ok';
+
+    // The faucet takes a few seconds to settle
+    setTimeout(() => {
+      refreshBalance();
+      loadTxHistory();
+    }, 5000);
+
+  } catch (err) {
+    console.error('[faucet]', err);
+    statusEl.textContent = `✕ Faucet failed: ${err.message}`;
+    statusEl.className = 'faucet-status err';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💧 Faucet';
+  }
+}
+
+// ─────────────────────────────────────────────
+// TRANSACTION HISTORY
+// ─────────────────────────────────────────────
+
+async function loadTxHistory() {
+  if (!state.wallet || !state.client) return;
+  try {
+    await ensureConnected();
+    const resp = await state.client.request({
+      command: 'account_tx',
+      account: state.wallet.address,
+      limit: 10,
+      ledger_index_min: -1,
+      ledger_index_max: -1,
+    });
+    renderTxHistory(resp.result.transactions ?? []);
+  } catch (err) {
+    const listEl = $('tx-history-list');
+    if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
+      listEl.innerHTML = '<div class="tx-history-empty">Account not yet funded — no transactions.</div>';
+    } else {
+      listEl.innerHTML = '<div class="tx-history-empty">Could not load history.</div>';
+      console.error('[tx history]', err);
+    }
+  }
+}
+
+function renderTxHistory(txs) {
+  const listEl = $('tx-history-list');
+  if (!txs.length) {
+    listEl.innerHTML = '<div class="tx-history-empty">No transactions yet.</div>';
+    return;
+  }
+
+  const explorer = NETWORKS[state.network].explorer;
+
+  listEl.innerHTML = txs.map(entry => {
+    // xrpl.js v4 shape: { tx_json, meta, validated }
+    const txJson = entry.tx_json ?? entry.tx ?? {};
+    const meta   = entry.meta ?? entry.metaData ?? {};
+    const result = meta.TransactionResult ?? '—';
+    const success = result === 'tesSUCCESS';
+    const hash = txJson.hash ?? '—';
+    const type = txJson.TransactionType ?? '—';
+
+    let detail = '';
+    if (type === 'Payment' && txJson.Amount) {
+      detail = formatAmount(txJson.Amount);
+      if (txJson.Destination) detail += ` → ${truncAddr(txJson.Destination)}`;
+    } else if (type === 'OfferCreate') {
+      if (txJson.TakerGets && txJson.TakerPays) {
+        detail = `${formatAmount(txJson.TakerGets)} / ${formatAmount(txJson.TakerPays)}`;
+      }
+    } else if (txJson.NFTokenID) {
+      detail = truncAddr(txJson.NFTokenID);
+    }
+
+    const date = xrplDateToLocal(txJson.date);
+    const dateStr = date ? date.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '';
+
+    const hashLink = hash !== '—'
+      ? `<a class="tx-history-hash" href="${explorer}${esc(hash)}" target="_blank" rel="noreferrer">${esc(hash.slice(0, 8))}…</a>`
+      : '';
+
+    return `
+      <div class="tx-history-item">
+        <div class="tx-history-main">
+          <span class="tx-history-type ${success ? 'success' : 'fail'}">${esc(type)}</span>
+          ${detail ? `<span class="tx-history-detail">${esc(detail)}</span>` : ''}
+        </div>
+        <div class="tx-history-meta">
+          <span class="tx-history-result ${success ? 'success' : 'fail'}">${success ? '✓' : '✕'} ${esc(result)}</span>
+          <span class="tx-history-date">${esc(dateStr)}</span>
+          ${hashLink}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ─────────────────────────────────────────────
 // WALLETCONNECT — INIT
 // ─────────────────────────────────────────────
 
 async function initWalletConnect() {
   if (state.web3wallet) {
-    // Re-attach listeners in case popup was closed and reopened
     attachWcListeners();
     updateSessionsUI();
     return;
@@ -235,9 +388,9 @@ async function initWalletConnect() {
     state.web3wallet = await Web3Wallet.init({
       core,
       metadata: {
-        name: 'XRPL Wallet',
-        description: 'XRPL Chrome Extension Wallet',
-        url: 'https://xrpl-wallet.example.com',
+        name: 'XRPL Dev Wallet',
+        description: 'XRPL Devnet Chrome Extension Wallet — for development use only',
+        url: 'https://github.com/oz-ross/xrpl-dev-wallet-extension',
         icons: [],
       },
     });
@@ -252,14 +405,13 @@ async function initWalletConnect() {
 
 function attachWcListeners() {
   const wc = state.web3wallet;
-  // Remove existing listeners to avoid duplicates on popup reopen
   wc.removeAllListeners?.('session_proposal');
   wc.removeAllListeners?.('session_request');
   wc.removeAllListeners?.('session_delete');
 
   wc.on('session_proposal', onSessionProposal);
-  wc.on('session_request', onSessionRequest);
-  wc.on('session_delete', () => updateSessionsUI());
+  wc.on('session_request',  onSessionRequest);
+  wc.on('session_delete',   () => updateSessionsUI());
 }
 
 // ─────────────────────────────────────────────
@@ -328,10 +480,10 @@ async function approveSession() {
       id: state.pendingProposal.id,
       namespaces: {
         xrpl: {
-          chains: [chainId],
+          chains:   [chainId],
           accounts: [`${chainId}:${state.wallet.address}`],
-          methods: ['xrpl_signTransaction', 'xrpl_signTransactionFor'],
-          events: [],
+          methods:  ['xrpl_signTransaction', 'xrpl_signTransactionFor'],
+          events:   [],
         },
       },
     });
@@ -373,7 +525,6 @@ function onSessionRequest(event) {
     renderTransactionView(event);
     showView('transaction');
   } else {
-    // Unsupported — reject immediately
     respondWc(event.topic, event.id, null, getSdkError('UNSUPPORTED_METHODS'));
   }
 }
@@ -381,67 +532,60 @@ function onSessionRequest(event) {
 function renderTransactionView(event) {
   const txJson = event.params.request.params.tx_json;
   const sessions = state.web3wallet.getActiveSessions();
-  const session = sessions[event.topic];
-  const appName = session?.peer?.metadata?.name ?? 'Unknown App';
+  const session  = sessions[event.topic];
+  const appName  = session?.peer?.metadata?.name ?? 'Unknown App';
 
   $('tx-from-app').innerHTML = `Request from <strong>${esc(appName)}</strong>`;
-  $('tx-details').innerHTML = buildTxRows(txJson);
+  $('tx-details').innerHTML  = buildTxRows(txJson);
   hideAlert('tx-warning');
+
+  // Populate raw JSON but keep it hidden
+  $('tx-raw-json').textContent = JSON.stringify(txJson, null, 2);
+  $('tx-raw-json').classList.add('hidden');
+  $('toggle-raw-btn').textContent = '▶ View raw JSON';
 }
 
 function buildTxRows(txJson) {
-  const rows = [];
-
   const row = (label, value, cls = '') =>
     `<div class="tx-row">
        <span class="tx-label">${label}</span>
        <span class="tx-value ${cls}">${value}</span>
      </div>`;
 
+  const rows = [];
   rows.push(row('Type', esc(txJson.TransactionType), 'tx-type'));
 
-  if (txJson.Account) {
+  if (txJson.Account)
     rows.push(row('From', `<span title="${esc(txJson.Account)}">${esc(truncAddr(txJson.Account))}</span>`, 'tx-address'));
-  }
 
-  if (txJson.Destination) {
+  if (txJson.Destination)
     rows.push(row('To', `<span title="${esc(txJson.Destination)}">${esc(truncAddr(txJson.Destination))}</span>`, 'tx-address'));
-  }
 
-  if (txJson.DestinationTag !== undefined) {
+  if (txJson.DestinationTag !== undefined)
     rows.push(row('Dest. Tag', esc(txJson.DestinationTag)));
-  }
 
-  if (txJson.Amount !== undefined) {
+  if (txJson.Amount !== undefined)
     rows.push(row('Amount', esc(formatAmount(txJson.Amount)), 'tx-amount'));
-  }
 
-  if (txJson.SendMax !== undefined) {
+  if (txJson.SendMax !== undefined)
     rows.push(row('Send Max', esc(formatAmount(txJson.SendMax))));
-  }
 
-  // DEX offer fields
-  if (txJson.TakerGets !== undefined) {
+  if (txJson.TakerGets !== undefined)
     rows.push(row('Sell (TakerGets)', esc(formatAmount(txJson.TakerGets))));
-  }
-  if (txJson.TakerPays !== undefined) {
+
+  if (txJson.TakerPays !== undefined)
     rows.push(row('Buy (TakerPays)', esc(formatAmount(txJson.TakerPays))));
-  }
 
-  // NFT fields
-  if (txJson.NFTokenID) {
+  if (txJson.NFTokenID)
     rows.push(row('NFToken ID', `<span class="tx-address" title="${esc(txJson.NFTokenID)}">${esc(txJson.NFTokenID.slice(0, 16))}…</span>`));
-  }
 
-  if (txJson.Fee) {
+  if (txJson.Fee)
     rows.push(row('Fee', esc(formatAmount(txJson.Fee)), 'tx-fee'));
-  }
 
   if (txJson.Memos?.length) {
     const memoText = txJson.Memos.map(m => {
-      try {
-        return Buffer.from(m.Memo?.MemoData ?? '', 'hex').toString('utf8');
-      } catch { return '(binary)'; }
+      try { return Buffer.from(m.Memo?.MemoData ?? '', 'hex').toString('utf8'); }
+      catch { return '(binary)'; }
     }).join(' / ');
     rows.push(row('Memo', esc(memoText)));
   }
@@ -453,7 +597,7 @@ async function approveTransaction() {
   if (!state.pendingRequest) return;
 
   $('approve-tx-btn').disabled = true;
-  $('reject-tx-btn').disabled = true;
+  $('reject-tx-btn').disabled  = true;
 
   const { topic, id, params } = state.pendingRequest;
   const txJson = params.request.params.tx_json;
@@ -474,25 +618,19 @@ async function approveTransaction() {
     const response = await state.client.submitAndWait(tx_blob);
 
     const txResult = response.result?.meta?.TransactionResult;
-    if (txResult !== 'tesSUCCESS') {
-      throw new Error(`Transaction failed on ledger: ${txResult}`);
-    }
+    if (txResult !== 'tesSUCCESS') throw new Error(`Transaction failed on ledger: ${txResult}`);
 
     setTxStatus('success', 'Transaction validated!', hash);
 
-    await respondWc(topic, id, {
-      tx_json: response.result,
-      tx_blob,
-      hash,
-    });
+    await respondWc(topic, id, { tx_json: response.result, tx_blob, hash });
 
     state.pendingRequest = null;
     refreshBalance();
+    loadTxHistory();
 
   } catch (err) {
     console.error('[approveTransaction]', err);
     setTxStatus('error', err.message || 'Transaction failed.');
-
     await respondWc(topic, id, null, { code: 5000, message: err.message });
     state.pendingRequest = null;
   }
@@ -506,10 +644,9 @@ async function rejectTransaction() {
   await respondWc(topic, id, null, getSdkError('USER_REJECTED'));
   showView('wallet');
   $('approve-tx-btn').disabled = false;
-  $('reject-tx-btn').disabled = false;
+  $('reject-tx-btn').disabled  = false;
 }
 
-/** Send a JSON-RPC response back to the connected dApp via WalletConnect. */
 async function respondWc(topic, id, result, error) {
   if (!state.web3wallet) return;
   try {
@@ -530,9 +667,9 @@ function updateSessionsUI() {
   if (!state.web3wallet) return;
 
   const sessions = state.web3wallet.getActiveSessions();
-  const keys = Object.keys(sessions);
-  const listEl = $('wc-sessions-list');
-  const dot = $('wc-status');
+  const keys     = Object.keys(sessions);
+  const listEl   = $('wc-sessions-list');
+  const dot      = $('wc-status');
 
   if (keys.length === 0) {
     dot.className = 'wc-status-dot wc-disconnected';
@@ -543,7 +680,7 @@ function updateSessionsUI() {
   dot.className = 'wc-status-dot wc-connected';
 
   listEl.innerHTML = keys.map(topic => {
-    const s = sessions[topic];
+    const s    = sessions[topic];
     const meta = s.peer.metadata;
     const iconHtml = meta.icons?.[0]
       ? `<img class="session-icon" src="${esc(meta.icons[0])}" alt="${esc(meta.name)}" onerror="this.style.display='none'" />`
@@ -559,8 +696,7 @@ function updateSessionsUI() {
           </div>
         </div>
         <button class="btn-disconnect" data-topic="${esc(topic)}" title="Disconnect">✕</button>
-      </div>
-    `;
+      </div>`;
   }).join('');
 
   listEl.querySelectorAll('.btn-disconnect').forEach(btn => {
@@ -585,32 +721,31 @@ async function disconnectSession(topic) {
 // ─────────────────────────────────────────────
 
 function setTxStatus(type, message, hash) {
-  const iconEl = $('tx-status-icon');
-  const titleEl = $('tx-status-title');
-  const msgEl = $('tx-status-message');
+  const iconEl        = $('tx-status-icon');
+  const titleEl       = $('tx-status-title');
+  const msgEl         = $('tx-status-message');
   const hashContainer = $('tx-hash-container');
-  const doneBtn = $('tx-done-btn');
+  const doneBtn       = $('tx-done-btn');
 
   msgEl.textContent = message;
   hashContainer.classList.add('hidden');
   doneBtn.classList.add('hidden');
 
   if (type === 'pending') {
-    iconEl.innerHTML = '<div class="spinner"></div>';
+    iconEl.innerHTML   = '<div class="spinner"></div>';
     titleEl.textContent = 'Processing…';
   } else if (type === 'success') {
-    iconEl.innerHTML = '<div class="status-circle success">✓</div>';
+    iconEl.innerHTML   = '<div class="status-circle success">✓</div>';
     titleEl.textContent = 'Confirmed!';
     doneBtn.classList.remove('hidden');
-
     if (hash) {
       const explorer = NETWORKS[state.network].explorer;
       $('tx-hash-link').textContent = `${hash.slice(0, 10)}…${hash.slice(-10)}`;
-      $('tx-hash-link').href = `${explorer}${hash}`;
+      $('tx-hash-link').href        = `${explorer}${hash}`;
       hashContainer.classList.remove('hidden');
     }
   } else if (type === 'error') {
-    iconEl.innerHTML = '<div class="status-circle error">✕</div>';
+    iconEl.innerHTML   = '<div class="status-circle error">✕</div>';
     titleEl.textContent = 'Failed';
     doneBtn.classList.remove('hidden');
   }
@@ -625,7 +760,7 @@ $('import-btn').addEventListener('click', importWallet);
 $('seed-input').addEventListener('keypress', e => { if (e.key === 'Enter') importWallet(); });
 $('toggle-seed-btn').addEventListener('click', () => {
   const input = $('seed-input');
-  input.type = input.type === 'password' ? 'text' : 'password';
+  input.type  = input.type === 'password' ? 'text' : 'password';
 });
 
 // Wallet view
@@ -637,15 +772,16 @@ $('copy-address-btn').addEventListener('click', async () => {
     await navigator.clipboard.writeText(state.wallet.address);
     $('copy-toast').classList.remove('hidden');
     setTimeout(() => $('copy-toast').classList.add('hidden'), 1800);
-  } catch {
-    /* clipboard permission denied */
-  }
+  } catch { /* clipboard permission denied */ }
 });
 
-// WalletConnect controls
+$('faucet-btn').addEventListener('click', fundFromFaucet);
+$('refresh-history-btn').addEventListener('click', loadTxHistory);
+
+// WalletConnect
 $('wc-connect-btn').addEventListener('click', () => {
   if (!state.web3wallet) {
-    showAlert('wc-error', 'WalletConnect is not initialized. Check Project ID configuration.');
+    showAlert('wc-error', 'WalletConnect is not initialised. Check Project ID configuration.');
     return;
   }
   hideAlert('wc-error');
@@ -667,19 +803,24 @@ $('wc-cancel-btn').addEventListener('click', () => {
 // Session proposal
 $('approve-session-btn').addEventListener('click', approveSession);
 $('reject-session-btn').addEventListener('click', rejectSession);
-$('back-from-proposal-btn').addEventListener('click', async () => {
-  await rejectSession();
-});
+$('back-from-proposal-btn').addEventListener('click', () => rejectSession());
 
 // Transaction review
 $('approve-tx-btn').addEventListener('click', approveTransaction);
 $('reject-tx-btn').addEventListener('click', rejectTransaction);
 
+$('toggle-raw-btn').addEventListener('click', () => {
+  const pre = $('tx-raw-json');
+  const btn = $('toggle-raw-btn');
+  const hidden = pre.classList.toggle('hidden');
+  btn.textContent = hidden ? '▶ View raw JSON' : '▼ Hide raw JSON';
+});
+
 // Transaction status
 $('tx-done-btn').addEventListener('click', () => {
   showView('wallet');
   $('approve-tx-btn').disabled = false;
-  $('reject-tx-btn').disabled = false;
+  $('reject-tx-btn').disabled  = false;
 });
 
 // ─────────────────────────────────────────────
@@ -688,7 +829,5 @@ $('tx-done-btn').addEventListener('click', () => {
 
 (async () => {
   const restored = await restoreSession();
-  if (!restored) {
-    showView('import');
-  }
+  if (!restored) showView('import');
 })();

@@ -38,7 +38,10 @@
   <!-- ===== WALLET VIEW ===== -->
   <div id="view-wallet" class="view hidden">
     <div class="wallet-header">
-      <span id="network-badge" class="network-badge">Mainnet</span>
+      <div class="header-left">
+        <span id="network-badge" class="network-badge">Devnet</span>
+        <span id="xrpl-connection-dot" class="connection-dot dot-disconnected" title="Disconnected from XRPL Devnet"></span>
+      </div>
       <div class="header-actions">
         <button id="refresh-balance-btn" class="btn-icon" title="Refresh balance">↻</button>
         <button id="logout-btn" class="btn-icon btn-danger-icon" title="Remove wallet from session">✕</button>
@@ -55,8 +58,14 @@
     </div>
 
     <div class="balance-card">
-      <div class="balance-label">XRP Balance</div>
-      <div id="balance-amount" class="balance-amount">—</div>
+      <div class="balance-row">
+        <div>
+          <div class="balance-label">XRP Balance</div>
+          <div id="balance-amount" class="balance-amount">—</div>
+        </div>
+        <button id="faucet-btn" class="btn btn-faucet" title="Request XRP from the Devnet faucet">💧 Faucet</button>
+      </div>
+      <div id="faucet-status" class="faucet-status hidden"></div>
     </div>
 
     <!-- WalletConnect section -->
@@ -79,6 +88,17 @@
       </div>
 
       <div id="wc-error" class="alert alert-error hidden"></div>
+    </div>
+
+    <!-- Transaction history section -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">Recent Transactions</span>
+        <button id="refresh-history-btn" class="btn-icon" title="Refresh history">↻</button>
+      </div>
+      <div id="tx-history-list">
+        <div class="tx-history-empty">Loading…</div>
+      </div>
     </div>
   </div>
 
@@ -120,6 +140,9 @@
     <div id="tx-details" class="tx-card"></div>
 
     <div id="tx-warning" class="alert alert-warn hidden"></div>
+
+    <button id="toggle-raw-btn" class="btn-link">▶ View raw JSON</button>
+    <pre id="tx-raw-json" class="tx-raw hidden"></pre>
 
     <div class="action-row">
       <button id="reject-tx-btn" class="btn btn-danger">Reject</button>
