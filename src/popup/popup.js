@@ -253,6 +253,7 @@ async function tryFetchAmmInfo(issuerAddress) {
 function formatPoolAsset(amount) {
   if (!amount) return '?';
   if (typeof amount === 'string') return 'XRP'; // drops string = XRP
+  if (amount.currency === 'XRP') return 'XRP';  // object with XRP (vault asset format)
   return formatCurrencyCode(amount.currency);
 }
 
@@ -392,15 +393,45 @@ async function fetchMptIssuanceInfo(issuanceId) {
     });
     const node = resp.result.node ?? {};
     const assetScale = node.AssetScale ?? 0;
-    const metadata = node.MPTokenMetadata;
+    const issuer     = node.Issuer ?? null;
+    const metadata   = node.MPTokenMetadata;
     let ticker = null;
     if (metadata) {
       const decoded = decodeMPTokenMetadata(metadata);
       ticker = (typeof decoded?.ticker === 'string' && decoded.ticker) ? decoded.ticker : null;
     }
-    return { ticker, assetScale };
+
+    // Detect vault share tokens: issuer account has LoanBroker objects each
+    // with a VaultID; fetch the Vault and match on ShareMPTID.
+    let vaultInfo = null;
+    if (issuer) {
+      try {
+        const allObjs = await state.client.request({
+          command: 'account_objects',
+          account: issuer,
+          ledger_index: 'validated',
+        });
+        const loanBrokers = (allObjs.result.account_objects ?? [])
+          .filter(o => o.LedgerEntryType === 'LoanBroker' && o.VaultID);
+        for (const lb of loanBrokers) {
+          const vaultResp = await state.client.request({
+            command: 'ledger_entry',
+            index: lb.VaultID,
+            ledger_index: 'validated',
+          });
+          const vault = vaultResp.result.node;
+          if (vault.ShareMPTID === issuanceId) {
+            vaultInfo = vault;
+            break;
+          }
+        }
+      } catch { /* vault detection failed — treat as regular MPT */ }
+    }
+
+    const outstandingAmount = node.OutstandingAmount ?? '0';
+    return { ticker, assetScale, outstandingAmount, vaultInfo };
   } catch {
-    return { ticker: null, assetScale: 0 };
+    return { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null };
   }
 }
 
@@ -420,13 +451,19 @@ async function loadMptBalances() {
     const infos = await Promise.all(objects.map(o => fetchMptIssuanceInfo(o.MPTokenIssuanceID)));
     const issuanceMap = new Map(objects.map((o, i) => [o.MPTokenIssuanceID, infos[i]]));
 
-    renderMptBalances(objects, issuanceMap);
+    const regularObjects = objects.filter((_, i) => !infos[i]?.vaultInfo);
+    const vaultObjects   = objects.filter((_, i) =>  infos[i]?.vaultInfo);
+
+    renderMptBalances(regularObjects, issuanceMap);
+    renderVaultBalances(vaultObjects, issuanceMap);
   } catch (err) {
     if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
       renderMptBalances([]);
+      renderVaultBalances([]);
     } else {
       // MPTs may not be supported on all nodes; fail silently
       renderMptBalances([], new Map());
+      renderVaultBalances([], new Map());
       console.error('[mpt balances]', err);
     }
   }
@@ -466,6 +503,83 @@ function renderMptBalances(objects, issuanceMap = new Map()) {
           <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
         </div>
         <div class="mpt-balance-amount">${esc(amount)}</div>
+      </a>`;
+  }).join('');
+}
+
+function renderVaultBalances(objects, issuanceMap = new Map()) {
+  const card   = $('vault-balance-card');
+  const listEl = $('vault-balance-list');
+
+  const held = objects.filter(o => o.LedgerEntryType === 'MPToken');
+
+  if (!held.length) {
+    card.classList.add('hidden');
+    return;
+  }
+
+  card.classList.remove('hidden');
+  const explorerAccount = NETWORKS[state.network].explorerAccount;
+  listEl.innerHTML = held.map(obj => {
+    const issuanceId = obj.MPTokenIssuanceID ?? '';
+    const { ticker, assetScale, outstandingAmount, vaultInfo } = issuanceMap.get(issuanceId) ?? { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null };
+
+    const raw         = obj.MPTAmount ? parseInt(obj.MPTAmount, 10) : 0;
+    const scaled      = assetScale > 0 ? raw / Math.pow(10, assetScale) : raw;
+    const totalShares = parseInt(outstandingAmount, 10) / Math.pow(10, assetScale || 1);
+    const holderShare = totalShares > 0 ? scaled / totalShares : 0;
+    const shares      = scaled.toLocaleString(undefined, { maximumFractionDigits: assetScale });
+
+    const shortId = issuanceId.length >= 12
+      ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
+      : issuanceId;
+
+    // Prefer vault Data description, then ticker, then abbreviated ID
+    let vaultLabel = ticker || shortId;
+    if (vaultInfo?.Data) {
+      try {
+        const decoded = Buffer.from(vaultInfo.Data, 'hex').toString('utf8').trim();
+        if (decoded && /^[\x20-\x7E]+$/.test(decoded)) vaultLabel = decoded;
+      } catch { /* keep existing label */ }
+    }
+
+    const issuer        = issuerFromMptIssuanceId(issuanceId);
+    const issuerDisplay = issuer ? truncAddr(issuer) : (issuanceId.slice(8, 16) + '…');
+    const underlying    = vaultInfo?.Asset ? formatPoolAsset(vaultInfo.Asset) : '—';
+    const fmtAmt    = (v) => (parseFloat(v ?? 0) * holderShare).toLocaleString(undefined, { maximumFractionDigits: 6 });
+    const available = vaultInfo?.AssetsAvailable != null ? fmtAmt(vaultInfo.AssetsAvailable) : null;
+    const total     = vaultInfo?.AssetsTotal      != null ? fmtAmt(vaultInfo.AssetsTotal)     : null;
+    const href          = `${explorerAccount}${issuer ?? ''}`;
+
+    return `
+      <a class="vault-balance-item" href="${esc(href)}" target="_blank" rel="noreferrer">
+        <div class="amm-summary-row">
+          <div class="amm-token-info">
+            <span class="vault-name" title="${esc(issuanceId)}">${esc(vaultLabel)}</span>
+            <span class="amm-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
+          </div>
+          <div class="amm-balance-amount">${esc(shares)} shares</div>
+        </div>
+        <div class="amm-assets-row">
+          <div class="amm-asset-share">
+            <span class="amm-asset-label">Underlying</span>
+            <span class="amm-asset-value">${esc(underlying)}</span>
+          </div>
+          <div class="amm-asset-share">
+            <span class="amm-asset-label">Pool share</span>
+            <span class="amm-asset-value">${(holderShare * 100).toFixed(2)}%</span>
+          </div>
+          ${available != null ? `
+          <div class="amm-asset-share">
+            <span class="amm-asset-label">Available Share</span>
+            <span class="amm-asset-value">${esc(available)}</span>
+          </div>` : ''}
+          ${total != null ? `
+          <div class="amm-asset-share">
+            <span class="amm-asset-label">Total Share</span>
+            <span class="amm-asset-value">${esc(total)}</span>
+          </div>` : ''}
+        </div>
       </a>`;
   }).join('');
 }

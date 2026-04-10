@@ -945,6 +945,38 @@ a.amm-balance-item:hover {
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 
+/* ===== VAULTS ===== */
+a.vault-balance-item {
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+}
+
+a.vault-balance-item:hover {
+  background: var(--surface-2);
+  border-radius: var(--radius-xs);
+  margin: 0 -6px;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.vault-balance-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.vault-balance-item:last-child { border-bottom: none; }
+
+.vault-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
 /* ===== TRANSACTION HISTORY ===== */
 .tx-history-empty {
   font-size: 12px;
