@@ -271,10 +271,12 @@ async function fundFromFaucet() {
     statusEl.textContent = '✓ Faucet request sent — balance will update shortly.';
     statusEl.className = 'faucet-status ok';
 
-    // The faucet takes a few seconds to settle
-    setTimeout(() => {
-      refreshBalance();
-      loadTxHistory();
+    // The faucet takes a few seconds to settle; clear the status once updated
+    setTimeout(async () => {
+      await refreshBalance();
+      await loadTxHistory();
+      statusEl.textContent = '';
+      statusEl.classList.add('hidden');
     }, 5000);
 
   } catch (err) {
@@ -765,7 +767,11 @@ $('toggle-seed-btn').addEventListener('click', () => {
 
 // Wallet view
 $('logout-btn').addEventListener('click', logout);
-$('refresh-balance-btn').addEventListener('click', refreshBalance);
+$('refresh-balance-btn').addEventListener('click', () => {
+  $('faucet-status').textContent = '';
+  $('faucet-status').classList.add('hidden');
+  refreshBalance();
+});
 $('copy-address-btn').addEventListener('click', async () => {
   if (!state.wallet) return;
   try {
