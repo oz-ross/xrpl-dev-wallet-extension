@@ -120,6 +120,7 @@ async function importWallet() {
     showView('wallet');
 
     refreshBalance();
+    loadIouBalances();
     loadTxHistory();
     initWalletConnect();
     startAutoRefresh();
@@ -143,6 +144,7 @@ async function restoreSession() {
     updateWalletUI();
     showView('wallet');
     refreshBalance();
+    loadIouBalances();
     loadTxHistory();
     await initWalletConnect();
     startAutoRefresh();
@@ -215,6 +217,66 @@ async function refreshBalance() {
   }
 }
 
+// Decode a 40-char hex currency code to a human-readable string where possible
+function formatCurrencyCode(currency) {
+  if (currency.length !== 40) return currency; // standard 3-char code passes through unchanged
+  // Try to decode as ASCII (strip leading/trailing zero padding)
+  try {
+    const stripped = currency.replace(/^0+/, '').replace(/0+$/, '');
+    if (!stripped) return currency.slice(0, 8) + '…';
+    const bytes = stripped.match(/.{2}/g) ?? [];
+    const str = bytes.map(b => String.fromCharCode(parseInt(b, 16))).join('').replace(/\0/g, '').trim();
+    if (str && /^[\x20-\x7E]+$/.test(str)) return str;
+  } catch { /* fall through */ }
+  return currency.slice(0, 8) + '…';
+}
+
+async function loadIouBalances() {
+  if (!state.wallet || !state.client) return;
+  try {
+    await ensureConnected();
+    const resp = await state.client.request({
+      command: 'account_lines',
+      account: state.wallet.address,
+      ledger_index: 'validated',
+    });
+    renderIouBalances(resp.result.lines ?? []);
+  } catch (err) {
+    if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
+      renderIouBalances([]);
+    } else {
+      console.error('[iou balances]', err);
+    }
+  }
+}
+
+function renderIouBalances(lines) {
+  const card   = $('iou-balance-card');
+  const listEl = $('iou-balance-list');
+
+  // Only show lines where we hold a positive balance
+  const held = lines.filter(l => parseFloat(l.balance) > 0);
+
+  if (!held.length) {
+    card.classList.add('hidden');
+    return;
+  }
+
+  card.classList.remove('hidden');
+  listEl.innerHTML = held.map(line => {
+    const code    = formatCurrencyCode(line.currency);
+    const balance = parseFloat(line.balance).toLocaleString(undefined, { maximumFractionDigits: 6 });
+    return `
+      <div class="iou-balance-item">
+        <div class="iou-token-info">
+          <span class="iou-currency">${esc(code)}</span>
+          <span class="iou-issuer" title="${esc(line.account)}">${esc(truncAddr(line.account))}</span>
+        </div>
+        <div class="iou-balance-amount">${esc(balance)}</div>
+      </div>`;
+  }).join('');
+}
+
 function updateWalletUI() {
   const addr = state.wallet.address;
   $('account-address').textContent = truncAddr(addr);
@@ -234,6 +296,7 @@ function startAutoRefresh() {
   stopAutoRefresh();
   state.refreshTimer = setInterval(() => {
     refreshBalance();
+    loadIouBalances();
     loadTxHistory();
   }, AUTO_REFRESH_INTERVAL);
 }
@@ -628,6 +691,7 @@ async function approveTransaction() {
 
     state.pendingRequest = null;
     refreshBalance();
+    loadIouBalances();
     loadTxHistory();
 
   } catch (err) {
@@ -771,6 +835,7 @@ $('refresh-balance-btn').addEventListener('click', () => {
   $('faucet-status').textContent = '';
   $('faucet-status').classList.add('hidden');
   refreshBalance();
+  loadIouBalances();
 });
 $('copy-address-btn').addEventListener('click', async () => {
   if (!state.wallet) return;
