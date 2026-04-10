@@ -61,7 +61,7 @@ body {
 .hidden { display: none !important; }
 
 /* ===== VIEWS ===== */
-.view { padding: 20px; }
+.view { padding: 20px; position: relative; }
 
 .view-header {
   display: flex;
@@ -269,6 +269,15 @@ select { cursor: pointer; }
   gap: 6px;
 }
 
+.account-actions { display: flex; align-items: center; gap: 0; }
+
+a.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
 .account-address {
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 12px;
@@ -289,6 +298,52 @@ select { cursor: pointer; }
   padding: 4px 10px;
   border-radius: var(--radius-xs);
   border: 1px solid var(--border);
+}
+
+/* ===== QR CODE MODAL ===== */
+.qr-modal {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.85);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 80px;
+  z-index: 100;
+  backdrop-filter: blur(3px);
+}
+
+.qr-card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.qr-card canvas {
+  border-radius: var(--radius-sm);
+  display: block;
+}
+
+.qr-address {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: var(--text-3);
+  text-align: center;
+  word-break: break-all;
+  max-width: 200px;
+}
+
+.qr-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 13px;
 }
 
 /* ===== BALANCE CARD ===== */
@@ -663,6 +718,31 @@ select { cursor: pointer; }
 }
 .faucet-status.ok  { color: var(--success); }
 .faucet-status.err { color: var(--danger); }
+
+/* ===== EXPLORER-LINKED ROWS ===== */
+a.iou-balance-item,
+a.mpt-balance-item {
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+}
+
+a.tx-history-item {
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+}
+
+a.iou-balance-item:hover,
+a.mpt-balance-item:hover,
+a.tx-history-item:hover {
+  background: var(--surface-2);
+  border-radius: var(--radius-xs);
+  margin: 0 -6px;
+  padding-left: 6px;
+  padding-right: 6px;
+}
 
 /* ===== IOU BALANCES ===== */
 .iou-balance-card {

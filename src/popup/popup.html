@@ -52,7 +52,19 @@
       <div class="account-label">Account</div>
       <div class="account-row">
         <span id="account-address" class="account-address" title="">—</span>
-        <button id="copy-address-btn" class="btn-icon" title="Copy address">⧉</button>
+        <div class="account-actions">
+          <button id="qr-btn" class="btn-icon" title="Show QR code">⊞</button>
+          <button id="copy-address-btn" class="btn-icon" title="Copy address">⧉</button>
+          <a id="account-explorer-link" class="btn-icon" href="#" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
+        </div>
+      </div>
+
+      <div id="qr-modal" class="qr-modal hidden">
+        <div class="qr-card">
+          <canvas id="qr-canvas"></canvas>
+          <div id="qr-address" class="qr-address"></div>
+          <button id="qr-close-btn" class="btn-icon qr-close" title="Close">✕</button>
+        </div>
       </div>
       <div id="copy-toast" class="copy-toast hidden">Copied!</div>
     </div>

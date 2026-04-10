@@ -13,6 +13,7 @@
     "@walletconnect/core": "^2.15.0",
     "@walletconnect/utils": "^2.15.0",
     "@walletconnect/web3wallet": "^1.15.0",
+    "qrcode": "^1.5.4",
     "xrpl": "^4.6.0"
   },
   "devDependencies": {

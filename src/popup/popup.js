@@ -1,5 +1,6 @@
 import './popup.css';
 import { Client, Wallet, dropsToXrp, encodeAccountID, decodeMPTokenMetadata } from 'xrpl';
+import QRCode from 'qrcode';
 import { Core } from '@walletconnect/core';
 import { Web3Wallet } from '@walletconnect/web3wallet';
 import { getSdkError } from '@walletconnect/utils';
@@ -15,7 +16,10 @@ const NETWORKS = {
     name: 'Devnet',
     wsUrl: 'wss://s.devnet.rippletest.net:51233',
     chainId: 'xrpl:2',
-    explorer: 'https://devnet.xrpl.org/transactions/',
+    explorer:        'https://devnet.xrpl.org/transactions/',
+    explorerAccount: 'https://devnet.xrpl.org/accounts/',
+    explorerToken:   'https://devnet.xrpl.org/token/',
+    explorerMpt:     'https://devnet.xrpl.org/mpt/',
     faucet: 'https://faucet.devnet.rippletest.net/accounts',
   },
 };
@@ -265,17 +269,19 @@ function renderIouBalances(lines) {
   }
 
   card.classList.remove('hidden');
+  const explorerToken = NETWORKS[state.network].explorerToken;
   listEl.innerHTML = held.map(line => {
     const code    = formatCurrencyCode(line.currency);
     const balance = parseFloat(line.balance).toLocaleString(undefined, { maximumFractionDigits: 6 });
+    const href    = `${explorerToken}${encodeURIComponent(line.currency)}.${line.account}`;
     return `
-      <div class="iou-balance-item">
+      <a class="iou-balance-item" href="${esc(href)}" target="_blank" rel="noreferrer">
         <div class="iou-token-info">
           <span class="iou-currency">${esc(code)}</span>
           <span class="iou-issuer" title="${esc(line.account)}">${esc(truncAddr(line.account))}</span>
         </div>
         <div class="iou-balance-amount">${esc(balance)}</div>
-      </div>`;
+      </a>`;
   }).join('');
 }
 
@@ -292,19 +298,24 @@ function issuerFromMptIssuanceId(issuanceId) {
   }
 }
 
-async function fetchMptTicker(issuanceId) {
+async function fetchMptIssuanceInfo(issuanceId) {
   try {
     const resp = await state.client.request({
       command: 'ledger_entry',
       mpt_issuance: issuanceId,
       ledger_index: 'validated',
     });
-    const metadata = resp.result.node?.MPTokenMetadata;
-    if (!metadata) return null;
-    const decoded = decodeMPTokenMetadata(metadata);
-    return (typeof decoded?.ticker === 'string' && decoded.ticker) ? decoded.ticker : null;
+    const node = resp.result.node ?? {};
+    const assetScale = node.AssetScale ?? 0;
+    const metadata = node.MPTokenMetadata;
+    let ticker = null;
+    if (metadata) {
+      const decoded = decodeMPTokenMetadata(metadata);
+      ticker = (typeof decoded?.ticker === 'string' && decoded.ticker) ? decoded.ticker : null;
+    }
+    return { ticker, assetScale };
   } catch {
-    return null;
+    return { ticker: null, assetScale: 0 };
   }
 }
 
@@ -320,11 +331,11 @@ async function loadMptBalances() {
     });
     const objects = resp.result.account_objects ?? [];
 
-    // Fetch tickers for all issuances in parallel
-    const tickers = await Promise.all(objects.map(o => fetchMptTicker(o.MPTokenIssuanceID)));
-    const tickerMap = new Map(objects.map((o, i) => [o.MPTokenIssuanceID, tickers[i]]));
+    // Fetch issuance info (ticker + asset scale) for all MPTs in parallel
+    const infos = await Promise.all(objects.map(o => fetchMptIssuanceInfo(o.MPTokenIssuanceID)));
+    const issuanceMap = new Map(objects.map((o, i) => [o.MPTokenIssuanceID, infos[i]]));
 
-    renderMptBalances(objects, tickerMap);
+    renderMptBalances(objects, issuanceMap);
   } catch (err) {
     if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
       renderMptBalances([]);
@@ -336,7 +347,7 @@ async function loadMptBalances() {
   }
 }
 
-function renderMptBalances(objects, tickerMap = new Map()) {
+function renderMptBalances(objects, issuanceMap = new Map()) {
   const card   = $('mpt-balance-card');
   const listEl = $('mpt-balance-list');
 
@@ -348,25 +359,29 @@ function renderMptBalances(objects, tickerMap = new Map()) {
   }
 
   card.classList.remove('hidden');
+  const explorerMpt = NETWORKS[state.network].explorerMpt;
   listEl.innerHTML = held.map(obj => {
     const issuanceId = obj.MPTokenIssuanceID ?? '';
-    const amount     = (obj.MPTAmount ? parseInt(obj.MPTAmount, 10) : 0).toLocaleString();
+    const { ticker, assetScale } = issuanceMap.get(issuanceId) ?? { ticker: null, assetScale: 0 };
+    const raw        = obj.MPTAmount ? parseInt(obj.MPTAmount, 10) : 0;
+    const scaled     = assetScale > 0 ? raw / Math.pow(10, assetScale) : raw;
+    const amount     = scaled.toLocaleString(undefined, { maximumFractionDigits: assetScale });
     const shortId    = issuanceId.length >= 12
       ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
       : issuanceId;
-    const ticker     = tickerMap.get(issuanceId);
     const displayName = ticker || shortId;
-    const issuer     = issuerFromMptIssuanceId(issuanceId);
+    const issuer      = issuerFromMptIssuanceId(issuanceId);
     const issuerDisplay = issuer ? truncAddr(issuer) : (issuanceId.slice(8, 16) + '…');
+    const href        = `${explorerMpt}${issuanceId}`;
 
     return `
-      <div class="mpt-balance-item">
+      <a class="mpt-balance-item" href="${esc(href)}" target="_blank" rel="noreferrer">
         <div class="mpt-token-info">
           <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
           <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
         </div>
         <div class="mpt-balance-amount">${esc(amount)}</div>
-      </div>`;
+      </a>`;
   }).join('');
 }
 
@@ -375,8 +390,10 @@ function updateWalletUI() {
   $('account-address').textContent = truncAddr(addr);
   $('account-address').title = addr;
 
-  const badge = $('network-badge');
   const net = NETWORKS[state.network];
+  $('account-explorer-link').href = `${net.explorerAccount}${addr}`;
+
+  const badge = $('network-badge');
   badge.textContent = net.name;
   badge.className = `network-badge ${state.network}`;
 }
@@ -488,7 +505,7 @@ function renderTxHistory(txs) {
     const meta   = entry.meta ?? entry.metaData ?? {};
     const result = meta.TransactionResult ?? '—';
     const success = result === 'tesSUCCESS';
-    const hash = txJson.hash ?? '—';
+    const hash = entry.hash ?? txJson.hash ?? '—';
     const type = txJson.TransactionType ?? '—';
 
     let detail = '';
@@ -505,13 +522,12 @@ function renderTxHistory(txs) {
 
     const date = xrplDateToLocal(txJson.date);
     const dateStr = date ? date.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '';
-
-    const hashLink = hash !== '—'
-      ? `<a class="tx-history-hash" href="${explorer}${esc(hash)}" target="_blank" rel="noreferrer">${esc(hash.slice(0, 8))}…</a>`
-      : '';
+    const href = hash !== '—' ? `${explorer}${hash}` : null;
+    const tag  = href ? `a` : `div`;
+    const linkAttrs = href ? ` href="${esc(href)}" target="_blank" rel="noreferrer"` : '';
 
     return `
-      <div class="tx-history-item">
+      <${tag} class="tx-history-item"${linkAttrs}>
         <div class="tx-history-main">
           <span class="tx-history-type ${success ? 'success' : 'fail'}">${esc(type)}</span>
           ${detail ? `<span class="tx-history-detail">${esc(detail)}</span>` : ''}
@@ -519,9 +535,9 @@ function renderTxHistory(txs) {
         <div class="tx-history-meta">
           <span class="tx-history-result ${success ? 'success' : 'fail'}">${success ? '✓' : '✕'} ${esc(result)}</span>
           <span class="tx-history-date">${esc(dateStr)}</span>
-          ${hashLink}
+          ${hash !== '—' ? `<span class="tx-history-hash">${esc(hash.slice(0, 8))}…</span>` : ''}
         </div>
-      </div>`;
+      </${tag}>`;
   }).join('');
 }
 
@@ -941,6 +957,26 @@ $('copy-address-btn').addEventListener('click', async () => {
     setTimeout(() => $('copy-toast').classList.add('hidden'), 1800);
   } catch { /* clipboard permission denied */ }
 });
+
+$('qr-btn').addEventListener('click', showQr);
+$('qr-close-btn').addEventListener('click', hideQr);
+$('qr-modal').addEventListener('click', e => { if (e.target === $('qr-modal')) hideQr(); });
+
+async function showQr() {
+  if (!state.wallet) return;
+  const addr = state.wallet.address;
+  $('qr-address').textContent = addr;
+  await QRCode.toCanvas($('qr-canvas'), addr, {
+    width: 200,
+    margin: 2,
+    color: { dark: '#0f172a', light: '#f8fafc' },
+  });
+  $('qr-modal').classList.remove('hidden');
+}
+
+function hideQr() {
+  $('qr-modal').classList.add('hidden');
+}
 
 $('faucet-btn').addEventListener('click', fundFromFaucet);
 $('refresh-history-btn').addEventListener('click', loadTxHistory);
