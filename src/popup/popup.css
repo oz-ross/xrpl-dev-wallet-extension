@@ -725,6 +725,51 @@ select { cursor: pointer; }
   flex-shrink: 0;
 }
 
+/* ===== MPT BALANCES ===== */
+.mpt-balance-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.mpt-balance-item:last-child { border-bottom: none; }
+
+.mpt-token-info {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mpt-id {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--warn);
+  flex-shrink: 0;
+  cursor: default;
+}
+
+.mpt-issuer {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.mpt-balance-amount {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* ===== TRANSACTION HISTORY ===== */
 .tx-history-empty {
   font-size: 12px;

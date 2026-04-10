@@ -1,5 +1,5 @@
 import './popup.css';
-import { Client, Wallet, dropsToXrp } from 'xrpl';
+import { Client, Wallet, dropsToXrp, encodeAccountID, decodeMPTokenMetadata } from 'xrpl';
 import { Core } from '@walletconnect/core';
 import { Web3Wallet } from '@walletconnect/web3wallet';
 import { getSdkError } from '@walletconnect/utils';
@@ -121,6 +121,7 @@ async function importWallet() {
 
     refreshBalance();
     loadIouBalances();
+    loadMptBalances();
     loadTxHistory();
     initWalletConnect();
     startAutoRefresh();
@@ -145,6 +146,7 @@ async function restoreSession() {
     showView('wallet');
     refreshBalance();
     loadIouBalances();
+    loadMptBalances();
     loadTxHistory();
     await initWalletConnect();
     startAutoRefresh();
@@ -277,6 +279,97 @@ function renderIouBalances(lines) {
   }).join('');
 }
 
+// Derive the XRPL classic address from an MPTokenIssuanceID.
+// The issuance ID is 48 hex chars: [8 hex seq][40 hex accountID]
+function issuerFromMptIssuanceId(issuanceId) {
+  if (!issuanceId || issuanceId.length !== 48) return null;
+  try {
+    const accountIdHex = issuanceId.slice(8); // last 40 hex chars = 20 bytes
+    const bytes = Buffer.from(accountIdHex, 'hex');
+    return encodeAccountID(bytes);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchMptTicker(issuanceId) {
+  try {
+    const resp = await state.client.request({
+      command: 'ledger_entry',
+      mpt_issuance: issuanceId,
+      ledger_index: 'validated',
+    });
+    const metadata = resp.result.node?.MPTokenMetadata;
+    if (!metadata) return null;
+    const decoded = decodeMPTokenMetadata(metadata);
+    return (typeof decoded?.ticker === 'string' && decoded.ticker) ? decoded.ticker : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadMptBalances() {
+  if (!state.wallet || !state.client) return;
+  try {
+    await ensureConnected();
+    const resp = await state.client.request({
+      command: 'account_objects',
+      account: state.wallet.address,
+      type: 'mptoken',
+      ledger_index: 'validated',
+    });
+    const objects = resp.result.account_objects ?? [];
+
+    // Fetch tickers for all issuances in parallel
+    const tickers = await Promise.all(objects.map(o => fetchMptTicker(o.MPTokenIssuanceID)));
+    const tickerMap = new Map(objects.map((o, i) => [o.MPTokenIssuanceID, tickers[i]]));
+
+    renderMptBalances(objects, tickerMap);
+  } catch (err) {
+    if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
+      renderMptBalances([]);
+    } else {
+      // MPTs may not be supported on all nodes; fail silently
+      renderMptBalances([], new Map());
+      console.error('[mpt balances]', err);
+    }
+  }
+}
+
+function renderMptBalances(objects, tickerMap = new Map()) {
+  const card   = $('mpt-balance-card');
+  const listEl = $('mpt-balance-list');
+
+  const held = objects.filter(o => o.LedgerEntryType === 'MPToken');
+
+  if (!held.length) {
+    card.classList.add('hidden');
+    return;
+  }
+
+  card.classList.remove('hidden');
+  listEl.innerHTML = held.map(obj => {
+    const issuanceId = obj.MPTokenIssuanceID ?? '';
+    const amount     = (obj.MPTAmount ? parseInt(obj.MPTAmount, 10) : 0).toLocaleString();
+    const shortId    = issuanceId.length >= 12
+      ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
+      : issuanceId;
+    const ticker     = tickerMap.get(issuanceId);
+    const displayName = ticker || shortId;
+    const issuer     = issuerFromMptIssuanceId(issuanceId);
+    const issuerDisplay = issuer ? truncAddr(issuer) : (issuanceId.slice(8, 16) + '…');
+
+    return `
+      <div class="mpt-balance-item">
+        <div class="mpt-token-info">
+          <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
+          <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
+        </div>
+        <div class="mpt-balance-amount">${esc(amount)}</div>
+      </div>`;
+  }).join('');
+}
+
 function updateWalletUI() {
   const addr = state.wallet.address;
   $('account-address').textContent = truncAddr(addr);
@@ -297,6 +390,7 @@ function startAutoRefresh() {
   state.refreshTimer = setInterval(() => {
     refreshBalance();
     loadIouBalances();
+    loadMptBalances();
     loadTxHistory();
   }, AUTO_REFRESH_INTERVAL);
 }
@@ -692,6 +786,7 @@ async function approveTransaction() {
     state.pendingRequest = null;
     refreshBalance();
     loadIouBalances();
+    loadMptBalances();
     loadTxHistory();
 
   } catch (err) {
@@ -836,6 +931,7 @@ $('refresh-balance-btn').addEventListener('click', () => {
   $('faucet-status').classList.add('hidden');
   refreshBalance();
   loadIouBalances();
+  loadMptBalances();
 });
 $('copy-address-btn').addEventListener('click', async () => {
   if (!state.wallet) return;
