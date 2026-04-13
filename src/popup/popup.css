@@ -1431,3 +1431,60 @@ input[type="number"]:focus { border-color: var(--accent); }
   border: 1px solid #10b981;
   color: #10b981;
 }
+
+/* ===== MANAGE ACCOUNTS ===== */
+.manage-acct-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+}
+
+.manage-acct-info { flex: 1; min-width: 0; margin-right: 10px; }
+
+.manage-acct-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.manage-acct-addr {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* ===== REMOVE ACCOUNT CONFIRM ===== */
+.remove-acct-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-top: 8px;
+}
+
+.remove-acct-card .remove-acct-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.remove-acct-card .remove-acct-addr {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 3px;
+}

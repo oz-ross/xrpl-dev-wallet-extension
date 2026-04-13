@@ -442,10 +442,43 @@
     </div>
 
     <div class="settings-list">
+      <button id="settings-manage-accounts-btn" class="settings-item">
+        <span class="settings-item-label">Manage Accounts</span>
+        <span class="settings-item-chevron">›</span>
+      </button>
       <button id="settings-change-password-btn" class="settings-item">
         <span class="settings-item-label">Change Password</span>
         <span class="settings-item-chevron">›</span>
       </button>
+    </div>
+  </div>
+
+  <!-- ===== MANAGE ACCOUNTS ===== -->
+  <div id="view-manage-accounts" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-manage-accounts-btn" class="btn-back">‹</button>
+      <h2>Manage Accounts</h2>
+    </div>
+    <div id="manage-accounts-list"></div>
+  </div>
+
+  <!-- ===== REMOVE ACCOUNT CONFIRM ===== -->
+  <div id="view-remove-account-confirm" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-remove-account-btn" class="btn-back">‹</button>
+      <h2>Remove Account</h2>
+    </div>
+
+    <div class="remove-acct-card">
+      <div class="remove-acct-name" id="remove-acct-name"></div>
+      <div class="remove-acct-addr" id="remove-acct-addr"></div>
+    </div>
+
+    <div class="alert alert-warn" id="remove-acct-warning" style="margin-top:14px"></div>
+
+    <div class="action-row" style="margin-top:20px">
+      <button id="remove-acct-cancel-btn" class="btn btn-ghost">Cancel</button>
+      <button id="remove-acct-confirm-btn" class="btn btn-danger">Remove</button>
     </div>
   </div>
 

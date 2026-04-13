@@ -61,6 +61,9 @@ const state = {
   // Password held in-memory during the setup flow so saveVault() can use it
   // without depending on chrome.storage.session being set first.
   _setupFlowPassword: null,
+
+  // Address queued for removal, set before navigating to confirm view.
+  pendingRemoveAddress: null,
 };
 
 // ─────────────────────────────────────────────
@@ -351,6 +354,123 @@ function accountExists(address) {
 function hdAccountIndexExists(keyringIndex, accountIndex) {
   const kr = state.keyrings[keyringIndex];
   return kr?.type === 'HD' && kr.accounts.some(a => a.accountIndex === accountIndex);
+}
+
+/**
+ * Return metadata about what removing an account would affect.
+ * Used to build the warning message before confirming removal.
+ */
+function getRemovalInfo(address) {
+  for (let ki = 0; ki < state.keyrings.length; ki++) {
+    const kr = state.keyrings[ki];
+    if (kr.type === 'simple' && kr.address === address) {
+      return { keyringsIdx: ki, type: 'simple', label: kr.label, phraseToo: true, siblings: 0 };
+    }
+    if (kr.type === 'HD') {
+      const ai = kr.accounts.findIndex(a => a.address === address);
+      if (ai !== -1) {
+        return {
+          keyringsIdx: ki,
+          accountsIdx: ai,
+          type: 'HD',
+          label: kr.accounts[ai].label,
+          phraseToo: kr.accounts.length === 1,  // last account → phrase also goes
+          siblings: kr.accounts.length - 1,     // other accounts sharing the phrase
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Execute the removal for state.pendingRemoveAddress.
+ * Assumes the user has already confirmed.
+ */
+async function executeRemoveAccount() {
+  const address = state.pendingRemoveAddress;
+  state.pendingRemoveAddress = null;
+  if (!address) return;
+
+  const info = getRemovalInfo(address);
+  if (!info) return;
+
+  if (info.type === 'simple') {
+    state.keyrings.splice(info.keyringsIdx, 1);
+  } else {
+    const kr = state.keyrings[info.keyringsIdx];
+    kr.accounts.splice(info.accountsIdx, 1);
+    if (kr.accounts.length === 0) {
+      state.keyrings.splice(info.keyringsIdx, 1);
+    }
+  }
+
+  // If active account was removed, switch to first remaining account.
+  if (state.activeAccount === address) {
+    const remaining = getAllAccounts();
+    if (remaining.length > 0) {
+      state.activeAccount = remaining[0].address;
+      state.wallet = getActiveWallet();
+    } else {
+      state.activeAccount = null;
+      state.wallet = null;
+    }
+  }
+
+  await saveVault();
+  const { vaultPassword } = await chrome.storage.session.get('vaultPassword');
+  if (vaultPassword) await persistSession(vaultPassword);
+
+  const remaining = getAllAccounts();
+  if (remaining.length === 0) {
+    // No accounts left — go straight to add-account flow.
+    state.flowContext = 'add';
+    showView('account-type');
+  } else {
+    updateWalletUI();
+    renderManageAccountsList();
+    showView('manage-accounts');
+  }
+}
+
+/** Render the manage-accounts list (called each time the view is opened). */
+function renderManageAccountsList() {
+  const accounts = getAllAccounts();
+  const list = $('manage-accounts-list');
+  list.innerHTML = '';
+
+  accounts.forEach(acct => {
+    const info = getRemovalInfo(acct.address);
+    const item = document.createElement('div');
+    item.className = 'manage-acct-item';
+    item.innerHTML = `
+      <div class="manage-acct-info">
+        <div class="manage-acct-label">${esc(acct.label || 'Account')}</div>
+        <div class="manage-acct-addr">${truncAddr(acct.address)}</div>
+      </div>
+      <button class="btn btn-danger btn-sm" data-address="${esc(acct.address)}">Remove</button>
+    `;
+    item.querySelector('button').addEventListener('click', () => {
+      state.pendingRemoveAddress = acct.address;
+
+      // Build the warning shown on the confirm screen.
+      $('remove-acct-name').textContent = acct.label || 'Account';
+      $('remove-acct-addr').textContent = truncAddr(acct.address);
+
+      let warn;
+      if (info.type === 'simple') {
+        warn = 'This will permanently remove the account and its secret seed from this wallet. This cannot be undone.';
+      } else if (info.phraseToo) {
+        warn = 'This is the only account using its recovery phrase. Removing it will also permanently delete the recovery phrase from this wallet. This cannot be undone.';
+      } else {
+        warn = `This will remove the account from this wallet. The recovery phrase and ${info.siblings} other account(s) derived from it will remain.`;
+      }
+      $('remove-acct-warning').textContent = warn;
+
+      showView('remove-account-confirm');
+    });
+    list.appendChild(item);
+  });
 }
 
 /**
@@ -1886,6 +2006,17 @@ $('reset-wallet-btn').addEventListener('click', resetWallet);
 $('lock-btn').addEventListener('click', lockWallet);
 $('settings-btn').addEventListener('click', () => showView('settings'));
 $('back-from-settings-btn').addEventListener('click', () => showView('wallet'));
+$('settings-manage-accounts-btn').addEventListener('click', () => {
+  renderManageAccountsList();
+  showView('manage-accounts');
+});
+$('back-from-manage-accounts-btn').addEventListener('click', () => showView('settings'));
+$('back-from-remove-account-btn').addEventListener('click', () => showView('manage-accounts'));
+$('remove-acct-cancel-btn').addEventListener('click', () => {
+  state.pendingRemoveAddress = null;
+  showView('manage-accounts');
+});
+$('remove-acct-confirm-btn').addEventListener('click', executeRemoveAccount);
 $('settings-change-password-btn').addEventListener('click', () => {
   hideAlert('cp-error');
   hideAlert('cp-success');
