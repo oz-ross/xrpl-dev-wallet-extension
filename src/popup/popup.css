@@ -1069,3 +1069,365 @@ a.vault-balance-item:hover {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* ===== SETUP / UNLOCK — misc ===== */
+.type-hint {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-bottom: 14px;
+}
+
+.label-optional {
+  color: var(--text-3);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+
+.form-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 4px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  margin-top: 12px;
+}
+
+.checkbox-row input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 72px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+input[type="number"] {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  padding: 9px 11px;
+  outline: none;
+  transition: border-color var(--transition);
+  font-family: inherit;
+}
+
+input[type="number"]:focus { border-color: var(--accent); }
+
+/* ===== RESET LINK ===== */
+.reset-link-wrap {
+  text-align: center;
+  margin-top: 16px;
+}
+
+.btn-link-danger {
+  background: none;
+  border: none;
+  color: var(--text-3);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color var(--transition);
+}
+
+.btn-link-danger:hover { color: var(--danger); }
+
+/* ===== ACCOUNT TYPE GRID ===== */
+.account-type-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.account-type-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 10px;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color var(--transition), background var(--transition);
+  font-family: inherit;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.account-type-card:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.type-icon { font-size: 24px; }
+
+.type-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.type-desc {
+  font-size: 10px;
+  color: var(--text-3);
+  line-height: 1.3;
+}
+
+/* ===== SEED DISPLAY BOX ===== */
+.seed-display-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.seed-monospace {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  color: var(--warn);
+  word-break: break-all;
+  line-height: 1.5;
+  flex: 1;
+}
+
+.seed-copy-btn { flex-shrink: 0; }
+
+/* ===== MNEMONIC WORD GRID ===== */
+.mnemonic-length-row {
+  display: flex;
+  gap: 10px;
+}
+
+.mnemonic-len-btn { flex: 1; }
+
+.active-len {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  background: var(--accent-dim) !important;
+}
+
+.mnemonic-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.mnemonic-word {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.word-num {
+  font-size: 10px;
+  color: var(--text-3);
+  min-width: 14px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.word-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+/* ===== ACCOUNT SWITCHER ===== */
+.account-switcher-wrap {
+  position: relative;
+  margin-bottom: 10px;
+}
+
+.account-switcher-pill {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.account-switcher-pill:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.switcher-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.switcher-sep {
+  font-size: 12px;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.switcher-addr {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text-2);
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switcher-chevron {
+  color: var(--text-3);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+/* ===== ACCOUNT DROPDOWN ===== */
+.account-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  z-index: 200;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  overflow: hidden;
+}
+
+.account-list {
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.account-list-item {
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+  border-bottom: 1px solid var(--border);
+  transition: background var(--transition);
+}
+
+.account-list-item:last-child { border-bottom: none; }
+
+.account-list-item:hover { background: var(--surface-2); }
+
+.account-list-item.active-account {
+  background: var(--accent-dim);
+}
+
+.acct-item-left {
+  flex: 1;
+  text-align: left;
+  min-width: 0;
+}
+
+.acct-item-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.acct-item-addr {
+  display: block;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.acct-item-check {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.account-dropdown-footer {
+  border-top: 1px solid var(--border);
+  padding: 4px;
+}
+
+/* ===== SETTINGS ===== */
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.settings-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  transition: background var(--transition);
+}
+
+.settings-item:hover { background: var(--surface-2); }
+
+.settings-item-label { font-weight: 500; }
+
+.settings-item-chevron {
+  color: var(--text-3);
+  font-size: 16px;
+}
+
+/* ===== SUCCESS ALERT ===== */
+.alert-success {
+  background: #064e3b22;
+  border: 1px solid #10b981;
+  color: #10b981;
+}

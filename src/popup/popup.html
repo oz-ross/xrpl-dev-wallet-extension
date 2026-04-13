@@ -7,32 +7,253 @@
 </head>
 <body>
 
-  <!-- ===== IMPORT VIEW ===== -->
-  <div id="view-import" class="view">
+  <!-- ===== SETUP — CREATE PASSWORD ===== -->
+  <div id="view-setup-password" class="view hidden">
     <div class="brand">
       <img src="icons/icon128.png" class="brand-icon-img" alt="XRPL Dev Wallet" />
       <div class="brand-text">
         <h1>XRPL Dev Wallet</h1>
-        <p>Import your wallet to get started</p>
+        <p>Create a password to protect your wallet</p>
       </div>
     </div>
 
     <div class="form-group">
-      <label for="seed-input">Seed Phrase or Family Seed</label>
+      <label for="setup-password">Password</label>
       <div class="input-row">
-        <input type="password" id="seed-input" placeholder="sXXXXXXXXXXXXXXXXXXXX…" autocomplete="off" spellcheck="false" />
-        <button id="toggle-seed-btn" class="btn-icon" title="Show/hide seed">👁</button>
+        <input type="password" id="setup-password" placeholder="At least 8 characters" autocomplete="new-password" />
+        <button id="toggle-setup-password-btn" class="btn-icon" title="Show/hide">👁</button>
       </div>
     </div>
 
     <div class="form-group">
-      <label>Network</label>
-      <div class="network-fixed">XRPL Devnet</div>
+      <label for="setup-password-confirm">Confirm Password</label>
+      <div class="input-row">
+        <input type="password" id="setup-password-confirm" placeholder="Repeat your password" autocomplete="new-password" />
+        <button id="toggle-setup-confirm-btn" class="btn-icon" title="Show/hide">👁</button>
+      </div>
     </div>
 
-    <div id="import-error" class="alert alert-error hidden"></div>
+    <div id="setup-password-error" class="alert alert-error hidden"></div>
 
-    <button id="import-btn" class="btn btn-primary btn-full">Import Wallet</button>
+    <button id="setup-password-btn" class="btn btn-primary btn-full" style="margin-top:6px">Create Password</button>
+
+    <div class="reset-link-wrap" id="setup-reset-wrap" style="display:none">
+      <button id="setup-reset-btn" class="btn-link-danger">Wallet already exists — reset it instead</button>
+    </div>
+  </div>
+
+  <!-- ===== ACCOUNT TYPE SELECTION ===== -->
+  <div id="view-account-type" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-account-type-btn" class="btn-back">‹</button>
+      <h2 id="account-type-title">Add First Account</h2>
+    </div>
+
+    <p class="type-hint">Choose how to create or import your account:</p>
+
+    <div class="account-type-grid">
+      <button class="account-type-card" id="type-gen-seed">
+        <div class="type-icon">🔑</div>
+        <div class="type-label">Generate Seed</div>
+        <div class="type-desc">New XRPL family seed</div>
+      </button>
+      <button class="account-type-card" id="type-import-seed">
+        <div class="type-icon">📥</div>
+        <div class="type-label">Import Seed</div>
+        <div class="type-desc">Enter existing family seed</div>
+      </button>
+      <button class="account-type-card" id="type-gen-mnemonic">
+        <div class="type-icon">📝</div>
+        <div class="type-label">Generate Phrase</div>
+        <div class="type-desc">New 12 or 24-word phrase</div>
+      </button>
+      <button class="account-type-card" id="type-import-mnemonic">
+        <div class="type-icon">🔤</div>
+        <div class="type-label">Import Phrase</div>
+        <div class="type-desc">Enter existing recovery phrase</div>
+      </button>
+    </div>
+
+    <button id="type-hd-account" class="btn btn-outline btn-full hidden" style="margin-top:8px">
+      + Add account from existing recovery phrase
+    </button>
+  </div>
+
+  <!-- ===== GENERATED SEED ===== -->
+  <div id="view-account-gen-seed" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-gen-seed-btn" class="btn-back">‹</button>
+      <h2>New Account Seed</h2>
+    </div>
+
+    <div class="alert alert-warn" style="margin-bottom:14px">
+      ⚠ Write this seed down and store it safely. Never share it with anyone.
+    </div>
+
+    <div class="seed-display-box">
+      <span id="generated-seed-text" class="seed-monospace"></span>
+      <button id="copy-gen-seed-btn" class="btn-icon seed-copy-btn" title="Copy seed">⧉</button>
+    </div>
+
+    <div class="form-group" style="margin-top:16px">
+      <label for="gen-seed-label">Account Label <span class="label-optional">(optional)</span></label>
+      <input type="text" id="gen-seed-label" placeholder="e.g. Dev Account 1" maxlength="40" />
+    </div>
+
+    <label class="checkbox-row">
+      <input type="checkbox" id="gen-seed-backup-confirm" />
+      <span>I have saved this seed phrase</span>
+    </label>
+
+    <div id="gen-seed-error" class="alert alert-error hidden"></div>
+
+    <button id="gen-seed-confirm-btn" class="btn btn-primary btn-full" style="margin-top:12px">Continue</button>
+  </div>
+
+  <!-- ===== IMPORT SEED ===== -->
+  <div id="view-account-import-seed" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-import-seed-btn" class="btn-back">‹</button>
+      <h2>Import Seed</h2>
+    </div>
+
+    <div class="form-group">
+      <label for="import-seed-input">Family Seed</label>
+      <div class="input-row">
+        <input type="password" id="import-seed-input" placeholder="sXXXXXXXXXXXXXXXXXXXX…" autocomplete="off" spellcheck="false" />
+        <button id="toggle-import-seed-btn" class="btn-icon" title="Show/hide">👁</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="import-seed-label">Account Label <span class="label-optional">(optional)</span></label>
+      <input type="text" id="import-seed-label" placeholder="e.g. Imported Account" maxlength="40" />
+    </div>
+
+    <div id="import-seed-error" class="alert alert-error hidden"></div>
+
+    <button id="import-seed-confirm-btn" class="btn btn-primary btn-full" style="margin-top:6px">Import</button>
+  </div>
+
+  <!-- ===== GENERATE MNEMONIC ===== -->
+  <div id="view-account-gen-mnemonic" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-gen-mnemonic-btn" class="btn-back">‹</button>
+      <h2>New Recovery Phrase</h2>
+    </div>
+
+    <!-- Step 1: choose length -->
+    <div id="gen-mnemonic-step-length">
+      <p class="type-hint">Choose recovery phrase length:</p>
+      <div class="mnemonic-length-row">
+        <button id="mnemonic-12-btn" class="btn btn-outline mnemonic-len-btn active-len">12 words</button>
+        <button id="mnemonic-24-btn" class="btn btn-outline mnemonic-len-btn">24 words</button>
+      </div>
+      <button id="gen-mnemonic-generate-btn" class="btn btn-primary btn-full" style="margin-top:14px">Generate</button>
+    </div>
+
+    <!-- Step 2: backup & confirm -->
+    <div id="gen-mnemonic-step-backup" class="hidden">
+      <div class="alert alert-warn" style="margin-bottom:12px">
+        ⚠ Write these words down in order. Never share them with anyone.
+      </div>
+
+      <div id="mnemonic-word-grid" class="mnemonic-grid"></div>
+
+      <button id="copy-mnemonic-btn" class="btn btn-outline btn-full" style="margin-top:10px">Copy Phrase</button>
+
+      <div class="form-group" style="margin-top:14px">
+        <label for="gen-mnemonic-label">Account Label <span class="label-optional">(optional)</span></label>
+        <input type="text" id="gen-mnemonic-label" placeholder="e.g. HD Wallet Account 1" maxlength="40" />
+      </div>
+
+      <label class="checkbox-row">
+        <input type="checkbox" id="mnemonic-backup-confirm" />
+        <span>I have saved my recovery phrase</span>
+      </label>
+
+      <div id="gen-mnemonic-error" class="alert alert-error hidden"></div>
+      <button id="gen-mnemonic-confirm-btn" class="btn btn-primary btn-full" style="margin-top:12px">Continue</button>
+    </div>
+  </div>
+
+  <!-- ===== IMPORT MNEMONIC ===== -->
+  <div id="view-account-import-mnemonic" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-import-mnemonic-btn" class="btn-back">‹</button>
+      <h2>Import Recovery Phrase</h2>
+    </div>
+
+    <div class="form-group">
+      <label for="import-mnemonic-input">Recovery Phrase</label>
+      <textarea id="import-mnemonic-input" rows="4" placeholder="Enter 12 or 24 words separated by spaces…" autocomplete="off" spellcheck="false"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label for="import-mnemonic-label">Account Label <span class="label-optional">(optional)</span></label>
+      <input type="text" id="import-mnemonic-label" placeholder="e.g. My HD Wallet" maxlength="40" />
+    </div>
+
+    <div id="import-mnemonic-error" class="alert alert-error hidden"></div>
+
+    <button id="import-mnemonic-confirm-btn" class="btn btn-primary btn-full" style="margin-top:6px">Import</button>
+  </div>
+
+  <!-- ===== ADD HD ACCOUNT (additional BIP-44 account index) ===== -->
+  <div id="view-account-hd-add" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-hd-add-btn" class="btn-back">‹</button>
+      <h2>Add HD Account</h2>
+    </div>
+
+    <p class="type-hint">Derive an additional account from an existing recovery phrase using a different BIP-44 account index.</p>
+
+    <div class="form-group">
+      <label for="hd-keyring-select">Recovery Phrase Wallet</label>
+      <select id="hd-keyring-select"></select>
+    </div>
+
+    <div class="form-group">
+      <label for="hd-account-index">Account Index</label>
+      <input type="number" id="hd-account-index" min="0" max="2147483647" value="1" />
+      <div class="form-hint">Derivation path: m/44'/144'/<span id="hd-path-preview">1</span>'/0/0</div>
+    </div>
+
+    <div class="form-group">
+      <label for="hd-account-label">Account Label <span class="label-optional">(optional)</span></label>
+      <input type="text" id="hd-account-label" placeholder="e.g. HD Account 2" maxlength="40" />
+    </div>
+
+    <div id="hd-add-error" class="alert alert-error hidden"></div>
+
+    <button id="hd-add-confirm-btn" class="btn btn-primary btn-full" style="margin-top:6px">Add Account</button>
+  </div>
+
+  <!-- ===== UNLOCK ===== -->
+  <div id="view-unlock" class="view hidden">
+    <div class="brand">
+      <img src="icons/icon128.png" class="brand-icon-img" alt="XRPL Dev Wallet" />
+      <div class="brand-text">
+        <h1>XRPL Dev Wallet</h1>
+        <p>Enter your password to unlock</p>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="unlock-password">Password</label>
+      <div class="input-row">
+        <input type="password" id="unlock-password" placeholder="Your password" autocomplete="current-password" />
+        <button id="toggle-unlock-password-btn" class="btn-icon" title="Show/hide">👁</button>
+      </div>
+    </div>
+
+    <div id="unlock-error" class="alert alert-error hidden"></div>
+
+    <button id="unlock-btn" class="btn btn-primary btn-full" style="margin-top:6px">Unlock</button>
+
+    <div class="reset-link-wrap">
+      <button id="reset-wallet-btn" class="btn-link-danger">Forgot password? Reset wallet</button>
+    </div>
   </div>
 
   <!-- ===== WALLET VIEW ===== -->
@@ -44,7 +265,24 @@
       </div>
       <div class="header-actions">
         <button id="refresh-balance-btn" class="btn-icon" title="Refresh balance">↻</button>
-        <button id="logout-btn" class="btn-icon btn-danger-icon" title="Remove wallet from session">✕</button>
+        <button id="settings-btn" class="btn-icon" title="Settings">⚙</button>
+        <button id="lock-btn" class="btn-icon" title="Lock wallet">🔒</button>
+      </div>
+    </div>
+
+    <!-- Account switcher -->
+    <div class="account-switcher-wrap" id="account-switcher-wrap">
+      <button id="account-switcher-btn" class="account-switcher-pill">
+        <span id="switcher-label" class="switcher-label"></span>
+        <span class="switcher-sep">·</span>
+        <span id="switcher-addr" class="switcher-addr"></span>
+        <span class="switcher-chevron">▾</span>
+      </button>
+      <div id="account-dropdown" class="account-dropdown hidden">
+        <div id="account-list" class="account-list"></div>
+        <div class="account-dropdown-footer">
+          <button id="add-account-dropdown-btn" class="btn btn-ghost btn-full">+ Add / Import Account</button>
+        </div>
       </div>
     </div>
 
@@ -194,6 +432,58 @@
     </div>
 
     <button id="tx-done-btn" class="btn btn-primary btn-full hidden">Done</button>
+  </div>
+
+  <!-- ===== SETTINGS ===== -->
+  <div id="view-settings" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-settings-btn" class="btn-back">‹</button>
+      <h2>Settings</h2>
+    </div>
+
+    <div class="settings-list">
+      <button id="settings-change-password-btn" class="settings-item">
+        <span class="settings-item-label">Change Password</span>
+        <span class="settings-item-chevron">›</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ===== CHANGE PASSWORD ===== -->
+  <div id="view-change-password" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-change-password-btn" class="btn-back">‹</button>
+      <h2>Change Password</h2>
+    </div>
+
+    <div class="form-group">
+      <label for="cp-current">Current Password</label>
+      <div class="input-row">
+        <input type="password" id="cp-current" placeholder="Your current password" autocomplete="current-password" />
+        <button id="toggle-cp-current-btn" class="btn-icon" title="Show/hide">👁</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="cp-new">New Password</label>
+      <div class="input-row">
+        <input type="password" id="cp-new" placeholder="At least 8 characters" autocomplete="new-password" />
+        <button id="toggle-cp-new-btn" class="btn-icon" title="Show/hide">👁</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="cp-confirm">Confirm New Password</label>
+      <div class="input-row">
+        <input type="password" id="cp-confirm" placeholder="Repeat new password" autocomplete="new-password" />
+        <button id="toggle-cp-confirm-btn" class="btn-icon" title="Show/hide">👁</button>
+      </div>
+    </div>
+
+    <div id="cp-error" class="alert alert-error hidden"></div>
+    <div id="cp-success" class="alert alert-success hidden"></div>
+
+    <button id="cp-save-btn" class="btn btn-primary btn-full" style="margin-top:6px">Update Password</button>
   </div>
 
   <div class="dev-warning">

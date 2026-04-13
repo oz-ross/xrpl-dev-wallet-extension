@@ -7,6 +7,7 @@
   "host_permissions": [
     "wss://xrplcluster.com/*",
     "wss://s.altnet.rippletest.net/*",
+    "wss://s.devnet.rippletest.net/*",
     "https://*.walletconnect.com/*",
     "wss://*.walletconnect.com/*",
     "https://*.walletconnect.org/*",
