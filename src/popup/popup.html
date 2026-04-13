@@ -450,6 +450,10 @@
         <span class="settings-item-label">Change Password</span>
         <span class="settings-item-chevron">›</span>
       </button>
+      <button id="settings-about-btn" class="settings-item">
+        <span class="settings-item-label">About</span>
+        <span class="settings-item-chevron">›</span>
+      </button>
     </div>
   </div>
 
@@ -517,6 +521,39 @@
     <div id="cp-success" class="alert alert-success hidden"></div>
 
     <button id="cp-save-btn" class="btn btn-primary btn-full" style="margin-top:6px">Update Password</button>
+  </div>
+
+  <!-- ===== ABOUT ===== -->
+  <div id="view-about" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-about-btn" class="btn-back">‹</button>
+      <h2>About</h2>
+    </div>
+
+    <div class="about-logo">
+      <img src="icons/icon128.png" class="brand-icon-img" alt="XRPL Dev Wallet" />
+    </div>
+
+    <div class="about-list">
+      <div class="about-row">
+        <span class="about-label">Application</span>
+        <span class="about-value">XRPL Dev Wallet</span>
+      </div>
+      <div class="about-row">
+        <span class="about-label">Version</span>
+        <span class="about-value" id="about-version">—</span>
+      </div>
+      <div class="about-row">
+        <span class="about-label">Developer</span>
+        <span class="about-value">
+          <a id="about-developer-link" class="about-link" href="https://github.com/oz-ross/xrpl-dev-wallet-extension" target="_blank" rel="noreferrer">oz-ross</a>
+        </span>
+      </div>
+      <div class="about-row">
+        <span class="about-label">xrpl.js</span>
+        <span class="about-value" id="about-xrpl-version">—</span>
+      </div>
+    </div>
   </div>
 
   <div class="dev-warning">

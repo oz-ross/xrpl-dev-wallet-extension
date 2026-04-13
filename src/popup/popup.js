@@ -1,5 +1,6 @@
 import './popup.css';
 import { Client, Wallet, dropsToXrp, encodeAccountID, decodeMPTokenMetadata } from 'xrpl';
+import xrplPkg from 'xrpl/package.json';
 import QRCode from 'qrcode';
 import { getSdkError } from '@walletconnect/utils';
 import { generateMnemonic, validateMnemonic } from 'bip39';
@@ -2006,6 +2007,12 @@ $('reset-wallet-btn').addEventListener('click', resetWallet);
 $('lock-btn').addEventListener('click', lockWallet);
 $('settings-btn').addEventListener('click', () => showView('settings'));
 $('back-from-settings-btn').addEventListener('click', () => showView('wallet'));
+$('settings-about-btn').addEventListener('click', () => {
+  $('about-version').textContent      = chrome.runtime.getManifest().version;
+  $('about-xrpl-version').textContent = xrplPkg.version;
+  showView('about');
+});
+$('back-from-about-btn').addEventListener('click', () => showView('settings'));
 $('settings-manage-accounts-btn').addEventListener('click', () => {
   renderManageAccountsList();
   showView('manage-accounts');

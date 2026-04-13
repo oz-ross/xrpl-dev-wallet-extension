@@ -1488,3 +1488,41 @@ input[type="number"]:focus { border-color: var(--accent); }
   color: var(--text-3);
   margin-top: 3px;
 }
+
+/* ===== ABOUT ===== */
+.about-logo {
+  display: flex;
+  justify-content: center;
+  margin: 12px 0 18px;
+}
+
+.about-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.about-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.about-row + .about-row { border-top: 1px solid var(--border); }
+
+.about-label { color: var(--text-3); }
+
+.about-value { color: var(--text); font-weight: 500; }
+
+.about-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.about-link:hover { text-decoration: underline; }
