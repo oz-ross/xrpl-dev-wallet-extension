@@ -1496,6 +1496,11 @@ input[type="number"]:focus { border-color: var(--accent); }
   margin: 12px 0 18px;
 }
 
+.about-logo .brand-icon-img {
+  width: 96px;
+  height: 96px;
+}
+
 .about-list {
   display: flex;
   flex-direction: column;
