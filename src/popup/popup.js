@@ -1,5 +1,5 @@
 import './popup.css';
-import { Client, Wallet, dropsToXrp, encodeAccountID, decodeMPTokenMetadata } from 'xrpl';
+import { Client, Wallet, dropsToXrp, encodeAccountID, decodeMPTokenMetadata, isValidClassicAddress } from 'xrpl';
 import xrplPkg from 'xrpl/package.json';
 import QRCode from 'qrcode';
 import { getSdkError } from '@walletconnect/utils';
@@ -65,6 +65,9 @@ const state = {
 
   // Address queued for removal, set before navigating to confirm view.
   pendingRemoveAddress: null,
+
+  // Contact being edited in the address book; null when adding a new contact.
+  pendingEditContact: null,
 };
 
 // ─────────────────────────────────────────────
@@ -899,6 +902,119 @@ async function changePassword() {
     btn.disabled = false;
     btn.textContent = 'Update Password';
   }
+}
+
+// ─────────────────────────────────────────────
+// ADDRESS BOOK
+// ─────────────────────────────────────────────
+
+async function loadAddressBook() {
+  const { addressBook } = await chrome.storage.local.get('addressBook');
+  return addressBook ?? [];
+}
+
+async function saveAddressBook(entries) {
+  await chrome.storage.local.set({ addressBook: entries });
+}
+
+async function renderAddressBook() {
+  const contacts = await loadAddressBook();
+  const list = $('address-book-list');
+  list.innerHTML = '';
+
+  if (contacts.length === 0) {
+    list.innerHTML = '<p class="type-hint" style="text-align:center;margin-top:16px">No contacts yet.</p>';
+    return;
+  }
+
+  contacts.forEach(contact => {
+    const item = document.createElement('div');
+    item.className = 'ab-item';
+    item.innerHTML = `
+      <div class="ab-info">
+        <div class="ab-name">${esc(contact.name)}</div>
+        <div class="ab-addr">${truncAddr(contact.address)}</div>
+        ${contact.tag != null ? `<div class="ab-tag">Tag: ${esc(String(contact.tag))}</div>` : ''}
+      </div>
+      <div class="ab-actions">
+        <button class="btn-icon ab-copy-btn" title="Copy address" data-address="${esc(contact.address)}">⧉</button>
+        <button class="btn-icon ab-edit-btn" title="Edit" data-id="${contact.id}">✎</button>
+        <button class="btn-icon ab-delete-btn" title="Delete" data-id="${contact.id}">✕</button>
+      </div>
+    `;
+
+    item.querySelector('.ab-copy-btn').addEventListener('click', async e => {
+      try {
+        await navigator.clipboard.writeText(e.currentTarget.dataset.address);
+        e.currentTarget.textContent = '✓';
+        setTimeout(() => { e.currentTarget.textContent = '⧉'; }, 1500);
+      } catch { /* clipboard permission denied */ }
+    });
+
+    item.querySelector('.ab-edit-btn').addEventListener('click', async () => {
+      const all = await loadAddressBook();
+      state.pendingEditContact = all.find(c => c.id === contact.id) ?? null;
+      openAddressBookEdit();
+    });
+
+    item.querySelector('.ab-delete-btn').addEventListener('click', async () => {
+      if (!confirm(`Remove "${contact.name}" from your address book?`)) return;
+      const all = await loadAddressBook();
+      await saveAddressBook(all.filter(c => c.id !== contact.id));
+      await renderAddressBook();
+    });
+
+    list.appendChild(item);
+  });
+}
+
+function openAddressBookEdit() {
+  const c = state.pendingEditContact;
+  $('address-book-edit-title').textContent = c ? 'Edit Contact' : 'Add Contact';
+  $('contact-name').value    = c?.name    ?? '';
+  $('contact-address').value = c?.address ?? '';
+  $('contact-tag').value     = c?.tag != null ? String(c.tag) : '';
+  hideAlert('contact-error');
+  showView('address-book-edit');
+}
+
+async function saveContact() {
+  hideAlert('contact-error');
+
+  const name    = $('contact-name').value.trim();
+  const address = $('contact-address').value.trim();
+  const rawTag  = $('contact-tag').value.trim();
+
+  if (!name)    { showAlert('contact-error', 'Name is required.'); return; }
+  if (!address) { showAlert('contact-error', 'Address is required.'); return; }
+  if (!isValidClassicAddress(address)) {
+    showAlert('contact-error', 'Invalid XRPL address — must start with r and be 25–34 characters.');
+    return;
+  }
+
+  let tag = null;
+  if (rawTag !== '') {
+    const n = parseInt(rawTag, 10);
+    if (!Number.isInteger(n) || n < 0 || n > 4_294_967_295) {
+      showAlert('contact-error', 'Destination tag must be a whole number between 0 and 4294967295.');
+      return;
+    }
+    tag = n;
+  }
+
+  const all = await loadAddressBook();
+
+  if (state.pendingEditContact) {
+    const idx = all.findIndex(c => c.id === state.pendingEditContact.id);
+    if (idx !== -1) all[idx] = { ...all[idx], name, address, tag };
+  } else {
+    all.push({ id: Date.now(), name, address, tag });
+  }
+
+  await saveAddressBook(all);
+  state.pendingEditContact = null;
+  await renderAddressBook();
+  showView('address-book');
 }
 
 // ─────────────────────────────────────────────
@@ -2017,6 +2133,21 @@ $('settings-manage-accounts-btn').addEventListener('click', () => {
   renderManageAccountsList();
   showView('manage-accounts');
 });
+$('settings-address-book-btn').addEventListener('click', async () => {
+  await renderAddressBook();
+  showView('address-book');
+});
+$('back-from-address-book-btn').addEventListener('click', () => showView('settings'));
+$('add-contact-btn').addEventListener('click', () => {
+  state.pendingEditContact = null;
+  openAddressBookEdit();
+});
+$('back-from-address-book-edit-btn').addEventListener('click', async () => {
+  state.pendingEditContact = null;
+  await renderAddressBook();
+  showView('address-book');
+});
+$('contact-save-btn').addEventListener('click', saveContact);
 $('back-from-manage-accounts-btn').addEventListener('click', () => showView('settings'));
 $('back-from-remove-account-btn').addEventListener('click', () => showView('manage-accounts'));
 $('remove-acct-cancel-btn').addEventListener('click', () => {

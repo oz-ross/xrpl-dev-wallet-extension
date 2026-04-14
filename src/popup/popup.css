@@ -1531,3 +1531,52 @@ input[type="number"]:focus { border-color: var(--accent); }
 }
 
 .about-link:hover { text-decoration: underline; }
+
+/* ===== ADDRESS BOOK ===== */
+.btn-header-action {
+  margin-left: auto;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.ab-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+}
+
+.ab-info { flex: 1; min-width: 0; margin-right: 8px; }
+
+.ab-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ab-addr {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+.ab-tag {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+.ab-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}

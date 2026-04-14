@@ -446,6 +446,10 @@
         <span class="settings-item-label">Manage Accounts</span>
         <span class="settings-item-chevron">›</span>
       </button>
+      <button id="settings-address-book-btn" class="settings-item">
+        <span class="settings-item-label">Address Book</span>
+        <span class="settings-item-chevron">›</span>
+      </button>
       <button id="settings-change-password-btn" class="settings-item">
         <span class="settings-item-label">Change Password</span>
         <span class="settings-item-chevron">›</span>
@@ -455,6 +459,43 @@
         <span class="settings-item-chevron">›</span>
       </button>
     </div>
+  </div>
+
+  <!-- ===== ADDRESS BOOK ===== -->
+  <div id="view-address-book" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-address-book-btn" class="btn-back">‹</button>
+      <h2>Address Book</h2>
+      <button id="add-contact-btn" class="btn-icon btn-header-action" title="Add contact">＋</button>
+    </div>
+    <div id="address-book-list"></div>
+  </div>
+
+  <!-- ===== ADDRESS BOOK — ADD / EDIT CONTACT ===== -->
+  <div id="view-address-book-edit" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-address-book-edit-btn" class="btn-back">‹</button>
+      <h2 id="address-book-edit-title">Add Contact</h2>
+    </div>
+
+    <div class="form-group">
+      <label for="contact-name">Name</label>
+      <input type="text" id="contact-name" placeholder="e.g. Alice" maxlength="50" />
+    </div>
+
+    <div class="form-group">
+      <label for="contact-address">XRPL Address</label>
+      <input type="text" id="contact-address" placeholder="rXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" autocomplete="off" spellcheck="false" />
+    </div>
+
+    <div class="form-group">
+      <label for="contact-tag">Destination Tag <span class="label-optional">(optional)</span></label>
+      <input type="number" id="contact-tag" min="0" max="4294967295" placeholder="e.g. 12345" />
+    </div>
+
+    <div id="contact-error" class="alert alert-error hidden"></div>
+
+    <button id="contact-save-btn" class="btn btn-primary btn-full" style="margin-top:6px">Save Contact</button>
   </div>
 
   <!-- ===== MANAGE ACCOUNTS ===== -->
