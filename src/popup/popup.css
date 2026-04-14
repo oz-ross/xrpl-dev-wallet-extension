@@ -691,6 +691,13 @@ a.btn-icon {
   gap: 10px;
 }
 
+.balance-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .btn-faucet {
   background: rgba(16, 185, 129, 0.12);
   border: 1px solid rgba(16, 185, 129, 0.35);
@@ -711,6 +718,24 @@ a.btn-icon {
 }
 .btn-faucet:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.btn-send-token {
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  color: var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition), border-color var(--transition);
+  font-family: inherit;
+}
+.btn-send-token:hover {
+  background: rgba(99, 102, 241, 0.22);
+  border-color: var(--accent);
+}
+
 .faucet-status {
   font-size: 12px;
   margin-top: 8px;
@@ -720,13 +745,6 @@ a.btn-icon {
 .faucet-status.err { color: var(--danger); }
 
 /* ===== EXPLORER-LINKED ROWS ===== */
-a.iou-balance-item,
-a.mpt-balance-item {
-  text-decoration: none;
-  color: inherit;
-  display: flex;
-}
-
 a.tx-history-item {
   text-decoration: none;
   color: inherit;
@@ -734,14 +752,39 @@ a.tx-history-item {
   flex-direction: column;
 }
 
-a.iou-balance-item:hover,
-a.mpt-balance-item:hover,
 a.tx-history-item:hover {
   background: var(--surface-2);
   border-radius: var(--radius-xs);
   margin: 0 -6px;
   padding-left: 6px;
   padding-right: 6px;
+}
+
+.iou-balance-item,
+.mpt-balance-item {
+  cursor: pointer;
+}
+
+.iou-balance-item:hover,
+.mpt-balance-item:hover {
+  background: var(--surface-2);
+  border-radius: var(--radius-xs);
+  margin: 0 -6px;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.token-explorer-link {
+  color: var(--text-3);
+  text-decoration: none;
+  font-size: 12px;
+  flex-shrink: 0;
+  padding: 2px 4px;
+  border-radius: var(--radius-xs);
+}
+.token-explorer-link:hover {
+  color: var(--text-2);
+  background: var(--surface-2);
 }
 
 /* ===== IOU BALANCES ===== */
@@ -754,12 +797,20 @@ a.tx-history-item:hover {
 }
 
 .iou-balance-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 11px;
   font-weight: 600;
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-bottom: 8px;
+}
+
+.iou-balance-header .btn-header-action {
+  font-size: 16px;
+  margin-left: auto;
 }
 
 .iou-balance-item {
@@ -1580,3 +1631,13 @@ input[type="number"]:focus { border-color: var(--accent); }
   gap: 2px;
   flex-shrink: 0;
 }
+
+/* ===== SEND PAYMENT VIEW ===== */
+.send-balance-card {
+  background: linear-gradient(135deg, #1e293b 0%, #162033 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 16px;
+}
+

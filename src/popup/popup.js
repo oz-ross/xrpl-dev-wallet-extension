@@ -1,5 +1,5 @@
 import './popup.css';
-import { Client, Wallet, dropsToXrp, encodeAccountID, decodeMPTokenMetadata, isValidClassicAddress } from 'xrpl';
+import { Client, Wallet, dropsToXrp, xrpToDrops, encodeAccountID, decodeMPTokenMetadata, isValidClassicAddress } from 'xrpl';
 import xrplPkg from 'xrpl/package.json';
 import QRCode from 'qrcode';
 import { getSdkError } from '@walletconnect/utils';
@@ -68,6 +68,14 @@ const state = {
 
   // Contact being edited in the address book; null when adding a new contact.
   pendingEditContact: null,
+
+  // Asset selected for sending; set before navigating to send-payment view.
+  // { type: 'xrp'|'iou'|'mpt', displayName, balance, currency?, issuer?, mptIssuanceId?, assetScale? }
+  pendingSend: null,
+
+  // Generic tx review; set before navigating to send-review view for non-payment txs.
+  // { txJson, backView, successMsg }
+  pendingTxReview: null,
 };
 
 // ─────────────────────────────────────────────
@@ -1198,26 +1206,28 @@ async function loadIouBalances() {
 }
 
 function renderIouBalances(lines) {
-  const card   = $('iou-balance-card');
   const listEl = $('iou-balance-list');
-  const held   = lines.filter(l => parseFloat(l.balance) > 0);
 
-  if (!held.length) { card.classList.add('hidden'); return; }
-
-  card.classList.remove('hidden');
+  if (!lines.length) { listEl.innerHTML = ''; return; }
   const explorerToken = NETWORKS[state.network].explorerToken;
-  listEl.innerHTML = held.map(line => {
+  listEl.innerHTML = lines.map(line => {
     const code    = formatCurrencyCode(line.currency);
     const balance = parseFloat(line.balance).toLocaleString(undefined, { maximumFractionDigits: 6 });
     const href    = `${explorerToken}${encodeURIComponent(line.currency)}.${line.account}`;
     return `
-      <a class="iou-balance-item" href="${esc(href)}" target="_blank" rel="noreferrer">
+      <div class="iou-balance-item"
+           data-send-type="iou"
+           data-currency="${esc(line.currency)}"
+           data-issuer="${esc(line.account)}"
+           data-balance="${esc(balance)}"
+           data-display="${esc(code)}">
         <div class="iou-token-info">
           <span class="iou-currency">${esc(code)}</span>
           <span class="iou-issuer" title="${esc(line.account)}">${esc(truncAddr(line.account))}</span>
         </div>
         <div class="iou-balance-amount">${esc(balance)}</div>
-      </a>`;
+        <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
+      </div>`;
   }).join('');
 }
 
@@ -1339,10 +1349,10 @@ async function loadMptBalances() {
     const resp = await state.client.request({
       command: 'account_objects',
       account: state.wallet.address,
-      type: 'mptoken',
       ledger_index: 'validated',
     });
-    const objects = resp.result.account_objects ?? [];
+    const objects = (resp.result.account_objects ?? [])
+      .filter(o => o.LedgerEntryType === 'MPToken');
     const infos   = await Promise.all(objects.map(o => fetchMptIssuanceInfo(o.MPTokenIssuanceID)));
     const issuanceMap = new Map(objects.map((o, i) => [o.MPTokenIssuanceID, infos[i]]));
 
@@ -1364,13 +1374,10 @@ async function loadMptBalances() {
 }
 
 function renderMptBalances(objects, issuanceMap = new Map()) {
-  const card   = $('mpt-balance-card');
   const listEl = $('mpt-balance-list');
   const held   = objects.filter(o => o.LedgerEntryType === 'MPToken');
 
-  if (!held.length) { card.classList.add('hidden'); return; }
-
-  card.classList.remove('hidden');
+  if (!held.length) { listEl.innerHTML = ''; return; }
   const explorerMpt = NETWORKS[state.network].explorerMpt;
   listEl.innerHTML = held.map(obj => {
     const issuanceId = obj.MPTokenIssuanceID ?? '';
@@ -1386,13 +1393,19 @@ function renderMptBalances(objects, issuanceMap = new Map()) {
     const issuerDisplay = issuer ? truncAddr(issuer) : (issuanceId.slice(8, 16) + '…');
     const href         = `${explorerMpt}${issuanceId}`;
     return `
-      <a class="mpt-balance-item" href="${esc(href)}" target="_blank" rel="noreferrer">
+      <div class="mpt-balance-item"
+           data-send-type="mpt"
+           data-mpt-id="${esc(issuanceId)}"
+           data-asset-scale="${assetScale}"
+           data-balance="${esc(amount)}"
+           data-display="${esc(displayName)}">
         <div class="mpt-token-info">
           <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
           <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
         </div>
         <div class="mpt-balance-amount">${esc(amount)}</div>
-      </a>`;
+        <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
+      </div>`;
   }).join('');
 }
 
@@ -1466,6 +1479,415 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
         </div>
       </a>`;
   }).join('');
+}
+
+// ─────────────────────────────────────────────
+// SHARED ADDRESS PICKER HELPERS
+// ─────────────────────────────────────────────
+
+/** Populate a <select> with My Accounts (excl. active), Address Book, and a manual entry option. */
+async function populateAddressPicker(selectEl) {
+  selectEl.innerHTML = '';
+
+  const myAccounts = getAllAccounts().filter(a => a.address !== state.activeAccount);
+  if (myAccounts.length > 0) {
+    const grp = document.createElement('optgroup');
+    grp.label = 'My Accounts';
+    for (const acct of myAccounts) {
+      const opt = document.createElement('option');
+      opt.value = `acct:${acct.address}`;
+      opt.textContent = `${acct.label || 'Account'} — ${truncAddr(acct.address)}`;
+      grp.appendChild(opt);
+    }
+    selectEl.appendChild(grp);
+  }
+
+  const contacts = await loadAddressBook();
+  if (contacts.length > 0) {
+    const grp = document.createElement('optgroup');
+    grp.label = 'Address Book';
+    for (const contact of contacts) {
+      const opt = document.createElement('option');
+      opt.value = `book:${contact.address}:${contact.tag ?? ''}`;
+      opt.textContent = `${contact.name} — ${truncAddr(contact.address)}`;
+      grp.appendChild(opt);
+    }
+    selectEl.appendChild(grp);
+  }
+
+  const manualOpt = document.createElement('option');
+  manualOpt.value = '__manual__';
+  manualOpt.textContent = 'Enter address manually…';
+  selectEl.appendChild(manualOpt);
+
+  if (myAccounts.length === 0 && contacts.length === 0) selectEl.value = '__manual__';
+}
+
+/** Show/hide the manual address input based on select value. Returns tag value if address-book entry. */
+function handlePickerChange(selectEl, manualGroupEl, tagInputEl) {
+  const val = selectEl.value;
+  if (val === '__manual__') {
+    manualGroupEl.classList.remove('hidden');
+  } else {
+    manualGroupEl.classList.add('hidden');
+    if (tagInputEl) tagInputEl.value = val.startsWith('book:') ? (val.split(':')[2] || '') : '';
+  }
+}
+
+/** Resolve the address from a picker select + manual input pair. */
+function getPickerAddress(selectEl, manualInputEl) {
+  const val = selectEl.value;
+  if (val === '__manual__') return manualInputEl?.value.trim() ?? '';
+  if (val.startsWith('acct:')) return val.slice(5);
+  if (val.startsWith('book:')) return val.split(':')[1];
+  return '';
+}
+
+// ─────────────────────────────────────────────
+// SEND PAYMENT
+// ─────────────────────────────────────────────
+
+async function openSendPayment(type, data) {
+  state.pendingSend = { type, ...data };
+
+  $('send-title').textContent = `Send ${data.displayName}`;
+  $('send-available-balance').textContent = `${data.balance} ${data.displayName}`;
+  $('send-amount-label').textContent = `Amount (${data.displayName})`;
+  $('send-amount').value   = '';
+  $('send-dest-tag').value = '';
+  $('send-error').classList.add('hidden');
+
+  await populateSendDestination();
+  showView('send-payment');
+}
+
+async function populateSendDestination() {
+  await populateAddressPicker($('send-destination-select'));
+  handleSendDestChange();
+}
+
+function handleSendDestChange() {
+  handlePickerChange(
+    $('send-destination-select'),
+    $('send-manual-group'),
+    $('send-dest-tag'),
+  );
+  // Don't wipe a tag the user already typed
+}
+
+function resolveSendDestination() {
+  return getPickerAddress($('send-destination-select'), $('send-manual-address'));
+}
+
+function reviewSendPayment() {
+  const { pendingSend } = state;
+  if (!pendingSend) return;
+
+  $('send-error').classList.add('hidden');
+
+  const destAddress = resolveSendDestination();
+  if (!destAddress || !isValidClassicAddress(destAddress)) {
+    showAlert('send-error', 'Invalid destination address.');
+    return;
+  }
+
+  const amountStr = $('send-amount').value.trim();
+  const amountNum = parseFloat(amountStr);
+  if (!amountStr || isNaN(amountNum) || amountNum <= 0) {
+    showAlert('send-error', 'Enter a valid amount greater than zero.');
+    return;
+  }
+
+  const destTagStr = $('send-dest-tag').value.trim();
+
+  const row = (label, value, cls = '') =>
+    `<div class="tx-row">
+       <span class="tx-label">${label}</span>
+       <span class="tx-value ${cls}">${value}</span>
+     </div>`;
+
+  const rows = [];
+  rows.push(row('Type', 'Payment', 'tx-type'));
+  rows.push(row('From', `<span title="${esc(state.activeAccount)}">${esc(truncAddr(state.activeAccount))}</span>`, 'tx-address'));
+  rows.push(row('To', `<span title="${esc(destAddress)}">${esc(truncAddr(destAddress))}</span>`, 'tx-address'));
+  if (destTagStr) rows.push(row('Dest. Tag', esc(destTagStr)));
+  rows.push(row('Amount', esc(`${amountStr} ${pendingSend.displayName}`), 'tx-amount'));
+
+  $('send-review-details').innerHTML = rows.join('');
+  $('review-title').textContent = 'Review Payment';
+  showView('send-review');
+}
+
+async function executeSendPayment() {
+  const { pendingSend } = state;
+  if (!pendingSend) return;
+
+  const destAddress = resolveSendDestination();
+  const amountStr   = $('send-amount').value.trim();
+  const amountNum   = parseFloat(amountStr);
+  const destTagStr  = $('send-dest-tag').value.trim();
+
+  // Build Amount field
+  let txAmount;
+  if (pendingSend.type === 'xrp') {
+    txAmount = xrpToDrops(amountStr);
+  } else if (pendingSend.type === 'iou') {
+    txAmount = { currency: pendingSend.currency, issuer: pendingSend.issuer, value: amountStr };
+  } else if (pendingSend.type === 'mpt') {
+    const scale = pendingSend.assetScale ?? 0;
+    const raw = scale > 0 ? Math.round(amountNum * Math.pow(10, scale)) : Math.round(amountNum);
+    txAmount = { mpt_issuance_id: pendingSend.mptIssuanceId, value: String(raw) };
+  }
+
+  const txJson = {
+    TransactionType: 'Payment',
+    Account: state.wallet.address,
+    Destination: destAddress,
+    Amount: txAmount,
+  };
+  if (destTagStr) txJson.DestinationTag = parseInt(destTagStr, 10);
+
+  showView('tx-status');
+  setTxStatus('pending', 'Preparing…');
+
+  try {
+    await ensureConnected();
+    setTxStatus('pending', 'Autofilling network fields…');
+    const prepared = await state.client.autofill(txJson);
+    setTxStatus('pending', 'Signing…');
+    const { tx_blob, hash } = state.wallet.sign(prepared);
+    setTxStatus('pending', 'Submitting to XRPL…');
+    const response = await state.client.submitAndWait(tx_blob);
+    const txResult = response.result?.meta?.TransactionResult;
+    if (txResult !== 'tesSUCCESS') throw new Error(`Transaction failed: ${txResult}`);
+    setTxStatus('success', 'Payment sent!', hash);
+    state.pendingSend = null;
+    refreshBalance();
+    loadIouBalances();
+    loadMptBalances();
+    loadTxHistory();
+  } catch (err) {
+    console.error('[sendPayment]', err);
+    setTxStatus('error', err.message || 'Payment failed.');
+  }
+}
+
+// ─────────────────────────────────────────────
+// ADD TRUST LINE (IOU)
+// ─────────────────────────────────────────────
+
+async function openTrustIou() {
+  $('trust-currency').value = '';
+  $('trust-limit').value    = '';
+  $('trust-error').classList.add('hidden');
+  await populateAddressPicker($('trust-issuer-select'));
+  handlePickerChange($('trust-issuer-select'), $('trust-manual-group'));
+  showView('trust-iou');
+}
+
+function reviewTrustSet() {
+  $('trust-error').classList.add('hidden');
+
+  const issuer = getPickerAddress($('trust-issuer-select'), $('trust-manual-address'));
+  if (!issuer || !isValidClassicAddress(issuer)) {
+    showAlert('trust-error', 'Invalid issuer address.');
+    return;
+  }
+
+  const currency = $('trust-currency').value.trim().toUpperCase();
+  if (!currency) { showAlert('trust-error', 'Enter a currency code.'); return; }
+  const is3Char = /^[A-Z0-9]{3}$/.test(currency) && currency !== 'XRP';
+  const isHex   = /^[0-9A-F]{40}$/.test(currency);
+  if (!is3Char && !isHex) {
+    showAlert('trust-error', 'Currency must be 3 alphanumeric chars (e.g. USD) or 40 hex chars.');
+    return;
+  }
+
+  const limitStr = $('trust-limit').value.trim() || '1000000000000';
+
+  const txJson = {
+    TransactionType: 'TrustSet',
+    Account: state.wallet.address,
+    LimitAmount: { currency, issuer, value: limitStr },
+  };
+
+  const row = (label, value, cls = '') =>
+    `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+  $('send-review-details').innerHTML = [
+    row('Type', 'TrustSet', 'tx-type'),
+    row('Currency', esc(currency)),
+    row('Issuer', `<span title="${esc(issuer)}">${esc(truncAddr(issuer))}</span>`, 'tx-address'),
+    row('Limit', esc(parseFloat(limitStr).toLocaleString())),
+  ].join('');
+
+  $('review-title').textContent = 'Review Trust Line';
+  state.pendingTxReview = { txJson, backView: 'trust-iou', successMsg: 'Trust line established!' };
+  showView('send-review');
+}
+
+// ─────────────────────────────────────────────
+// ADD MPT (MPTokenAuthorize)
+// ─────────────────────────────────────────────
+
+async function openAuthMpt() {
+  $('mpt-error').classList.add('hidden');
+  $('mpt-issuance-group').classList.add('hidden');
+  $('mpt-manual-id-group').classList.add('hidden');
+  await populateAddressPicker($('mpt-issuer-select'));
+  handlePickerChange($('mpt-issuer-select'), $('mpt-manual-group'));
+  showView('auth-mpt');
+}
+
+async function fetchAndPopulateMpts() {
+  $('mpt-error').classList.add('hidden');
+
+  const issuer = getPickerAddress($('mpt-issuer-select'), $('mpt-manual-address'));
+  if (!issuer || !isValidClassicAddress(issuer)) {
+    showAlert('mpt-error', 'Invalid issuer address.');
+    return;
+  }
+
+  const btn = $('mpt-fetch-btn');
+  btn.disabled    = true;
+  btn.textContent = 'Fetching…';
+
+  try {
+    await ensureConnected();
+    const resp = await state.client.request({
+      command: 'account_objects',
+      account: issuer,
+      ledger_index: 'validated',
+    });
+    const issuances = (resp.result.account_objects ?? [])
+      .filter(o => o.LedgerEntryType === 'MPTokenIssuance');
+
+    const sel = $('mpt-issuance-select');
+    sel.innerHTML = '';
+
+    for (const obj of issuances) {
+      const id = obj.MPTokenIssuanceID ?? obj.mpt_issuance_id ?? obj.index ?? '';
+      let label = id.length >= 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+      if (obj.MPTokenMetadata) {
+        try {
+          const decoded = decodeMPTokenMetadata(obj.MPTokenMetadata);
+          const ticker = (typeof decoded?.ticker === 'string' && decoded.ticker) ? decoded.ticker : null;
+          if (ticker) label = `${ticker} (${label})`;
+        } catch { /* keep short id */ }
+      }
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    }
+
+    const manualOpt = document.createElement('option');
+    manualOpt.value = '__manual__';
+    manualOpt.textContent = 'Enter ID manually…';
+    sel.appendChild(manualOpt);
+
+    $('mpt-issuance-group').classList.remove('hidden');
+    $('mpt-manual-id-group').classList.add('hidden');
+    handleMptIssuanceChange();
+
+    if (issuances.length === 0) {
+      showAlert('mpt-error', 'No MPT issuances found for this issuer.');
+    }
+  } catch (err) {
+    if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
+      showAlert('mpt-error', 'Issuer account not found on the ledger.');
+    } else {
+      showAlert('mpt-error', `Fetch failed: ${err.message}`);
+    }
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = 'Fetch MPTs from Issuer';
+  }
+}
+
+function handleMptIssuanceChange() {
+  const val = $('mpt-issuance-select').value;
+  $('mpt-manual-id-group').classList.toggle('hidden', val !== '__manual__');
+}
+
+function reviewMptAuthorize() {
+  $('mpt-error').classList.add('hidden');
+
+  const issuanceGroup = $('mpt-issuance-group');
+  let issuanceId;
+
+  if (issuanceGroup.classList.contains('hidden')) {
+    // User hasn't fetched yet — require manual ID
+    issuanceId = $('mpt-manual-id').value.trim().toUpperCase();
+    if (!issuanceId) {
+      showAlert('mpt-error', 'Fetch MPTs first or enter an Issuance ID manually.');
+      $('mpt-manual-id-group').classList.remove('hidden');
+      return;
+    }
+  } else {
+    const selVal = $('mpt-issuance-select').value;
+    issuanceId = selVal === '__manual__' ? $('mpt-manual-id').value.trim().toUpperCase() : selVal;
+  }
+
+  if (!/^[0-9A-F]{48}$/i.test(issuanceId)) {
+    showAlert('mpt-error', 'Issuance ID must be a 48-character hex string.');
+    return;
+  }
+
+  const txJson = {
+    TransactionType: 'MPTokenAuthorize',
+    Account: state.wallet.address,
+    MPTokenIssuanceID: issuanceId.toUpperCase(),
+  };
+
+  const shortId = `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`;
+  const issuer  = issuerFromMptIssuanceId(issuanceId) ?? '—';
+
+  const row = (label, value, cls = '') =>
+    `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+  $('send-review-details').innerHTML = [
+    row('Type', 'MPTokenAuthorize', 'tx-type'),
+    row('Issuance ID', `<span title="${esc(issuanceId)}">${esc(shortId)}</span>`, 'tx-address'),
+    row('Issuer', `<span title="${esc(issuer)}">${esc(truncAddr(issuer))}</span>`, 'tx-address'),
+  ].join('');
+
+  $('review-title').textContent = 'Review MPT Authorization';
+  state.pendingTxReview = { txJson, backView: 'auth-mpt', successMsg: 'MPT authorization submitted!' };
+  showView('send-review');
+}
+
+// ─────────────────────────────────────────────
+// GENERIC TX REVIEW EXECUTION
+// ─────────────────────────────────────────────
+
+async function executeReviewedTx() {
+  const review = state.pendingTxReview;
+  if (!review) return;
+  state.pendingTxReview = null;
+
+  showView('tx-status');
+  setTxStatus('pending', 'Preparing…');
+
+  try {
+    await ensureConnected();
+    setTxStatus('pending', 'Autofilling network fields…');
+    const prepared = await state.client.autofill(review.txJson);
+    setTxStatus('pending', 'Signing…');
+    const { tx_blob, hash } = state.wallet.sign(prepared);
+    setTxStatus('pending', 'Submitting to XRPL…');
+    const response = await state.client.submitAndWait(tx_blob);
+    const txResult = response.result?.meta?.TransactionResult;
+    if (txResult !== 'tesSUCCESS') throw new Error(`Transaction failed: ${txResult}`);
+    setTxStatus('success', review.successMsg || 'Transaction confirmed!', hash);
+    refreshBalance();
+    loadIouBalances();
+    loadMptBalances();
+    loadTxHistory();
+  } catch (err) {
+    console.error('[executeReviewedTx]', err);
+    setTxStatus('error', err.message || 'Transaction failed.');
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -2245,6 +2667,87 @@ $('tx-done-btn').addEventListener('click', () => {
   showView('wallet');
   $('approve-tx-btn').disabled = false;
   $('reject-tx-btn').disabled  = false;
+});
+
+// ─────────────────────────────────────────────
+// EVENT LISTENERS — Send payment
+// ─────────────────────────────────────────────
+
+$('send-xrp-btn').addEventListener('click', () => {
+  const balText = $('balance-amount').textContent;
+  const balance = balText.replace(' XRP', '').replace('(unfunded)', '').trim() || '0';
+  openSendPayment('xrp', { displayName: 'XRP', balance });
+});
+
+$('iou-balance-list').addEventListener('click', (e) => {
+  if (e.target.closest('.token-explorer-link')) return;
+  const item = e.target.closest('[data-send-type]');
+  if (!item) return;
+  openSendPayment('iou', {
+    displayName: item.dataset.display,
+    balance:     item.dataset.balance,
+    currency:    item.dataset.currency,
+    issuer:      item.dataset.issuer,
+  });
+});
+
+$('mpt-balance-list').addEventListener('click', (e) => {
+  if (e.target.closest('.token-explorer-link')) return;
+  const item = e.target.closest('[data-send-type]');
+  if (!item) return;
+  openSendPayment('mpt', {
+    displayName:    item.dataset.display,
+    balance:        item.dataset.balance,
+    mptIssuanceId:  item.dataset.mptId,
+    assetScale:     parseInt(item.dataset.assetScale, 10) || 0,
+  });
+});
+
+$('send-destination-select').addEventListener('change', handleSendDestChange);
+
+$('back-from-send-btn').addEventListener('click', () => showView('wallet'));
+
+$('send-confirm-btn').addEventListener('click', reviewSendPayment);
+
+// ─────────────────────────────────────────────
+// EVENT LISTENERS — Add trust line (IOU)
+// ─────────────────────────────────────────────
+
+$('add-iou-btn').addEventListener('click', openTrustIou);
+
+$('back-from-trust-iou-btn').addEventListener('click', () => showView('wallet'));
+
+$('trust-issuer-select').addEventListener('change', () =>
+  handlePickerChange($('trust-issuer-select'), $('trust-manual-group')));
+
+$('trust-review-btn').addEventListener('click', reviewTrustSet);
+
+// ─────────────────────────────────────────────
+// EVENT LISTENERS — Add MPT
+// ─────────────────────────────────────────────
+
+$('add-mpt-btn').addEventListener('click', openAuthMpt);
+
+$('back-from-auth-mpt-btn').addEventListener('click', () => showView('wallet'));
+
+$('mpt-issuer-select').addEventListener('change', () =>
+  handlePickerChange($('mpt-issuer-select'), $('mpt-manual-group')));
+
+$('mpt-fetch-btn').addEventListener('click', fetchAndPopulateMpts);
+
+$('mpt-issuance-select').addEventListener('change', handleMptIssuanceChange);
+
+$('mpt-review-btn').addEventListener('click', reviewMptAuthorize);
+
+$('send-review-cancel-btn').addEventListener('click', () => {
+  const back = state.pendingTxReview?.backView ?? 'send-payment';
+  state.pendingTxReview = null;
+  showView(back);
+});
+
+$('send-review-submit-btn').addEventListener('click', () => {
+  if (state.pendingTxReview) executeReviewedTx();
+  else executeSendPayment();
 });
 
 // ─────────────────────────────────────────────
