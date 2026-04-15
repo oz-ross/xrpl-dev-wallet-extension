@@ -504,6 +504,7 @@ async function activateAccount(address) {
   refreshBalance();
   loadIouBalances();
   loadMptBalances();
+  loadCredentials();
   loadTxHistory();
 }
 
@@ -811,6 +812,7 @@ async function finalizeAccountCreation() {
     refreshBalance();
     loadIouBalances();
     loadMptBalances();
+    loadCredentials();
     loadTxHistory();
     await initWalletConnect();
     await checkPendingWcEvent();
@@ -849,6 +851,7 @@ async function unlock() {
     refreshBalance();
     loadIouBalances();
     loadMptBalances();
+    loadCredentials();
     loadTxHistory();
     await initWalletConnect();
     await checkPendingWcEvent();
@@ -1385,6 +1388,148 @@ async function loadMptBalances() {
   }
 }
 
+// ─── Credentials ────────────────────────────────────────────────────────────
+
+const LSF_ACCEPTED = 0x00010000;
+
+function hexToUtf8(hex) {
+  try {
+    return Buffer.from(hex, 'hex').toString('utf8');
+  } catch { return hex; }
+}
+
+async function loadCredentials() {
+  if (!state.wallet || !state.client) return;
+  try {
+    await ensureConnected();
+    const resp = await state.client.request({
+      command: 'account_objects',
+      account: state.wallet.address,
+      ledger_index: 'validated',
+    });
+    const creds = (resp.result.account_objects ?? [])
+      .filter(o => o.LedgerEntryType === 'Credential');
+    renderCredentials(creds);
+  } catch (err) {
+    if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
+      renderCredentials([]);
+    } else {
+      console.error('[credentials]', err);
+    }
+  }
+}
+
+function renderCredentials(creds) {
+  const card   = $('credential-card');
+  const listEl = $('credential-list');
+
+  if (!creds.length) {
+    card.classList.add('hidden');
+    listEl.innerHTML = '';
+    return;
+  }
+
+  card.classList.remove('hidden');
+  listEl.innerHTML = creds.map((c, i) => {
+    const typeHex    = c.CredentialType ?? '';
+    const typeLabel  = hexToUtf8(typeHex) || typeHex.slice(0, 16);
+    const issuer     = c.Issuer ?? '';
+    const accepted   = !!(c.Flags & LSF_ACCEPTED);
+    const statusLabel = accepted ? 'Accepted' : 'Pending';
+    const statusClass = accepted ? 'cred-status-accepted' : 'cred-status-pending';
+    return `
+      <div class="credential-item" data-cred-index="${i}">
+        <div class="cred-info">
+          <span class="cred-type">${esc(typeLabel)}</span>
+          <span class="cred-issuer" title="${esc(issuer)}">${esc(truncAddr(issuer))}</span>
+        </div>
+        <span class="cred-status ${statusClass}">${statusLabel}</span>
+      </div>`;
+  }).join('');
+
+  // Store credentials on the element for click access
+  listEl._credentials = creds;
+}
+
+function openCredentialDetail(cred) {
+  const typeHex   = cred.CredentialType ?? '';
+  const typeLabel = hexToUtf8(typeHex) || typeHex.slice(0, 16);
+  const issuer    = cred.Issuer ?? '';
+  const accepted  = !!(cred.Flags & LSF_ACCEPTED);
+  const uriHex    = cred.URI ?? '';
+  const expiration = cred.Expiration;
+
+  $('cred-detail-type').textContent    = typeLabel;
+  $('cred-detail-issuer').textContent  = issuer;
+  $('cred-detail-issuer').title        = issuer;
+  $('cred-detail-status').textContent  = accepted ? 'Accepted' : 'Pending';
+  $('cred-detail-status').className    = 'detail-value ' + (accepted ? 'cred-status-accepted' : 'cred-status-pending');
+
+  if (uriHex) {
+    const uriDecoded = hexToUtf8(uriHex);
+    $('cred-detail-uri').textContent = uriDecoded;
+    $('cred-detail-uri-row').classList.remove('hidden');
+  } else {
+    $('cred-detail-uri-row').classList.add('hidden');
+  }
+
+  if (expiration != null) {
+    const dt = xrplDateToLocal(expiration);
+    $('cred-detail-expiry').textContent = dt ? dt.toLocaleString() : String(expiration);
+    $('cred-detail-expiry-row').classList.remove('hidden');
+  } else {
+    $('cred-detail-expiry-row').classList.add('hidden');
+  }
+
+  $('cred-detail-error').classList.add('hidden');
+  $('cred-accept-success').classList.add('hidden');
+
+  const acceptBtn = $('cred-accept-btn');
+  if (!accepted) {
+    acceptBtn.classList.remove('hidden');
+    acceptBtn.disabled = false;
+    acceptBtn.onclick = () => acceptCredential(cred);
+  } else {
+    acceptBtn.classList.add('hidden');
+  }
+
+  showView('credential-detail');
+}
+
+async function acceptCredential(cred) {
+  const acceptBtn = $('cred-accept-btn');
+  const errEl     = $('cred-detail-error');
+  errEl.classList.add('hidden');
+  acceptBtn.disabled = true;
+  acceptBtn.textContent = 'Accepting…';
+
+  try {
+    await ensureConnected();
+    const tx = {
+      TransactionType: 'CredentialAccept',
+      Account: state.wallet.address,
+      Issuer: cred.Issuer,
+      CredentialType: cred.CredentialType,
+    };
+    const prepared = await state.client.autofill(tx);
+    if (state.devSettings?.printTxJson) console.log('[tx json]', prepared);
+    const { tx_blob } = state.wallet.sign(prepared);
+    await state.client.submitAndWait(tx_blob);
+
+    $('cred-accept-success').classList.remove('hidden');
+    acceptBtn.classList.add('hidden');
+    $('cred-detail-status').textContent  = 'Accepted';
+    $('cred-detail-status').className    = 'detail-value cred-status-accepted';
+    // Refresh the credential list in the background
+    loadCredentials();
+  } catch (err) {
+    errEl.textContent = err.message ?? String(err);
+    errEl.classList.remove('hidden');
+    acceptBtn.disabled = false;
+    acceptBtn.textContent = 'Accept Credential';
+  }
+}
+
 function renderMptBalances(objects, issuanceMap = new Map()) {
   const listEl = $('mpt-balance-list');
   const held   = objects.filter(o => o.LedgerEntryType === 'MPToken');
@@ -1823,6 +1968,7 @@ async function executeSendPayment() {
     refreshBalance();
     loadIouBalances();
     loadMptBalances();
+    loadCredentials();
     loadTxHistory();
   } catch (err) {
     console.error('[sendPayment]', err);
@@ -2199,6 +2345,7 @@ async function executeReviewedTx() {
     refreshBalance();
     loadIouBalances();
     loadMptBalances();
+    loadCredentials();
     loadTxHistory();
   } catch (err) {
     console.error('[executeReviewedTx]', err);
@@ -2216,6 +2363,7 @@ function startAutoRefresh() {
     refreshBalance();
     loadIouBalances();
     loadMptBalances();
+    loadCredentials();
     loadTxHistory();
   }, AUTO_REFRESH_INTERVAL);
 }
@@ -2602,6 +2750,7 @@ async function approveTransaction() {
     refreshBalance();
     loadIouBalances();
     loadMptBalances();
+    loadCredentials();
     loadTxHistory();
   } catch (err) {
     console.error('[approveTransaction]', err);
@@ -2911,6 +3060,7 @@ $('refresh-balance-btn').addEventListener('click', () => {
   refreshBalance();
   loadIouBalances();
   loadMptBalances();
+  loadCredentials();
 });
 
 $('copy-address-btn').addEventListener('click', async () => {
@@ -3100,6 +3250,16 @@ $('add-vault-btn').addEventListener('click', openVaultDeposit);
 
 $('back-from-vault-deposit-btn').addEventListener('click', () => showView('wallet'));
 
+$('back-from-credential-btn').addEventListener('click', () => showView('wallet'));
+
+$('credential-list').addEventListener('click', e => {
+  const item = e.target.closest('.credential-item');
+  if (!item) return;
+  const idx  = parseInt(item.dataset.credIndex, 10);
+  const cred = $('credential-list')._credentials?.[idx];
+  if (cred) openCredentialDetail(cred);
+});
+
 $('vault-owner-select').addEventListener('change', () =>
   handlePickerChange($('vault-owner-select'), $('vault-owner-manual-group')));
 
@@ -3220,6 +3380,7 @@ $('lock-timeout-secs').addEventListener('change', async (e) => {
       refreshBalance();
       loadIouBalances();
       loadMptBalances();
+    loadCredentials();
       loadTxHistory();
       await initWalletConnect();
       await checkPendingWcEvent();

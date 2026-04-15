@@ -350,6 +350,11 @@
       <div id="vault-balance-list"></div>
     </div>
 
+    <div id="credential-card" class="iou-balance-card hidden">
+      <div class="iou-balance-header">Credentials</div>
+      <div id="credential-list"></div>
+    </div>
+
     <!-- WalletConnect section -->
     <div class="section">
       <div class="section-header">
@@ -816,6 +821,42 @@
     <div id="vault-deposit-error" class="alert alert-error hidden"></div>
 
     <button id="vault-deposit-review-btn" class="btn btn-primary btn-full hidden" style="margin-top:6px">Review Deposit</button>
+  </div>
+
+  <!-- ===== CREDENTIAL DETAIL VIEW ===== -->
+  <div id="view-credential-detail" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-credential-btn" class="btn-back">‹</button>
+      <h2>Credential</h2>
+    </div>
+
+    <div class="detail-card">
+      <div class="detail-row">
+        <span class="detail-label">Type</span>
+        <span id="cred-detail-type" class="detail-value"></span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Issuer</span>
+        <span id="cred-detail-issuer" class="detail-value detail-addr"></span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Status</span>
+        <span id="cred-detail-status" class="detail-value"></span>
+      </div>
+      <div id="cred-detail-uri-row" class="detail-row hidden">
+        <span class="detail-label">URI</span>
+        <span id="cred-detail-uri" class="detail-value detail-break"></span>
+      </div>
+      <div id="cred-detail-expiry-row" class="detail-row hidden">
+        <span class="detail-label">Expiry</span>
+        <span id="cred-detail-expiry" class="detail-value"></span>
+      </div>
+    </div>
+
+    <div id="cred-detail-error" class="alert alert-error hidden" style="margin-top:12px"></div>
+
+    <button id="cred-accept-btn" class="btn btn-primary btn-full hidden" style="margin-top:14px">Accept Credential</button>
+    <div id="cred-accept-success" class="alert alert-success hidden" style="margin-top:12px">Credential accepted.</div>
   </div>
 
   <div class="dev-warning">
