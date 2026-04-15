@@ -1509,7 +1509,6 @@ function openCredentialDetail(cred) {
   }
 
   $('cred-detail-error').classList.add('hidden');
-  $('cred-accept-success').classList.add('hidden');
 
   const acceptBtn = $('cred-accept-btn');
   if (!accepted) {
@@ -1523,38 +1522,29 @@ function openCredentialDetail(cred) {
   showView('credential-detail');
 }
 
-async function acceptCredential(cred) {
-  const acceptBtn = $('cred-accept-btn');
-  const errEl     = $('cred-detail-error');
-  errEl.classList.add('hidden');
-  acceptBtn.disabled = true;
-  acceptBtn.textContent = 'Accepting…';
+function acceptCredential(cred) {
+  const row = (label, value, cls = '') =>
+    `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
 
-  try {
-    await ensureConnected();
-    const tx = {
-      TransactionType: 'CredentialAccept',
-      Account: state.wallet.address,
-      Issuer: cred.Issuer,
-      CredentialType: cred.CredentialType,
-    };
-    const prepared = await state.client.autofill(tx);
-    if (state.devSettings?.printTxJson) console.log('[tx json]', prepared);
-    const { tx_blob } = state.wallet.sign(prepared);
-    await state.client.submitAndWait(tx_blob);
+  const typeLabel = hexToUtf8(cred.CredentialType ?? '') || (cred.CredentialType ?? '').slice(0, 16);
+  const issuer    = cred.Issuer ?? '';
 
-    $('cred-accept-success').classList.remove('hidden');
-    acceptBtn.classList.add('hidden');
-    $('cred-detail-status').textContent  = 'Accepted';
-    $('cred-detail-status').className    = 'detail-value cred-status-accepted';
-    // Refresh the credential list in the background
-    loadCredentials();
-  } catch (err) {
-    errEl.textContent = err.message ?? String(err);
-    errEl.classList.remove('hidden');
-    acceptBtn.disabled = false;
-    acceptBtn.textContent = 'Accept Credential';
-  }
+  const txJson = {
+    TransactionType: 'CredentialAccept',
+    Account: state.wallet.address,
+    Issuer: issuer,
+    CredentialType: cred.CredentialType,
+  };
+
+  $('send-review-details').innerHTML = [
+    row('Type', 'CredentialAccept', 'tx-type'),
+    row('Credential', esc(typeLabel)),
+    row('Issuer', `<span title="${esc(issuer)}">${esc(resolveAddrDisplay(issuer))}</span>`, 'tx-address'),
+  ].join('');
+
+  $('review-title').textContent = 'Accept Credential';
+  state.pendingTxReview = { txJson, backView: 'credential-detail', successMsg: 'Credential accepted!' };
+  showView('send-review');
 }
 
 function renderMptBalances(objects, issuanceMap = new Map()) {
