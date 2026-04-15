@@ -337,13 +337,16 @@
       <div id="mpt-balance-list"></div>
     </div>
 
-    <div id="amm-balance-card" class="iou-balance-card hidden">
+    <div id="amm-balance-card" class="iou-balance-card">
       <div class="iou-balance-header">AMM LP Positions</div>
       <div id="amm-balance-list"></div>
     </div>
 
-    <div id="vault-balance-card" class="iou-balance-card hidden">
-      <div class="iou-balance-header">Vaults</div>
+    <div id="vault-balance-card" class="iou-balance-card">
+      <div class="iou-balance-header">
+        <span>Vaults</span>
+        <button id="add-vault-btn" class="btn-icon btn-header-action" title="Deposit into vault">＋</button>
+      </div>
       <div id="vault-balance-list"></div>
     </div>
 
@@ -672,7 +675,32 @@
     </div>
 
     <div id="send-tab-deposit-panel" class="hidden">
-      <p class="send-placeholder-text">Deposit / Withdraw functionality coming soon.</p>
+      <div class="vault-dw-tabs">
+        <button id="vault-deposit-mode-btn" class="vault-dw-tab vault-dw-tab-active">Deposit</button>
+        <button id="vault-withdraw-mode-btn" class="vault-dw-tab">Withdraw</button>
+      </div>
+
+      <div class="send-balance-card vault-dw-info-card">
+        <div class="balance-label">Shares Held</div>
+        <div id="vault-dw-shares" class="balance-amount">—</div>
+      </div>
+
+      <div id="vault-withdraw-by-group" class="form-group hidden">
+        <label>Specify amount by</label>
+        <div class="vault-dw-tabs">
+          <button id="vault-withdraw-by-asset-btn" class="vault-dw-tab vault-dw-tab-active">Asset amount</button>
+          <button id="vault-withdraw-by-shares-btn" class="vault-dw-tab">Share amount</button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="vault-dw-amount" id="vault-dw-amount-label">Amount</label>
+        <input type="number" id="vault-dw-amount" placeholder="0.00" min="0" step="any" />
+      </div>
+
+      <div id="vault-dw-error" class="alert alert-error hidden"></div>
+
+      <button id="vault-dw-review-btn" class="btn btn-primary btn-full" style="margin-top:6px">Review</button>
     </div>
   </div>
 
@@ -754,6 +782,40 @@
     <div id="mpt-error" class="alert alert-error hidden"></div>
 
     <button id="mpt-review-btn" class="btn btn-primary btn-full" style="margin-top:6px">Review</button>
+  </div>
+
+  <!-- ===== VAULT DEPOSIT ===== -->
+  <div id="view-vault-deposit" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-vault-deposit-btn" class="btn-back">‹</button>
+      <h2>Deposit into Vault</h2>
+    </div>
+
+    <div class="form-group">
+      <label for="vault-owner-select">Vault Owner</label>
+      <select id="vault-owner-select"></select>
+    </div>
+
+    <div id="vault-owner-manual-group" class="form-group hidden">
+      <label for="vault-owner-manual-address">Owner Address</label>
+      <input type="text" id="vault-owner-manual-address" placeholder="rXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" autocomplete="off" spellcheck="false" />
+    </div>
+
+    <button id="vault-fetch-btn" class="btn btn-outline btn-full" style="margin-top:2px">Fetch Vaults</button>
+
+    <div id="vault-select-group" class="form-group hidden" style="margin-top:14px">
+      <label for="vault-select">Vault</label>
+      <select id="vault-select"></select>
+    </div>
+
+    <div id="vault-deposit-amount-group" class="form-group hidden">
+      <label for="vault-deposit-amount" id="vault-deposit-amount-label">Amount to deposit</label>
+      <input type="number" id="vault-deposit-amount" placeholder="0.00" min="0" step="any" />
+    </div>
+
+    <div id="vault-deposit-error" class="alert alert-error hidden"></div>
+
+    <button id="vault-deposit-review-btn" class="btn btn-primary btn-full hidden" style="margin-top:6px">Review Deposit</button>
   </div>
 
   <div class="dev-warning">

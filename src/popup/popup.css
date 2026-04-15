@@ -1747,3 +1747,34 @@ input[type="number"]:focus { border-color: var(--accent); }
   font-size: 13px;
 }
 
+.vault-dw-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.vault-dw-tab {
+  flex: 1;
+  padding: 7px 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.vault-dw-tab-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.vault-dw-info-card {
+  margin-top: 2px;
+  margin-bottom: 12px;
+}
+

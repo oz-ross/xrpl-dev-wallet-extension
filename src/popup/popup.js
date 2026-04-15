@@ -79,6 +79,9 @@ const state = {
 
   // Developer settings persisted to chrome.storage.local
   devSettings: { printTxJson: false, lockTimeoutSecs: 10 },
+
+  // Vaults fetched on the vault-deposit screen, keyed by VaultID
+  fetchedVaults: new Map(),
 };
 
 // ─────────────────────────────────────────────
@@ -1246,9 +1249,9 @@ function renderAmmBalances(lines) {
   const listEl = $('amm-balance-list');
   const held   = lines.filter(l => parseFloat(l.balance) > 0);
 
-  if (!held.length) { card.classList.add('hidden'); return; }
-
   card.classList.remove('hidden');
+  if (!held.length) { listEl.innerHTML = ''; return; }
+
   const explorerAccount = NETWORKS[state.network].explorerAccount;
   listEl.innerHTML = held.map(line => {
     const { ammInfo } = line;
@@ -1337,7 +1340,7 @@ async function fetchMptIssuanceInfo(issuanceId) {
           });
           const vault = vaultResp.result.node;
           if (vault.ShareMPTID === issuanceId) {
-            vaultInfo = vault;
+            vaultInfo = { ...vault, vaultId: lb.VaultID };
             break;
           }
         }
@@ -1423,9 +1426,9 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
   const listEl = $('vault-balance-list');
   const held   = objects.filter(o => o.LedgerEntryType === 'MPToken');
 
-  if (!held.length) { card.classList.add('hidden'); return; }
-
   card.classList.remove('hidden');
+  if (!held.length) { listEl.innerHTML = ''; return; }
+
   const explorerAccount = NETWORKS[state.network].explorerAccount;
   listEl.innerHTML = held.map(obj => {
     const issuanceId = obj.MPTokenIssuanceID ?? '';
@@ -1463,7 +1466,10 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
            data-display="${esc(vaultLabel)}"
            data-balance="${esc(shares)}"
            data-mpt-id="${esc(issuanceId)}"
-           data-asset-scale="${assetScale}">
+           data-asset-scale="${assetScale}"
+           data-vault-id="${esc(vaultInfo?.vaultId ?? '')}"
+           data-vault-asset="${encodeURIComponent(JSON.stringify(vaultInfo?.Asset ?? null))}"
+           data-underlying-label="${esc(underlying)}">
         <div class="amm-summary-row">
           <div class="amm-token-info">
             <span class="vault-name" title="${esc(issuanceId)}">${esc(vaultLabel)}</span>
@@ -1562,6 +1568,125 @@ function getPickerAddress(selectEl, manualInputEl) {
 // SEND PAYMENT
 // ─────────────────────────────────────────────
 
+// ─────────────────────────────────────────────
+// VAULT DEPOSIT / WITHDRAW
+// ─────────────────────────────────────────────
+
+function openVaultDW() {
+  const { pendingSend } = state;
+  if (!pendingSend || pendingSend.type !== 'vault') return;
+  $('vault-dw-shares').textContent = `${pendingSend.balance} shares`;
+  $('vault-dw-amount').value = '';
+  $('vault-dw-error').classList.add('hidden');
+  switchVaultDWMode('deposit');
+}
+
+function switchVaultDWMode(mode) {
+  const isDeposit = mode === 'deposit';
+  if (state.pendingSend) {
+    state.pendingSend.dwMode = mode;
+    if (!isDeposit) state.pendingSend.withdrawBy = 'asset';
+  }
+  $('vault-deposit-mode-btn').classList.toggle('vault-dw-tab-active', isDeposit);
+  $('vault-withdraw-mode-btn').classList.toggle('vault-dw-tab-active', !isDeposit);
+  $('vault-withdraw-by-group').classList.toggle('hidden', isDeposit);
+  $('vault-withdraw-by-asset-btn').classList.add('vault-dw-tab-active');
+  $('vault-withdraw-by-shares-btn').classList.remove('vault-dw-tab-active');
+  const asset = state.pendingSend?.underlyingLabel ?? '';
+  $('vault-dw-amount-label').textContent = isDeposit
+    ? `Amount to deposit (${asset})`
+    : `Amount to withdraw (${asset})`;
+  $('vault-dw-amount').value = '';
+  $('vault-dw-error').classList.add('hidden');
+}
+
+function switchWithdrawBy(by) {
+  const byAsset = by === 'asset';
+  if (state.pendingSend) state.pendingSend.withdrawBy = by;
+  $('vault-withdraw-by-asset-btn').classList.toggle('vault-dw-tab-active', byAsset);
+  $('vault-withdraw-by-shares-btn').classList.toggle('vault-dw-tab-active', !byAsset);
+  const asset = state.pendingSend?.underlyingLabel ?? '';
+  $('vault-dw-amount-label').textContent = byAsset
+    ? `Amount to withdraw (${asset})`
+    : 'Amount to withdraw (shares)';
+  $('vault-dw-amount').value = '';
+  $('vault-dw-error').classList.add('hidden');
+}
+
+function reviewVaultDW() {
+  const { pendingSend } = state;
+  if (!pendingSend) return;
+
+  $('vault-dw-error').classList.add('hidden');
+
+  const amountStr = $('vault-dw-amount').value.trim();
+  const amountNum = parseFloat(amountStr);
+  if (!amountStr || isNaN(amountNum) || amountNum <= 0) {
+    showAlert('vault-dw-error', 'Enter a valid amount greater than zero.');
+    return;
+  }
+
+  const { vaultId, vaultAsset, dwMode, withdrawBy, underlyingLabel, mptIssuanceId, assetScale } = pendingSend;
+  if (!vaultId) {
+    showAlert('vault-dw-error', 'Vault ID not available for this position.');
+    return;
+  }
+
+  // For withdraw-by-shares, Amount is the share MPT token amount
+  let txAmount;
+  let amountDisplayLabel;
+  if (dwMode === 'withdraw' && withdrawBy === 'shares') {
+    const scale = assetScale ?? 0;
+    const raw = scale > 0 ? Math.round(amountNum * Math.pow(10, scale)) : Math.round(amountNum);
+    txAmount = { mpt_issuance_id: mptIssuanceId, value: String(raw) };
+    amountDisplayLabel = 'shares';
+  } else {
+    // Deposit, or withdraw specifying underlying asset amount
+    if (!vaultAsset || typeof vaultAsset === 'string') {
+      txAmount = xrpToDrops(amountStr);
+    } else if (vaultAsset.currency) {
+      txAmount = { currency: vaultAsset.currency, issuer: vaultAsset.issuer, value: amountStr };
+    } else if (vaultAsset.mpt_issuance_id) {
+      const scale = assetScale ?? 0;
+      const raw = scale > 0 ? Math.round(amountNum * Math.pow(10, scale)) : Math.round(amountNum);
+      txAmount = { mpt_issuance_id: vaultAsset.mpt_issuance_id, value: String(raw) };
+    } else {
+      txAmount = xrpToDrops(amountStr);
+    }
+    amountDisplayLabel = underlyingLabel;
+  }
+
+  const txType = dwMode === 'deposit' ? 'VaultDeposit' : 'VaultWithdraw';
+  const txJson = {
+    TransactionType: txType,
+    Account: state.wallet.address,
+    VaultID: vaultId,
+    Amount: txAmount,
+  };
+
+  const row = (label, value, cls = '') =>
+    `<div class="tx-row">
+       <span class="tx-label">${label}</span>
+       <span class="tx-value ${cls}">${value}</span>
+     </div>`;
+
+  const rows = [];
+  rows.push(row('Type', dwMode === 'deposit' ? 'Vault Deposit' : 'Vault Withdraw', 'tx-type'));
+  rows.push(row('Vault', esc(pendingSend.displayName)));
+  rows.push(row('Amount', esc(`${amountStr} ${amountDisplayLabel}`), 'tx-amount'));
+
+  $('send-review-details').innerHTML = rows.join('');
+  $('review-title').textContent = dwMode === 'deposit' ? 'Review Deposit' : 'Review Withdraw';
+
+  state.pendingTxReview = {
+    txJson,
+    backView: 'send-payment',
+    successMsg: dwMode === 'deposit' ? 'Deposit confirmed!' : 'Withdrawal confirmed!',
+  };
+
+  showView('send-review');
+}
+
 function switchSendTab(tab) {
   const isTransfer = tab === 'transfer';
   $('send-tab-transfer-panel').classList.toggle('hidden', !isTransfer);
@@ -1573,7 +1698,7 @@ function switchSendTab(tab) {
 async function openSendPayment(type, data) {
   state.pendingSend = { type, ...data };
 
-  $('send-title').textContent = `Send ${data.displayName}`;
+  $('send-title').textContent = type === 'vault' ? data.displayName : `Send ${data.displayName}`;
   $('send-available-balance').textContent = `${data.balance} ${data.displayName}`;
   $('send-amount-label').textContent = `Amount (${data.displayName})`;
   $('send-amount').value   = '';
@@ -1581,6 +1706,7 @@ async function openSendPayment(type, data) {
   $('send-error').classList.add('hidden');
 
   switchSendTab(type === 'amm' || type === 'vault' ? 'deposit' : 'transfer');
+  if (type === 'vault') openVaultDW();
 
   await populateSendDestination();
   showView('send-payment');
@@ -1886,6 +2012,163 @@ function reviewMptAuthorize() {
 
   $('review-title').textContent = 'Review MPT Authorization';
   state.pendingTxReview = { txJson, backView: 'auth-mpt', successMsg: 'MPT authorization submitted!' };
+  showView('send-review');
+}
+
+// ─────────────────────────────────────────────
+// VAULT DEPOSIT (onboarding — new vault position)
+// ─────────────────────────────────────────────
+
+async function openVaultDeposit() {
+  $('vault-deposit-error').classList.add('hidden');
+  $('vault-select-group').classList.add('hidden');
+  $('vault-deposit-amount-group').classList.add('hidden');
+  $('vault-deposit-review-btn').classList.add('hidden');
+  $('vault-deposit-amount').value = '';
+  state.fetchedVaults = new Map();
+  await populateAddressPicker($('vault-owner-select'));
+  handlePickerChange($('vault-owner-select'), $('vault-owner-manual-group'));
+  showView('vault-deposit');
+}
+
+async function fetchAndPopulateVaults() {
+  $('vault-deposit-error').classList.add('hidden');
+
+  const owner = getPickerAddress($('vault-owner-select'), $('vault-owner-manual-address'));
+  if (!owner || !isValidClassicAddress(owner)) {
+    showAlert('vault-deposit-error', 'Invalid vault owner address.');
+    return;
+  }
+
+  const btn = $('vault-fetch-btn');
+  btn.disabled    = true;
+  btn.textContent = 'Fetching…';
+
+  try {
+    await ensureConnected();
+    const resp = await state.client.request({
+      command: 'account_objects',
+      account: owner,
+      ledger_index: 'validated',
+    });
+    const loanBrokers = (resp.result.account_objects ?? [])
+      .filter(o => o.LedgerEntryType === 'LoanBroker' && o.VaultID);
+
+    const vaults = [];
+    for (const lb of loanBrokers) {
+      try {
+        const vaultResp = await state.client.request({
+          command: 'ledger_entry',
+          index: lb.VaultID,
+          ledger_index: 'validated',
+        });
+        vaults.push({ vaultId: lb.VaultID, vault: vaultResp.result.node });
+      } catch { /* skip unavailable vaults */ }
+    }
+
+    const sel = $('vault-select');
+    sel.innerHTML = '';
+    state.fetchedVaults = new Map();
+
+    for (const { vaultId, vault } of vaults) {
+      let name = vaultId.length >= 12 ? `${vaultId.slice(0, 8)}…${vaultId.slice(-4)}` : vaultId;
+      if (vault.Data) {
+        try {
+          const decoded = Buffer.from(vault.Data, 'hex').toString('utf8').trim();
+          if (decoded && /^[\x20-\x7E]+$/.test(decoded)) name = decoded;
+        } catch { /* keep id */ }
+      }
+      const assetLabel = vault.Asset ? formatPoolAsset(vault.Asset) : '?';
+      const opt = document.createElement('option');
+      opt.value = vaultId;
+      opt.textContent = `${name} (${assetLabel})`;
+      sel.appendChild(opt);
+      state.fetchedVaults.set(vaultId, { name, asset: vault.Asset, assetLabel });
+    }
+
+    if (vaults.length === 0) {
+      showAlert('vault-deposit-error', 'No vaults found for this owner.');
+    } else {
+      $('vault-select-group').classList.remove('hidden');
+      $('vault-deposit-amount-group').classList.remove('hidden');
+      $('vault-deposit-review-btn').classList.remove('hidden');
+      updateVaultDepositAmountLabel();
+    }
+  } catch (err) {
+    if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
+      showAlert('vault-deposit-error', 'Owner account not found on the ledger.');
+    } else {
+      showAlert('vault-deposit-error', `Fetch failed: ${err.message}`);
+    }
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = 'Fetch Vaults';
+  }
+}
+
+function updateVaultDepositAmountLabel() {
+  const vaultId = $('vault-select').value;
+  const info = state.fetchedVaults.get(vaultId);
+  $('vault-deposit-amount-label').textContent = info?.assetLabel
+    ? `Amount to deposit (${info.assetLabel})`
+    : 'Amount to deposit';
+}
+
+function reviewNewVaultDeposit() {
+  $('vault-deposit-error').classList.add('hidden');
+
+  const vaultId = $('vault-select').value;
+  if (!vaultId) {
+    showAlert('vault-deposit-error', 'Select a vault.');
+    return;
+  }
+
+  const amountStr = $('vault-deposit-amount').value.trim();
+  const amountNum = parseFloat(amountStr);
+  if (!amountStr || isNaN(amountNum) || amountNum <= 0) {
+    showAlert('vault-deposit-error', 'Enter a valid amount greater than zero.');
+    return;
+  }
+
+  const info = state.fetchedVaults.get(vaultId);
+  const asset = info?.asset ?? null;
+
+  let txAmount;
+  if (!asset || typeof asset === 'string') {
+    txAmount = xrpToDrops(amountStr);
+  } else if (asset.currency) {
+    txAmount = { currency: asset.currency, issuer: asset.issuer, value: amountStr };
+  } else if (asset.mpt_issuance_id) {
+    txAmount = { mpt_issuance_id: asset.mpt_issuance_id, value: amountStr };
+  } else {
+    txAmount = xrpToDrops(amountStr);
+  }
+
+  const txJson = {
+    TransactionType: 'VaultDeposit',
+    Account: state.wallet.address,
+    VaultID: vaultId,
+    Amount: txAmount,
+  };
+
+  const row = (label, value, cls = '') =>
+    `<div class="tx-row">
+       <span class="tx-label">${label}</span>
+       <span class="tx-value ${cls}">${value}</span>
+     </div>`;
+
+  const rows = [];
+  rows.push(row('Type', 'Vault Deposit', 'tx-type'));
+  rows.push(row('Vault', esc(info?.name ?? vaultId)));
+  rows.push(row('Amount', esc(`${amountStr} ${info?.assetLabel ?? ''}`), 'tx-amount'));
+
+  $('send-review-details').innerHTML = rows.join('');
+  $('review-title').textContent = 'Review Deposit';
+  state.pendingTxReview = {
+    txJson,
+    backView: 'vault-deposit',
+    successMsg: 'Vault deposit confirmed!',
+  };
   showView('send-review');
 }
 
@@ -2754,15 +3037,24 @@ $('vault-balance-list').addEventListener('click', (e) => {
   const item = e.target.closest('[data-send-type]');
   if (!item) return;
   openSendPayment('vault', {
-    displayName:   item.dataset.display,
-    balance:       item.dataset.balance,
-    mptIssuanceId: item.dataset.mptId,
-    assetScale:    parseInt(item.dataset.assetScale, 10) || 0,
+    displayName:     item.dataset.display,
+    balance:         item.dataset.balance,
+    mptIssuanceId:   item.dataset.mptId,
+    assetScale:      parseInt(item.dataset.assetScale, 10) || 0,
+    vaultId:         item.dataset.vaultId,
+    vaultAsset:      JSON.parse(decodeURIComponent(item.dataset.vaultAsset || 'null')),
+    underlyingLabel: item.dataset.underlyingLabel,
   });
 });
 
 $('send-tab-transfer-btn').addEventListener('click', () => switchSendTab('transfer'));
 $('send-tab-deposit-btn').addEventListener('click', () => switchSendTab('deposit'));
+
+$('vault-deposit-mode-btn').addEventListener('click', () => switchVaultDWMode('deposit'));
+$('vault-withdraw-mode-btn').addEventListener('click', () => switchVaultDWMode('withdraw'));
+$('vault-withdraw-by-asset-btn').addEventListener('click', () => switchWithdrawBy('asset'));
+$('vault-withdraw-by-shares-btn').addEventListener('click', () => switchWithdrawBy('shares'));
+$('vault-dw-review-btn').addEventListener('click', reviewVaultDW);
 
 $('send-destination-select').addEventListener('change', handleSendDestChange);
 
@@ -2800,10 +3092,30 @@ $('mpt-issuance-select').addEventListener('change', handleMptIssuanceChange);
 
 $('mpt-review-btn').addEventListener('click', reviewMptAuthorize);
 
+// ─────────────────────────────────────────────
+// EVENT LISTENERS — Vault deposit (onboarding)
+// ─────────────────────────────────────────────
+
+$('add-vault-btn').addEventListener('click', openVaultDeposit);
+
+$('back-from-vault-deposit-btn').addEventListener('click', () => showView('wallet'));
+
+$('vault-owner-select').addEventListener('change', () =>
+  handlePickerChange($('vault-owner-select'), $('vault-owner-manual-group')));
+
+$('vault-fetch-btn').addEventListener('click', fetchAndPopulateVaults);
+
+$('vault-select').addEventListener('change', updateVaultDepositAmountLabel);
+
+$('vault-deposit-review-btn').addEventListener('click', reviewNewVaultDeposit);
+
 $('send-review-cancel-btn').addEventListener('click', () => {
   const back = state.pendingTxReview?.backView ?? 'send-payment';
   state.pendingTxReview = null;
   showView(back);
+  if (back === 'send-payment' && state.pendingSend?.type === 'vault') {
+    switchSendTab('deposit');
+  }
 });
 
 $('send-review-submit-btn').addEventListener('click', () => {
