@@ -82,6 +82,9 @@ const state = {
 
   // Vaults fetched on the vault-deposit screen, keyed by VaultID
   fetchedVaults: new Map(),
+
+  // Cache of address → display name built from wallet accounts + address book
+  addressNames: new Map(),
 };
 
 // ─────────────────────────────────────────────
@@ -106,6 +109,25 @@ function esc(text) {
 function truncAddr(addr) {
   if (!addr || addr.length < 16) return addr;
   return `${addr.slice(0, 10)}…${addr.slice(-6)}`;
+}
+
+/** Rebuild the address → name lookup from wallet accounts and address book. */
+async function refreshAddressNames() {
+  const map = new Map();
+  for (const acct of getAllAccounts()) {
+    if (acct.label) map.set(acct.address, acct.label);
+  }
+  const contacts = await loadAddressBook();
+  for (const c of contacts) {
+    if (c.name && c.address) map.set(c.address, c.name);
+  }
+  state.addressNames = map;
+}
+
+/** Return a human-readable label for an address, falling back to truncAddr. */
+function resolveAddrDisplay(addr) {
+  if (!addr) return addr;
+  return state.addressNames.get(addr) ?? truncAddr(addr);
 }
 
 function formatAmount(amount) {
@@ -500,6 +522,7 @@ async function activateAccount(address) {
   await updateSessionActiveAccount();
   // Persist the new active account to the vault so it survives a lock/unlock.
   await saveVault().catch(err => console.warn('[activateAccount] saveVault:', err));
+  refreshAddressNames();
   updateWalletUI();
   refreshBalance();
   loadIouBalances();
@@ -809,6 +832,7 @@ async function finalizeAccountCreation() {
     updateWalletUI();
     showView('wallet');
 
+    refreshAddressNames();
     refreshBalance();
     loadIouBalances();
     loadMptBalances();
@@ -848,6 +872,7 @@ async function unlock() {
     updateWalletUI();
     showView('wallet');
 
+    refreshAddressNames();
     refreshBalance();
     loadIouBalances();
     loadMptBalances();
@@ -978,6 +1003,7 @@ async function renderAddressBook() {
       if (!confirm(`Remove "${contact.name}" from your address book?`)) return;
       const all = await loadAddressBook();
       await saveAddressBook(all.filter(c => c.id !== contact.id));
+      refreshAddressNames();
       await renderAddressBook();
     });
 
@@ -1029,6 +1055,7 @@ async function saveContact() {
   }
 
   await saveAddressBook(all);
+  refreshAddressNames();
   state.pendingEditContact = null;
   await renderAddressBook();
   showView('address-book');
@@ -1232,7 +1259,7 @@ function renderIouBalances(lines) {
            data-display="${esc(code)}">
         <div class="iou-token-info">
           <span class="iou-currency">${esc(code)}</span>
-          <span class="iou-issuer" title="${esc(line.account)}">${esc(truncAddr(line.account))}</span>
+          <span class="iou-issuer" title="${esc(line.account)}">${esc(resolveAddrDisplay(line.account))}</span>
         </div>
         <div class="iou-balance-amount">${esc(balance)}</div>
         <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
@@ -1278,7 +1305,7 @@ function renderAmmBalances(lines) {
         <div class="amm-summary-row">
           <div class="amm-token-info">
             <span class="amm-pool">${esc(pool)}</span>
-            <span class="amm-issuer" title="${esc(line.account)}">${esc(truncAddr(line.account))}</span>
+            <span class="amm-issuer" title="${esc(line.account)}">${esc(resolveAddrDisplay(line.account))}</span>
           </div>
           <div class="amm-balance-amount">${esc(lpBal)} LP</div>
           <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
@@ -1441,7 +1468,7 @@ function renderCredentials(creds) {
       <div class="credential-item" data-cred-index="${i}">
         <div class="cred-info">
           <span class="cred-type">${esc(typeLabel)}</span>
-          <span class="cred-issuer" title="${esc(issuer)}">${esc(truncAddr(issuer))}</span>
+          <span class="cred-issuer" title="${esc(issuer)}">${esc(resolveAddrDisplay(issuer))}</span>
         </div>
         <span class="cred-status ${statusClass}">${statusLabel}</span>
       </div>`;
@@ -1460,7 +1487,7 @@ function openCredentialDetail(cred) {
   const expiration = cred.Expiration;
 
   $('cred-detail-type').textContent    = typeLabel;
-  $('cred-detail-issuer').textContent  = issuer;
+  $('cred-detail-issuer').textContent  = resolveAddrDisplay(issuer);
   $('cred-detail-issuer').title        = issuer;
   $('cred-detail-status').textContent  = accepted ? 'Accepted' : 'Pending';
   $('cred-detail-status').className    = 'detail-value ' + (accepted ? 'cred-status-accepted' : 'cred-status-pending');
@@ -1547,7 +1574,7 @@ function renderMptBalances(objects, issuanceMap = new Map()) {
       : issuanceId;
     const displayName  = ticker || shortId;
     const issuer       = issuerFromMptIssuanceId(issuanceId);
-    const issuerDisplay = issuer ? truncAddr(issuer) : (issuanceId.slice(8, 16) + '…');
+    const issuerDisplay = issuer ? resolveAddrDisplay(issuer) : (issuanceId.slice(8, 16) + '…');
     const href         = `${explorerMpt}${issuanceId}`;
     return `
       <div class="mpt-balance-item"
@@ -1598,7 +1625,7 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
     }
 
     const issuer        = issuerFromMptIssuanceId(issuanceId);
-    const issuerDisplay = issuer ? truncAddr(issuer) : (issuanceId.slice(8, 16) + '…');
+    const issuerDisplay = issuer ? resolveAddrDisplay(issuer) : (issuanceId.slice(8, 16) + '…');
     const underlying    = vaultInfo?.Asset ? formatPoolAsset(vaultInfo.Asset) : '—';
     const fmtAmt        = (v) => (parseFloat(v ?? 0) * holderShare).toLocaleString(undefined, { maximumFractionDigits: 6 });
     const available     = vaultInfo?.AssetsAvailable != null ? fmtAmt(vaultInfo.AssetsAvailable) : null;
@@ -2462,7 +2489,7 @@ function renderTxHistory(txs) {
     let detail = '';
     if (type === 'Payment' && txJson.Amount) {
       detail = formatAmount(txJson.Amount);
-      if (txJson.Destination) detail += ` → ${truncAddr(txJson.Destination)}`;
+      if (txJson.Destination) detail += ` → ${resolveAddrDisplay(txJson.Destination)}`;
     } else if (type === 'OfferCreate') {
       if (txJson.TakerGets && txJson.TakerPays) {
         detail = `${formatAmount(txJson.TakerGets)} / ${formatAmount(txJson.TakerPays)}`;
