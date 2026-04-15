@@ -29,7 +29,7 @@ const AUTO_REFRESH_INTERVAL = 30_000;
 
 // PBKDF2 parameters — matching MetaMask's browser-passworder
 const PBKDF2_ITERATIONS = 600_000;
-const LOCK_TIMEOUT_MS   = 10_000; // auto-lock after 10 s with popup closed
+const LOCK_TIMEOUT_MS   = 10_000; // default; overridden by devSettings.lockTimeoutSecs
 const PBKDF2_HASH      = 'SHA-256';
 const KEY_LENGTH_BITS  = 256;
 
@@ -76,6 +76,9 @@ const state = {
   // Generic tx review; set before navigating to send-review view for non-payment txs.
   // { txJson, backView, successMsg }
   pendingTxReview: null,
+
+  // Developer settings persisted to chrome.storage.local
+  devSettings: { printTxJson: false, lockTimeoutSecs: 10 },
 };
 
 // ─────────────────────────────────────────────
@@ -1260,13 +1263,19 @@ function renderAmmBalances(lines) {
     const lpBal   = lpHeld.toLocaleString(undefined, { maximumFractionDigits: 6 });
     const href    = `${explorerAccount}${line.account}`;
     return `
-      <a class="amm-balance-item" href="${esc(href)}" target="_blank" rel="noreferrer">
+      <div class="amm-balance-item"
+           data-send-type="amm"
+           data-display="${esc(pool)}"
+           data-balance="${esc(lpBal)}"
+           data-currency="${esc(line.currency)}"
+           data-issuer="${esc(line.account)}">
         <div class="amm-summary-row">
           <div class="amm-token-info">
             <span class="amm-pool">${esc(pool)}</span>
             <span class="amm-issuer" title="${esc(line.account)}">${esc(truncAddr(line.account))}</span>
           </div>
           <div class="amm-balance-amount">${esc(lpBal)} LP</div>
+          <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
         </div>
         <div class="amm-assets-row">
           <div class="amm-asset-share">
@@ -1278,7 +1287,7 @@ function renderAmmBalances(lines) {
             <span class="amm-asset-value">${esc(fmt(share2))}</span>
           </div>
         </div>
-      </a>`;
+      </div>`;
   }).join('');
 }
 
@@ -1449,13 +1458,19 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
     const href          = `${explorerAccount}${issuer ?? ''}`;
 
     return `
-      <a class="vault-balance-item" href="${esc(href)}" target="_blank" rel="noreferrer">
+      <div class="vault-balance-item"
+           data-send-type="vault"
+           data-display="${esc(vaultLabel)}"
+           data-balance="${esc(shares)}"
+           data-mpt-id="${esc(issuanceId)}"
+           data-asset-scale="${assetScale}">
         <div class="amm-summary-row">
           <div class="amm-token-info">
             <span class="vault-name" title="${esc(issuanceId)}">${esc(vaultLabel)}</span>
             <span class="amm-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
           </div>
           <div class="amm-balance-amount">${esc(shares)} shares</div>
+          <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
         </div>
         <div class="amm-assets-row">
           <div class="amm-asset-share">
@@ -1477,7 +1492,7 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
             <span class="amm-asset-value">${esc(total)}</span>
           </div>` : ''}
         </div>
-      </a>`;
+      </div>`;
   }).join('');
 }
 
@@ -1547,6 +1562,14 @@ function getPickerAddress(selectEl, manualInputEl) {
 // SEND PAYMENT
 // ─────────────────────────────────────────────
 
+function switchSendTab(tab) {
+  const isTransfer = tab === 'transfer';
+  $('send-tab-transfer-panel').classList.toggle('hidden', !isTransfer);
+  $('send-tab-deposit-panel').classList.toggle('hidden', isTransfer);
+  $('send-tab-transfer-btn').classList.toggle('send-tab-active', isTransfer);
+  $('send-tab-deposit-btn').classList.toggle('send-tab-active', !isTransfer);
+}
+
 async function openSendPayment(type, data) {
   state.pendingSend = { type, ...data };
 
@@ -1556,6 +1579,8 @@ async function openSendPayment(type, data) {
   $('send-amount').value   = '';
   $('send-dest-tag').value = '';
   $('send-error').classList.add('hidden');
+
+  switchSendTab(type === 'amm' || type === 'vault' ? 'deposit' : 'transfer');
 
   await populateSendDestination();
   showView('send-payment');
@@ -1637,6 +1662,12 @@ async function executeSendPayment() {
     const scale = pendingSend.assetScale ?? 0;
     const raw = scale > 0 ? Math.round(amountNum * Math.pow(10, scale)) : Math.round(amountNum);
     txAmount = { mpt_issuance_id: pendingSend.mptIssuanceId, value: String(raw) };
+  } else if (pendingSend.type === 'amm') {
+    txAmount = { currency: pendingSend.currency, issuer: pendingSend.issuer, value: amountStr };
+  } else if (pendingSend.type === 'vault') {
+    const scale = pendingSend.assetScale ?? 0;
+    const raw = scale > 0 ? Math.round(amountNum * Math.pow(10, scale)) : Math.round(amountNum);
+    txAmount = { mpt_issuance_id: pendingSend.mptIssuanceId, value: String(raw) };
   }
 
   const txJson = {
@@ -1655,6 +1686,7 @@ async function executeSendPayment() {
     setTxStatus('pending', 'Autofilling network fields…');
     const prepared = await state.client.autofill(txJson);
     setTxStatus('pending', 'Signing…');
+    if (state.devSettings.printTxJson) console.log('[tx json]', prepared);
     const { tx_blob, hash } = state.wallet.sign(prepared);
     setTxStatus('pending', 'Submitting to XRPL…');
     const response = await state.client.submitAndWait(tx_blob);
@@ -1874,6 +1906,7 @@ async function executeReviewedTx() {
     setTxStatus('pending', 'Autofilling network fields…');
     const prepared = await state.client.autofill(review.txJson);
     setTxStatus('pending', 'Signing…');
+    if (state.devSettings.printTxJson) console.log('[tx json]', prepared);
     const { tx_blob, hash } = state.wallet.sign(prepared);
     setTxStatus('pending', 'Submitting to XRPL…');
     const response = await state.client.submitAndWait(tx_blob);
@@ -2269,6 +2302,7 @@ async function approveTransaction() {
     const prepared = await state.client.autofill(txJson);
 
     setTxStatus('pending', 'Signing…');
+    if (state.devSettings.printTxJson) console.log('[tx json]', prepared);
     const { tx_blob, hash } = state.wallet.sign(prepared);
 
     setTxStatus('pending', 'Submitting to XRPL…');
@@ -2703,6 +2737,33 @@ $('mpt-balance-list').addEventListener('click', (e) => {
   });
 });
 
+$('amm-balance-list').addEventListener('click', (e) => {
+  if (e.target.closest('.token-explorer-link')) return;
+  const item = e.target.closest('[data-send-type]');
+  if (!item) return;
+  openSendPayment('amm', {
+    displayName: item.dataset.display,
+    balance:     item.dataset.balance,
+    currency:    item.dataset.currency,
+    issuer:      item.dataset.issuer,
+  });
+});
+
+$('vault-balance-list').addEventListener('click', (e) => {
+  if (e.target.closest('.token-explorer-link')) return;
+  const item = e.target.closest('[data-send-type]');
+  if (!item) return;
+  openSendPayment('vault', {
+    displayName:   item.dataset.display,
+    balance:       item.dataset.balance,
+    mptIssuanceId: item.dataset.mptId,
+    assetScale:    parseInt(item.dataset.assetScale, 10) || 0,
+  });
+});
+
+$('send-tab-transfer-btn').addEventListener('click', () => switchSendTab('transfer'));
+$('send-tab-deposit-btn').addEventListener('click', () => switchSendTab('deposit'));
+
 $('send-destination-select').addEventListener('change', handleSendDestChange);
 
 $('back-from-send-btn').addEventListener('click', () => showView('wallet'));
@@ -2774,11 +2835,39 @@ chrome.runtime.onMessage.addListener((message) => {
 $('setup-reset-btn').addEventListener('click', resetWallet);
 
 // ─────────────────────────────────────────────
+// DEVELOPER SETTINGS
+// ─────────────────────────────────────────────
+
+async function loadDevSettings() {
+  const { devSettings } = await chrome.storage.local.get('devSettings');
+  if (devSettings) state.devSettings = { ...state.devSettings, ...devSettings };
+  $('dev-print-tx-json').checked = state.devSettings.printTxJson;
+  $('lock-timeout-secs').value   = state.devSettings.lockTimeoutSecs;
+}
+
+async function saveDevSettings() {
+  await chrome.storage.local.set({ devSettings: state.devSettings });
+}
+
+$('dev-print-tx-json').addEventListener('change', async (e) => {
+  state.devSettings.printTxJson = e.target.checked;
+  await saveDevSettings();
+});
+
+$('lock-timeout-secs').addEventListener('change', async (e) => {
+  const val = parseInt(e.target.value, 10);
+  state.devSettings.lockTimeoutSecs = isNaN(val) || val < 0 ? 10 : val;
+  e.target.value = state.devSettings.lockTimeoutSecs;
+  await saveDevSettings();
+});
+
+// ─────────────────────────────────────────────
 // BOOT
 // ─────────────────────────────────────────────
 
 (async () => {
   try {
+    await loadDevSettings();
     const vaultExists = await hasVault();
 
     if (!vaultExists) {
@@ -2797,10 +2886,11 @@ $('setup-reset-btn').addEventListener('click', resetWallet);
     }
 
     if (restored) {
-      // Auto-lock: if the popup was closed for >= LOCK_TIMEOUT_MS, discard
+      // Auto-lock: if the popup was closed for >= the configured timeout, discard
       // the session and require the password again.
+      const lockTimeoutMs = state.devSettings.lockTimeoutSecs * 1000;
       const lastClosedAt = parseInt(localStorage.getItem('lastClosedAt') || '0', 10);
-      if (lastClosedAt && Date.now() - lastClosedAt >= LOCK_TIMEOUT_MS) {
+      if (lastClosedAt && lockTimeoutMs > 0 && Date.now() - lastClosedAt >= lockTimeoutMs) {
         await chrome.storage.session.clear();
         showView('unlock');
         return;
