@@ -2214,10 +2214,19 @@ async function fetchAndPopulateVaults() {
       account: owner,
       ledger_index: 'validated',
     });
-    const loanBrokers = (resp.result.account_objects ?? [])
-      .filter(o => o.LedgerEntryType === 'LoanBroker' && o.VaultID);
+    const objects = resp.result.account_objects ?? [];
 
-    const vaults = [];
+    // Vaults owned by this account appear as Vault-type objects; their own
+    // ledger index is the vault ID.
+    const directVaults = objects
+      .filter(o => o.LedgerEntryType === 'Vault')
+      .map(o => ({ vaultId: o.index ?? o.VaultID, vault: o }));
+
+    // Fallback: some devnet builds link vaults via LoanBroker objects which
+    // carry a VaultID field; fetch the actual vault node separately.
+    const loanBrokers = objects
+      .filter(o => o.LedgerEntryType === 'LoanBroker' && o.VaultID);
+    const lbVaults = [];
     for (const lb of loanBrokers) {
       try {
         const vaultResp = await state.client.request({
@@ -2225,8 +2234,18 @@ async function fetchAndPopulateVaults() {
           index: lb.VaultID,
           ledger_index: 'validated',
         });
-        vaults.push({ vaultId: lb.VaultID, vault: vaultResp.result.node });
+        lbVaults.push({ vaultId: lb.VaultID, vault: vaultResp.result.node });
       } catch { /* skip unavailable vaults */ }
+    }
+
+    // Merge, preferring direct Vault entries; deduplicate by vaultId.
+    const seen = new Set();
+    const vaults = [];
+    for (const v of [...directVaults, ...lbVaults]) {
+      if (v.vaultId && !seen.has(v.vaultId)) {
+        seen.add(v.vaultId);
+        vaults.push(v);
+      }
     }
 
     const sel = $('vault-select');
