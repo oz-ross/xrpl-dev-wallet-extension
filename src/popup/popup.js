@@ -1360,18 +1360,29 @@ async function fetchMptIssuanceInfo(issuanceId) {
           account: issuer,
           ledger_index: 'validated',
         });
-        const loanBrokers = (allObjs.result.account_objects ?? [])
-          .filter(o => o.LedgerEntryType === 'LoanBroker' && o.VaultID);
-        for (const lb of loanBrokers) {
-          const vaultResp = await state.client.request({
-            command: 'ledger_entry',
-            index: lb.VaultID,
-            ledger_index: 'validated',
-          });
-          const vault = vaultResp.result.node;
-          if (vault.ShareMPTID === issuanceId) {
-            vaultInfo = { ...vault, vaultId: lb.VaultID };
-            break;
+        const issuerObjects = allObjs.result.account_objects ?? [];
+
+        // Check for direct Vault objects on the issuer's account whose
+        // ShareMPTID matches this issuance.
+        const directVault = issuerObjects
+          .find(o => o.LedgerEntryType === 'Vault' && o.ShareMPTID === issuanceId);
+        if (directVault) {
+          vaultInfo = { ...directVault, vaultId: directVault.index };
+        } else {
+          // Fallback: LoanBroker objects that carry a VaultID pointer.
+          const loanBrokers = issuerObjects
+            .filter(o => o.LedgerEntryType === 'LoanBroker' && o.VaultID);
+          for (const lb of loanBrokers) {
+            const vaultResp = await state.client.request({
+              command: 'ledger_entry',
+              index: lb.VaultID,
+              ledger_index: 'validated',
+            });
+            const vault = vaultResp.result.node;
+            if (vault.ShareMPTID === issuanceId) {
+              vaultInfo = { ...vault, vaultId: lb.VaultID };
+              break;
+            }
           }
         }
       } catch { /* vault detection failed */ }
@@ -1393,9 +1404,28 @@ async function loadMptBalances() {
       account: state.wallet.address,
       ledger_index: 'validated',
     });
-    const objects = (resp.result.account_objects ?? [])
-      .filter(o => o.LedgerEntryType === 'MPToken');
-    const infos   = await Promise.all(objects.map(o => fetchMptIssuanceInfo(o.MPTokenIssuanceID)));
+    const allObjects = resp.result.account_objects ?? [];
+    const objects = allObjects.filter(o => o.LedgerEntryType === 'MPToken');
+
+    // Build a lookup of ShareMPTID → Vault for vaults owned by this account.
+    // This handles the case where the vault owner also holds the share tokens
+    // and the issuer's account has no LoanBroker objects to link them.
+    const vaultByShareMPT = new Map(
+      allObjects
+        .filter(o => o.LedgerEntryType === 'Vault' && o.ShareMPTID)
+        .map(o => [o.ShareMPTID, { ...o, vaultId: o.index }])
+    );
+
+    const infos = await Promise.all(objects.map(async o => {
+      const info = await fetchMptIssuanceInfo(o.MPTokenIssuanceID);
+      // If the issuer-side lookup found no vault link, check if this account
+      // owns a Vault whose ShareMPTID matches.
+      if (!info.vaultInfo) {
+        const ownedVault = vaultByShareMPT.get(o.MPTokenIssuanceID);
+        if (ownedVault) info.vaultInfo = ownedVault;
+      }
+      return info;
+    }));
     const issuanceMap = new Map(objects.map((o, i) => [o.MPTokenIssuanceID, infos[i]]));
 
     const regularObjects = objects.filter((_, i) => !infos[i]?.vaultInfo);
