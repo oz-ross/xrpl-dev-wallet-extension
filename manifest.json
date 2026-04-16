@@ -5,14 +5,18 @@
   "description": "XRPL wallet with WalletConnect support — sign, submit, and monitor transactions",
   "permissions": ["storage", "notifications", "clipboardWrite"],
   "host_permissions": [
-    "wss://xrplcluster.com/*",
-    "wss://s.altnet.rippletest.net/*",
     "wss://s.devnet.rippletest.net/*",
+    "wss://s.altnet.rippletest.net/*",
+    "wss://testnet.xrpl-labs.com/*",
+    "wss://s1.ripple.com/*",
+    "wss://s2.ripple.com/*",
+    "wss://xrplcluster.com/*",
+    "https://faucet.devnet.rippletest.net/*",
+    "https://faucet.altnet.rippletest.net/*",
     "https://*.walletconnect.com/*",
     "wss://*.walletconnect.com/*",
     "https://*.walletconnect.org/*",
-    "wss://*.walletconnect.org/*",
-    "https://faucet.devnet.rippletest.net/*"
+    "wss://*.walletconnect.org/*"
   ],
   "action": {
     "default_popup": "popup.html",

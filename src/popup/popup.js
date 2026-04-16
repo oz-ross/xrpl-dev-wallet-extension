@@ -11,18 +11,83 @@ import { generateMnemonic, validateMnemonic } from 'bip39';
 
 const WC_PROJECT_ID = '545f3b40384efe9b93401c1dd8d0ceb0';
 
-const NETWORKS = {
-  devnet: {
-    name: 'Devnet',
-    wsUrl: 'wss://s.devnet.rippletest.net:51233',
-    chainId: 'xrpl:2',
+const NETWORK_SERVERS = {
+  // ── Devnet ──────────────────────────────────
+  'devnet': {
+    name: 'Ripple Devnet', group: 'devnet',
+    wsUrl:           'wss://s.devnet.rippletest.net:51233',
     explorer:        'https://devnet.xrpl.org/transactions/',
     explorerAccount: 'https://devnet.xrpl.org/accounts/',
     explorerToken:   'https://devnet.xrpl.org/token/',
     explorerMpt:     'https://devnet.xrpl.org/mpt/',
-    faucet: 'https://faucet.devnet.rippletest.net/accounts',
+    faucet:          'https://faucet.devnet.rippletest.net/accounts',
+  },
+  // ── Testnet ──────────────────────────────────
+  'testnet': {
+    name: 'Ripple Testnet', group: 'testnet',
+    wsUrl:           'wss://s.altnet.rippletest.net:51233',
+    explorer:        'https://testnet.xrpl.org/transactions/',
+    explorerAccount: 'https://testnet.xrpl.org/accounts/',
+    explorerToken:   'https://testnet.xrpl.org/token/',
+    explorerMpt:     'https://testnet.xrpl.org/mpt/',
+    faucet:          'https://faucet.altnet.rippletest.net/accounts',
+  },
+  'testnet-xrplf': {
+    name: 'XRPL Foundation Testnet', group: 'testnet',
+    wsUrl:           'wss://testnet.xrpl-labs.com',
+    explorer:        'https://testnet.xrpl.org/transactions/',
+    explorerAccount: 'https://testnet.xrpl.org/accounts/',
+    explorerToken:   'https://testnet.xrpl.org/token/',
+    explorerMpt:     'https://testnet.xrpl.org/mpt/',
+    faucet:          null,
+  },
+  // ── Mainnet ──────────────────────────────────
+  'mainnet-s1': {
+    name: 'Ripple Mainnet (s1)', group: 'mainnet',
+    wsUrl:           'wss://s1.ripple.com',
+    explorer:        'https://livenet.xrpl.org/transactions/',
+    explorerAccount: 'https://livenet.xrpl.org/accounts/',
+    explorerToken:   'https://livenet.xrpl.org/token/',
+    explorerMpt:     'https://livenet.xrpl.org/mpt/',
+    faucet:          null,
+  },
+  'mainnet-s2': {
+    name: 'Ripple Mainnet (s2)', group: 'mainnet',
+    wsUrl:           'wss://s2.ripple.com',
+    explorer:        'https://livenet.xrpl.org/transactions/',
+    explorerAccount: 'https://livenet.xrpl.org/accounts/',
+    explorerToken:   'https://livenet.xrpl.org/token/',
+    explorerMpt:     'https://livenet.xrpl.org/mpt/',
+    faucet:          null,
+  },
+  'mainnet-xrplf': {
+    name: 'XRPL Foundation Mainnet', group: 'mainnet',
+    wsUrl:           'wss://xrplcluster.com',
+    explorer:        'https://livenet.xrpl.org/transactions/',
+    explorerAccount: 'https://livenet.xrpl.org/accounts/',
+    explorerToken:   'https://livenet.xrpl.org/token/',
+    explorerMpt:     'https://livenet.xrpl.org/mpt/',
+    faucet:          null,
   },
 };
+
+/** Return the active network config, constructing it for manual connections. */
+function getNetworkConfig() {
+  if (state.network === 'manual') {
+    const { wsUrl = '' } = state.manualNetwork ?? {};
+    const b = wsUrl ? `https://custom.xrpl.org/${wsUrl}` : '';
+    return {
+      name: 'Custom', group: 'custom',
+      wsUrl,
+      explorer:        b ? `${b}/transactions/` : '',
+      explorerAccount: b ? `${b}/accounts/`     : '',
+      explorerToken:   b ? `${b}/token/`        : '',
+      explorerMpt:     b ? `${b}/mpt/`          : '',
+      faucet:          null,
+    };
+  }
+  return NETWORK_SERVERS[state.network] ?? NETWORK_SERVERS['devnet'];
+}
 
 const XRPL_EPOCH_OFFSET = 946684800;
 const AUTO_REFRESH_INTERVAL = 30_000;
@@ -43,6 +108,9 @@ const state = {
   /** @type {Client|null} */
   client: null,
   network: 'devnet',
+  manualNetwork: { wsUrl: '' },
+  mainnetAcknowledged: false,
+  pendingNetworkChange: null,
   /** @type {any|null} Serialised pending proposal stored by background */
   pendingProposal: null,
   /** @type {any|null} Serialised pending request stored by background */
@@ -871,7 +939,7 @@ async function unlock() {
   try {
     await loadAndDecryptVault(password);
     state.wallet  = getActiveWallet();
-    state.network = 'devnet';
+    state.network = state.network || 'devnet';
 
     await connectXRPL();
     updateWalletUI();
@@ -1078,12 +1146,14 @@ function updateWalletUI() {
   $('account-address').textContent = truncAddr(addr);
   $('account-address').title = addr;
 
-  const net = NETWORKS[state.network];
+  const net = getNetworkConfig();
   $('account-explorer-link').href = `${net.explorerAccount}${addr}`;
 
   const badge = $('network-badge');
   badge.textContent = net.name;
-  badge.className = `network-badge ${state.network}`;
+  badge.className = `network-badge ${net.group}`;
+
+  $('faucet-btn').classList.toggle('hidden', !net.faucet);
 
   // Account switcher pill
   const accounts = getAllAccounts();
@@ -1143,10 +1213,11 @@ function updateConnectionDot(status) {
   const dot = $('xrpl-connection-dot');
   if (!dot) return;
   dot.className = `connection-dot dot-${status}`;
+  const netName = getNetworkConfig().name;
   const labels = {
-    connected:    'Connected to XRPL Devnet',
-    connecting:   'Connecting to XRPL Devnet…',
-    disconnected: 'Disconnected from XRPL Devnet',
+    connected:    `Connected to ${netName}`,
+    connecting:   `Connecting to ${netName}…`,
+    disconnected: `Disconnected from ${netName}`,
   };
   dot.title = labels[status] ?? status;
 }
@@ -1156,7 +1227,7 @@ async function connectXRPL() {
   if (state.client?.isConnected()) {
     state.client.disconnect().catch(() => {});
   }
-  const { wsUrl } = NETWORKS[state.network];
+  const { wsUrl } = getNetworkConfig();
   state.client = new Client(wsUrl);
   state.client.on('connected',    () => updateConnectionDot('connected'));
   state.client.on('disconnected', () => updateConnectionDot('disconnected'));
@@ -1250,7 +1321,7 @@ function renderIouBalances(lines) {
   const listEl = $('iou-balance-list');
 
   if (!lines.length) { listEl.innerHTML = ''; return; }
-  const explorerToken = NETWORKS[state.network].explorerToken;
+  const explorerToken = getNetworkConfig().explorerToken;
   listEl.innerHTML = lines.map(line => {
     const code    = formatCurrencyCode(line.currency);
     const balance = parseFloat(line.balance).toLocaleString(undefined, { maximumFractionDigits: 6 });
@@ -1287,7 +1358,7 @@ function renderAmmBalances(lines) {
   card.classList.remove('hidden');
   if (!held.length) { listEl.innerHTML = ''; return; }
 
-  const explorerAccount = NETWORKS[state.network].explorerAccount;
+  const explorerAccount = getNetworkConfig().explorerAccount;
   listEl.innerHTML = held.map(line => {
     const { ammInfo } = line;
     const label1  = formatPoolAsset(ammInfo.amount);
@@ -1591,7 +1662,7 @@ function renderMptBalances(objects, issuanceMap = new Map()) {
   const held   = objects.filter(o => o.LedgerEntryType === 'MPToken');
 
   if (!held.length) { listEl.innerHTML = ''; return; }
-  const explorerMpt = NETWORKS[state.network].explorerMpt;
+  const explorerMpt = getNetworkConfig().explorerMpt;
   listEl.innerHTML = held.map(obj => {
     const issuanceId = obj.MPTokenIssuanceID ?? '';
     const { ticker, assetScale } = issuanceMap.get(issuanceId) ?? { ticker: null, assetScale: 0 };
@@ -1630,7 +1701,7 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
   card.classList.remove('hidden');
   if (!held.length) { listEl.innerHTML = ''; return; }
 
-  const explorerAccount = NETWORKS[state.network].explorerAccount;
+  const explorerAccount = getNetworkConfig().explorerAccount;
   listEl.innerHTML = held.map(obj => {
     const issuanceId = obj.MPTokenIssuanceID ?? '';
     const { ticker, assetScale, outstandingAmount, vaultInfo } =
@@ -2825,7 +2896,7 @@ async function fundFromFaucet() {
   statusEl.classList.remove('hidden');
 
   try {
-    const resp = await fetch(NETWORKS[state.network].faucet, {
+    const resp = await fetch(getNetworkConfig().faucet, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ destination: state.wallet.address }),
@@ -2885,7 +2956,7 @@ function renderTxHistory(txs) {
     return;
   }
 
-  const explorer = NETWORKS[state.network].explorer;
+  const explorer = getNetworkConfig().explorer;
   listEl.innerHTML = txs.map(entry => {
     const txJson  = entry.tx_json ?? entry.tx ?? {};
     const meta    = entry.meta ?? entry.metaData ?? {};
@@ -3024,7 +3095,7 @@ async function approveSession() {
   btn.textContent = 'Approving…';
 
   try {
-    const chainId = NETWORKS[state.network].chainId;
+    const chainId = getNetworkConfig().chainId;
     const resp = await sendToBackground({
       type: 'WC_APPROVE_SESSION',
       id:   state.pendingProposal.id,
@@ -3307,7 +3378,7 @@ function setTxStatus(type, message, hash) {
     titleEl.textContent = 'Confirmed!';
     doneBtn.classList.remove('hidden');
     if (hash) {
-      const explorer = NETWORKS[state.network].explorer;
+      const explorer = getNetworkConfig().explorer;
       $('tx-hash-link').textContent = `${hash.slice(0, 10)}…${hash.slice(-10)}`;
       $('tx-hash-link').href        = `${explorer}${hash}`;
       hashContainer.classList.remove('hidden');
@@ -3808,14 +3879,48 @@ $('setup-reset-btn').addEventListener('click', resetWallet);
 // ─────────────────────────────────────────────
 
 async function loadDevSettings() {
-  const { devSettings } = await chrome.storage.local.get('devSettings');
+  const { devSettings, networkSettings } = await chrome.storage.local.get(['devSettings', 'networkSettings']);
   if (devSettings) state.devSettings = { ...state.devSettings, ...devSettings };
+  if (networkSettings) {
+    state.network       = networkSettings.network       ?? state.network;
+    state.manualNetwork = networkSettings.manualNetwork ?? state.manualNetwork;
+  }
   $('dev-print-tx-json').checked = state.devSettings.printTxJson;
   $('lock-timeout-secs').value   = state.devSettings.lockTimeoutSecs;
+  populateNetworkSelector();
 }
 
 async function saveDevSettings() {
   await chrome.storage.local.set({ devSettings: state.devSettings });
+}
+
+async function saveNetworkSettings() {
+  await chrome.storage.local.set({
+    networkSettings: { network: state.network, manualNetwork: state.manualNetwork },
+  });
+}
+
+function populateNetworkSelector() {
+  $('network-select').value = state.network;
+  const isManual = state.network === 'manual';
+  $('network-manual-group').classList.toggle('hidden', !isManual);
+  if (isManual) {
+    $('network-manual-ws').value = state.manualNetwork.wsUrl ?? '';
+  }
+}
+
+async function applyNetworkChange() {
+  if (!isMainnetNetwork(state.network)) state.mainnetAcknowledged = false;
+  await saveNetworkSettings();
+  if (state.client) {
+    state.client.disconnect().catch(() => {});
+    state.client = null;
+  }
+  if (state.wallet) {
+    updateConnectionDot('disconnected');
+    await connectXRPL();
+    activateAccount(state.activeAccount);
+  }
 }
 
 $('dev-print-tx-json').addEventListener('change', async (e) => {
@@ -3828,6 +3933,60 @@ $('lock-timeout-secs').addEventListener('change', async (e) => {
   state.devSettings.lockTimeoutSecs = isNaN(val) || val < 0 ? 10 : val;
   e.target.value = state.devSettings.lockTimeoutSecs;
   await saveDevSettings();
+});
+
+function isMainnetNetwork(networkId) {
+  const cfg = networkId === 'manual'
+    ? { group: 'custom' }
+    : (NETWORK_SERVERS[networkId] ?? { group: '' });
+  return cfg.group === 'mainnet';
+}
+
+function maybeApplyNetworkChange(networkId, manualNetwork) {
+  if (isMainnetNetwork(networkId) && !state.mainnetAcknowledged) {
+    state.pendingNetworkChange = { network: networkId, manualNetwork };
+    $('mainnet-warning-checkbox').checked = false;
+    $('mainnet-warning-accept-btn').disabled = true;
+    showView('mainnet-warning');
+  } else {
+    state.network = networkId;
+    if (manualNetwork) state.manualNetwork = manualNetwork;
+    applyNetworkChange();
+  }
+}
+
+$('network-select').addEventListener('change', async (e) => {
+  const selected = e.target.value;
+  const isManual = selected === 'manual';
+  $('network-manual-group').classList.toggle('hidden', !isManual);
+  if (!isManual) maybeApplyNetworkChange(selected, null);
+});
+
+$('network-manual-apply-btn').addEventListener('click', async () => {
+  const ws = $('network-manual-ws').value.trim();
+  if (!ws) { alert('Please enter a WebSocket URL.'); return; }
+  maybeApplyNetworkChange('manual', { wsUrl: ws });
+});
+
+$('mainnet-warning-checkbox').addEventListener('change', (e) => {
+  $('mainnet-warning-accept-btn').disabled = !e.target.checked;
+});
+
+$('mainnet-warning-accept-btn').addEventListener('click', async () => {
+  state.mainnetAcknowledged = true;
+  const { network, manualNetwork } = state.pendingNetworkChange;
+  state.pendingNetworkChange = null;
+  state.network = network;
+  if (manualNetwork) state.manualNetwork = manualNetwork;
+  populateNetworkSelector();
+  await applyNetworkChange();
+  showView('settings');
+});
+
+$('mainnet-warning-reject-btn').addEventListener('click', () => {
+  state.pendingNetworkChange = null;
+  populateNetworkSelector();
+  showView('settings');
 });
 
 // ─────────────────────────────────────────────

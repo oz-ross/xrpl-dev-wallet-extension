@@ -477,6 +477,43 @@
       </button>
     </div>
 
+    <div class="settings-section-header">Network</div>
+    <div class="settings-list">
+      <div class="settings-item settings-input-item">
+        <span class="settings-item-label">Server</span>
+        <div class="settings-item-input-wrap">
+          <select id="network-select" class="network-select-input">
+            <optgroup label="Devnet">
+              <option value="devnet">Ripple Devnet</option>
+            </optgroup>
+            <optgroup label="Testnet">
+              <option value="testnet">Ripple Testnet</option>
+              <option value="testnet-xrplf">XRPL Foundation Testnet</option>
+            </optgroup>
+            <optgroup label="Mainnet">
+              <option value="mainnet-s1">Ripple Mainnet (s1)</option>
+              <option value="mainnet-s2">Ripple Mainnet (s2)</option>
+              <option value="mainnet-xrplf">XRPL Foundation Mainnet</option>
+            </optgroup>
+            <optgroup label="Custom">
+              <option value="manual">Manual connection…</option>
+            </optgroup>
+          </select>
+        </div>
+      </div>
+      <div id="network-manual-group" class="hidden">
+        <div class="settings-item settings-input-item">
+          <span class="settings-item-label">WebSocket URL</span>
+          <div class="settings-item-input-wrap">
+            <input type="text" id="network-manual-ws" placeholder="wss://…" />
+          </div>
+        </div>
+        <div class="settings-item">
+          <button id="network-manual-apply-btn" class="btn btn-primary btn-sm" style="width:100%">Connect</button>
+        </div>
+      </div>
+    </div>
+
     <div class="settings-section-header">Security</div>
     <div class="settings-list">
       <div class="settings-item settings-input-item">
@@ -1003,6 +1040,21 @@
 
     <button id="cred-accept-btn" class="btn btn-primary btn-full hidden" style="margin-top:14px">Accept Credential</button>
     <div id="cred-accept-success" class="alert alert-success hidden" style="margin-top:12px">Credential accepted.</div>
+  </div>
+
+  <!-- ===== MAINNET WARNING ===== -->
+  <div id="view-mainnet-warning" class="view hidden">
+    <div class="mainnet-warning-icon">⚠️</div>
+    <h2 class="mainnet-warning-title">Mainnet — Real Funds</h2>
+    <p class="mainnet-warning-body">You are about to connect to the XRP Ledger mainnet where transactions involve real value.</p>
+    <label class="mainnet-warning-check-label">
+      <input type="checkbox" id="mainnet-warning-checkbox" />
+      <span>I understand this wallet has been designed and built as a development tool — it has not gone through the rigorous functional or security testing required to manage real funds. Any funds lost on mainnet are my own fault (and certainly not that of the poor, innocent developer).</span>
+    </label>
+    <div class="mainnet-warning-btns">
+      <button id="mainnet-warning-reject-btn" class="btn btn-ghost">Go Back</button>
+      <button id="mainnet-warning-accept-btn" class="btn btn-danger" disabled>I Acknowledge</button>
+    </div>
   </div>
 
   <div class="dev-warning">

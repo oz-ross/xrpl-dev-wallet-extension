@@ -1919,3 +1919,69 @@ details[open] .review-json-summary::before {
   padding: 2px 8px !important;
   font-size: 11px !important;
 }
+
+/* ── Mainnet warning screen ── */
+#view-mainnet-warning {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 20px;
+  text-align: center;
+}
+.mainnet-warning-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+.mainnet-warning-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--danger);
+  margin: 0 0 10px;
+}
+.mainnet-warning-body {
+  font-size: 13px;
+  color: var(--text-2);
+  margin: 0 0 18px;
+}
+.mainnet-warning-check-label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  text-align: left;
+  background: var(--danger-dim);
+  border: 1px solid rgba(239,68,68,0.3);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  margin-bottom: 20px;
+}
+.mainnet-warning-check-label input[type="checkbox"] {
+  margin-top: 2px;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--danger);
+}
+.mainnet-warning-btns {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+.mainnet-warning-btns .btn {
+  flex: 1;
+}
+
+/* ── Network selector in settings ── */
+.network-select-input {
+  font-size: 13px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  max-width: 200px;
+  width: 100%;
+}
