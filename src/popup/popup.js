@@ -4,6 +4,10 @@ import xrplPkg from 'xrpl/package.json';
 import QRCode from 'qrcode';
 import { getSdkError } from '@walletconnect/utils';
 import { generateMnemonic, validateMnemonic } from 'bip39';
+import TransportWebHID from '@ledgerhq/hw-transport-webhid';
+import Xrp from '@ledgerhq/hw-app-xrp';
+import { encode } from 'ripple-binary-codec';
+import { createHash } from 'crypto';
 
 // ─────────────────────────────────────────────
 // CONFIG
@@ -366,12 +370,14 @@ async function persistSession(password) {
 }
 
 async function restoreFromSession() {
-  const { keyrings, activeAccount, network, vaultPassword } =
-    await chrome.storage.session.get(['keyrings', 'activeAccount', 'network', 'vaultPassword']);
+  const { keyrings, activeAccount, vaultPassword } =
+    await chrome.storage.session.get(['keyrings', 'activeAccount', 'vaultPassword']);
   if (!keyrings || !activeAccount || !vaultPassword) return false;
-  state.keyrings     = keyrings;
+  state.keyrings      = keyrings;
   state.activeAccount = activeAccount;
-  state.network      = network || 'devnet';
+  // Network is NOT restored from session — loadDevSettings() already loaded it
+  // from chrome.storage.local (the authoritative source).  The session copy can
+  // be stale because applyNetworkChange() only writes to local storage.
   return true;
 }
 
@@ -432,6 +438,8 @@ function getActiveWallet() {
       if (acct) return deriveHDWallet(kr.mnemonic, acct.accountIndex);
     } else if (kr.type === 'simple' && kr.address === state.activeAccount) {
       return deriveSimpleWallet(kr.seed);
+    } else if (kr.type === 'ledger' && kr.address === state.activeAccount) {
+      return null; // no local private key for hardware wallets
     }
   }
   return null;
@@ -448,9 +456,51 @@ function getAllAccounts() {
       }
     } else if (kr.type === 'simple') {
       out.push({ label: kr.label, address: kr.address, keyringIndex: ki, accountIndex: null });
+    } else if (kr.type === 'ledger') {
+      out.push({ label: kr.label, address: kr.address, keyringIndex: ki, accountIndex: null, isLedger: true });
     }
   }
   return out;
+}
+
+/** Return the ledger keyring for the active account, or null. */
+function getActiveLedgerKeyring() {
+  if (!state.activeAccount) return null;
+  return state.keyrings.find(kr => kr.type === 'ledger' && kr.address === state.activeAccount) ?? null;
+}
+
+/** Compute XRPL transaction hash from a signed tx blob (hex). SHA-512 half with 0x54584E00 prefix. */
+function computeTxHash(txBlobHex) {
+  const prefix  = Buffer.from('54584E00', 'hex');
+  const txBytes = Buffer.from(txBlobHex, 'hex');
+  return createHash('sha512').update(Buffer.concat([prefix, txBytes])).digest('hex').slice(0, 64).toUpperCase();
+}
+
+/**
+ * Sign a prepared (autofilled) transaction.
+ * Uses the Ledger device if the active account is a hardware wallet,
+ * otherwise uses the local software wallet.
+ */
+async function signPreparedTx(prepared) {
+  const ledgerKr = getActiveLedgerKeyring();
+  if (!ledgerKr) {
+    return state.wallet.sign(prepared);
+  }
+  setTxStatus('pending', 'Confirm on Ledger device…');
+  const txToSign = { ...prepared, SigningPubKey: ledgerKr.publicKey };
+  delete txToSign.TxnSignature;
+  const txBlob = encode(txToSign);
+  let transport;
+  try {
+    transport = await TransportWebHID.create();
+    const xrpApp  = new Xrp(transport);
+    const sig     = await xrpApp.signTransaction(ledgerKr.derivationPath, txBlob);
+    txToSign.TxnSignature = sig.toUpperCase();
+    const tx_blob = encode(txToSign);
+    return { tx_blob, hash: computeTxHash(tx_blob) };
+  } finally {
+    if (transport) await transport.close().catch(() => {});
+  }
 }
 
 /** Auto-generate a label for the next account. */
@@ -478,6 +528,9 @@ function getRemovalInfo(address) {
     const kr = state.keyrings[ki];
     if (kr.type === 'simple' && kr.address === address) {
       return { keyringsIdx: ki, type: 'simple', label: kr.label, phraseToo: true, siblings: 0 };
+    }
+    if (kr.type === 'ledger' && kr.address === address) {
+      return { keyringsIdx: ki, type: 'ledger', label: kr.label, phraseToo: false, siblings: 0 };
     }
     if (kr.type === 'HD') {
       const ai = kr.accounts.findIndex(a => a.address === address);
@@ -508,7 +561,7 @@ async function executeRemoveAccount() {
   const info = getRemovalInfo(address);
   if (!info) return;
 
-  if (info.type === 'simple') {
+  if (info.type === 'simple' || info.type === 'ledger') {
     state.keyrings.splice(info.keyringsIdx, 1);
   } else {
     const kr = state.keyrings[info.keyringsIdx];
@@ -571,7 +624,9 @@ function renderManageAccountsList() {
       $('remove-acct-addr').textContent = truncAddr(acct.address);
 
       let warn;
-      if (info.type === 'simple') {
+      if (info.type === 'ledger') {
+        warn = 'This will remove the Ledger account from this wallet. Your Ledger device and funds are not affected.';
+      } else if (info.type === 'simple') {
         warn = 'This will permanently remove the account and its secret seed from this wallet. This cannot be undone.';
       } else if (info.phraseToo) {
         warn = 'This is the only account using its recovery phrase. Removing it will also permanently delete the recovery phrase from this wallet. This cannot be undone.';
@@ -1240,11 +1295,11 @@ async function ensureConnected() {
 }
 
 async function refreshBalance() {
-  if (!state.wallet || !state.client) return;
+  if (!state.activeAccount || !state.client) return;
   $('balance-amount').textContent = '…';
   try {
     await ensureConnected();
-    const xrp = await state.client.getXrpBalance(state.wallet.address);
+    const xrp = await state.client.getXrpBalance(state.activeAccount);
     $('balance-amount').textContent = `${xrp} XRP`;
   } catch (err) {
     if (err.message?.includes('Account not found') || err.data?.error === 'actNotFound') {
@@ -1289,12 +1344,12 @@ function formatPoolAsset(amount) {
 }
 
 async function loadIouBalances() {
-  if (!state.wallet || !state.client) return;
+  if (!state.activeAccount || !state.client) return;
   try {
     await ensureConnected();
     const resp = await state.client.request({
       command: 'account_lines',
-      account: state.wallet.address,
+      account: state.activeAccount,
       ledger_index: 'validated',
     });
     const lines = resp.result.lines ?? [];
@@ -1476,12 +1531,12 @@ async function fetchMptIssuanceInfo(issuanceId) {
 }
 
 async function loadMptBalances() {
-  if (!state.wallet || !state.client) return;
+  if (!state.activeAccount || !state.client) return;
   try {
     await ensureConnected();
     const resp = await state.client.request({
       command: 'account_objects',
-      account: state.wallet.address,
+      account: state.activeAccount,
       ledger_index: 'validated',
     });
     const allObjects = resp.result.account_objects ?? [];
@@ -1536,12 +1591,12 @@ function hexToUtf8(hex) {
 }
 
 async function loadCredentials() {
-  if (!state.wallet || !state.client) return;
+  if (!state.activeAccount || !state.client) return;
   try {
     await ensureConnected();
     const resp = await state.client.request({
       command: 'account_objects',
-      account: state.wallet.address,
+      account: state.activeAccount,
       ledger_index: 'validated',
     });
     const creds = (resp.result.account_objects ?? [])
@@ -1641,7 +1696,7 @@ function acceptCredential(cred) {
 
   const txJson = {
     TransactionType: 'CredentialAccept',
-    Account: state.wallet.address,
+    Account: state.activeAccount,
     Issuer: issuer,
     CredentialType: cred.CredentialType,
   };
@@ -1933,7 +1988,7 @@ function reviewVaultDW() {
   const txType = dwMode === 'deposit' ? 'VaultDeposit' : 'VaultWithdraw';
   const txJson = {
     TransactionType: txType,
-    Account: state.wallet.address,
+    Account: state.activeAccount,
     VaultID: vaultId,
     Amount: txAmount,
   };
@@ -1972,7 +2027,7 @@ async function fetchAmmAssetBalance(asset) {
     // XRP — asset value is drops
     const resp = await state.client.request({
       command: 'account_info',
-      account: state.wallet.address,
+      account: state.activeAccount,
       ledger_index: 'validated',
     });
     const xrp = parseFloat(dropsToXrp(resp.result.account_data.Balance));
@@ -1981,7 +2036,7 @@ async function fetchAmmAssetBalance(asset) {
     // IOU
     const resp = await state.client.request({
       command: 'account_lines',
-      account: state.wallet.address,
+      account: state.activeAccount,
       peer: asset.issuer,
       ledger_index: 'validated',
     });
@@ -2151,7 +2206,7 @@ function reviewAmmDeposit() {
 
   const txJson = {
     TransactionType: 'AMMDeposit',
-    Account: state.wallet.address,
+    Account: state.activeAccount,
     Asset: assetSpec(asset1),
     Asset2: assetSpec(asset2),
   };
@@ -2254,7 +2309,7 @@ function reviewAmmWithdraw() {
   // For single-asset modes, swap Asset/Asset2 when asset2 is selected so Amount always maps to Asset
   const txJson = {
     TransactionType: 'AMMWithdraw',
-    Account: state.wallet.address,
+    Account: state.activeAccount,
     Asset:  (isOneAsset && asset === 2) ? assetSpec(asset2) : assetSpec(asset1),
     Asset2: (isOneAsset && asset === 2) ? assetSpec(asset1) : assetSpec(asset2),
   };
@@ -2430,7 +2485,7 @@ async function executeSendPayment() {
 
   const txJson = {
     TransactionType: 'Payment',
-    Account: state.wallet.address,
+    Account: state.activeAccount,
     Destination: destAddress,
     Amount: txAmount,
   };
@@ -2445,7 +2500,7 @@ async function executeSendPayment() {
     const prepared = await state.client.autofill(txJson);
     setTxStatus('pending', 'Signing…');
     if (state.devSettings.printTxJson) console.log('[tx json]', prepared);
-    const { tx_blob, hash } = state.wallet.sign(prepared);
+    const { tx_blob, hash } = await signPreparedTx(prepared);
     setTxStatus('pending', 'Submitting to XRPL…');
     const response = await state.client.submitAndWait(tx_blob);
     const txResult = response.result?.meta?.TransactionResult;
@@ -2498,7 +2553,7 @@ function reviewTrustSet() {
 
   const txJson = {
     TransactionType: 'TrustSet',
-    Account: state.wallet.address,
+    Account: state.activeAccount,
     LimitAmount: { currency, issuer, value: limitStr },
   };
 
@@ -2627,7 +2682,7 @@ function reviewMptAuthorize() {
 
   const txJson = {
     TransactionType: 'MPTokenAuthorize',
-    Account: state.wallet.address,
+    Account: state.activeAccount,
     MPTokenIssuanceID: issuanceId.toUpperCase(),
   };
 
@@ -2798,7 +2853,7 @@ function reviewNewVaultDeposit() {
 
   const txJson = {
     TransactionType: 'VaultDeposit',
-    Account: state.wallet.address,
+    Account: state.activeAccount,
     VaultID: vaultId,
     Amount: txAmount,
   };
@@ -2842,7 +2897,7 @@ async function executeReviewedTx() {
     const prepared = await state.client.autofill(review.txJson);
     setTxStatus('pending', 'Signing…');
     if (state.devSettings.printTxJson) console.log('[tx json]', prepared);
-    const { tx_blob, hash } = state.wallet.sign(prepared);
+    const { tx_blob, hash } = await signPreparedTx(prepared);
     setTxStatus('pending', 'Submitting to XRPL…');
     const response = await state.client.submitAndWait(tx_blob);
     const txResult = response.result?.meta?.TransactionResult;
@@ -2886,7 +2941,7 @@ function stopAutoRefresh() {
 // ─────────────────────────────────────────────
 
 async function fundFromFaucet() {
-  if (!state.wallet) return;
+  if (!state.activeAccount) return;
   const btn      = $('faucet-btn');
   const statusEl = $('faucet-status');
   btn.disabled = true;
@@ -2899,7 +2954,7 @@ async function fundFromFaucet() {
     const resp = await fetch(getNetworkConfig().faucet, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ destination: state.wallet.address }),
+      body: JSON.stringify({ destination: state.activeAccount }),
     });
     if (!resp.ok) throw new Error(`Faucet returned HTTP ${resp.status}`);
 
@@ -2927,12 +2982,12 @@ async function fundFromFaucet() {
 // ─────────────────────────────────────────────
 
 async function loadTxHistory() {
-  if (!state.wallet || !state.client) return;
+  if (!state.activeAccount || !state.client) return;
   try {
     await ensureConnected();
     const resp = await state.client.request({
       command: 'account_tx',
-      account: state.wallet.address,
+      account: state.activeAccount,
       limit: 10,
       ledger_index_min: -1,
       ledger_index_max: -1,
@@ -3102,7 +3157,7 @@ async function approveSession() {
       namespaces: {
         xrpl: {
           chains:   [chainId],
-          accounts: [`${chainId}:${state.wallet.address}`],
+          accounts: [`${chainId}:${state.activeAccount}`],
           methods:  ['xrpl_signTransaction', 'xrpl_signTransactionFor'],
           events:   [],
         },
@@ -3240,7 +3295,7 @@ async function approveTransaction() {
 
     setTxStatus('pending', 'Signing…');
     if (state.devSettings.printTxJson) console.log('[tx json]', prepared);
-    const { tx_blob, hash } = state.wallet.sign(prepared);
+    const { tx_blob, hash } = await signPreparedTx(prepared);
 
     setTxStatus('pending', 'Submitting to XRPL…');
     const response = await state.client.submitAndWait(tx_blob);
@@ -3426,6 +3481,115 @@ $('type-import-mnemonic').addEventListener('click', () => {
   showView('account-import-mnemonic');
 });
 $('type-hd-account').addEventListener('click', () => initHdAddView());
+$('type-ledger').addEventListener('click', openLedgerImport);
+
+// ─────────────────────────────────────────────
+// LEDGER HARDWARE WALLET
+// ─────────────────────────────────────────────
+
+function openLedgerImport() {
+  $('ledger-account-index').value = '0';
+  $('ledger-path-preview').textContent = '0';
+  $('ledger-connect-btn').disabled = false;
+  $('ledger-connect-btn').textContent = 'Connect & Import';
+  $('ledger-connect-btn').classList.remove('hidden');
+  $('ledger-error').classList.add('hidden');
+  $('ledger-retry-group').classList.add('hidden');
+  showView('ledger-import');
+}
+
+async function connectLedgerDevice() {
+  const idx = parseInt($('ledger-account-index').value, 10);
+  if (isNaN(idx) || idx < 0) {
+    showAlert('ledger-error', 'Enter a valid account index (0 or higher).');
+    return;
+  }
+
+  // Chrome extension popups close the instant the OS device-picker opens,
+  // causing requestDevice() to return empty ("Access denied").  The fix is to
+  // run the WebHID call from a regular browser tab, which does NOT close on
+  // focus loss.  If we are currently in the popup, open a tab and hand off.
+  const inTab = new URLSearchParams(window.location.search).has('ledger');
+  if (!inTab) {
+    await chrome.storage.session.set({ _ledgerTabIdx: idx });
+    chrome.tabs.create({ url: chrome.runtime.getURL('popup.html') + '?ledger=1' });
+    window.close();
+    return;
+  }
+
+  const btn = $('ledger-connect-btn');
+  btn.disabled = true;
+  btn.textContent = 'Connecting…';
+  $('ledger-error').classList.add('hidden');
+
+  let transport;
+  try {
+    transport = await TransportWebHID.create();
+    const xrpApp = new Xrp(transport);
+    const path = `44'/144'/${idx}'/0/0`;
+    btn.textContent = 'Confirm on device…';
+    const result = await xrpApp.getAddress(path, true);
+
+    if (accountExists(result.address)) {
+      showAlert('ledger-error', 'This account is already in your wallet.');
+      btn.disabled = false;
+      btn.textContent = 'Connect & Import';
+      return;
+    }
+
+    const label = idx > 0 ? `Ledger Account ${idx}` : 'Ledger Account';
+    state.keyrings.push({ type: 'ledger', address: result.address, publicKey: result.publicKey, derivationPath: path, label });
+    state.activeAccount = result.address;
+    state.wallet        = null;
+
+    const usedPassword = await saveVault(state._setupFlowPassword ?? undefined);
+    state._setupFlowPassword = null;
+    await persistSession(usedPassword);
+
+    // Tab mode: close this tab — the user's popup will show the new account next open.
+    window.close();
+  } catch (err) {
+    const msg = err.message || String(err);
+    let friendlyMsg;
+    if (msg.includes('0x650f')) {
+      friendlyMsg = 'Please open the XRP application on your device.';
+    } else if (msg.includes('0x6511') || err.name === 'LockedDeviceError' || msg.toLowerCase().includes('locked')) {
+      friendlyMsg = 'Please unlock your device and ensure the XRP application is open.';
+    } else {
+      friendlyMsg = `Ledger error: ${msg}`;
+    }
+    showAlert('ledger-error', friendlyMsg);
+    if (friendlyMsg !== `Ledger error: ${msg}`) {
+      // actionable error — show retry/cancel instead of re-enabling connect
+      btn.classList.add('hidden');
+      $('ledger-retry-group').classList.remove('hidden');
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'Connect & Import';
+    }
+  } finally {
+    if (transport) await transport.close().catch(() => {});
+  }
+}
+
+$('back-from-ledger-btn').addEventListener('click', () => showView('account-type'));
+$('ledger-account-index').addEventListener('input', () => {
+  const v = parseInt($('ledger-account-index').value, 10);
+  $('ledger-path-preview').textContent = isNaN(v) || v < 0 ? '?' : v;
+});
+$('ledger-connect-btn').addEventListener('click', connectLedgerDevice);
+$('ledger-retry-btn').addEventListener('click', () => {
+  $('ledger-retry-group').classList.add('hidden');
+  $('ledger-connect-btn').classList.remove('hidden');
+  $('ledger-connect-btn').disabled = false;
+  $('ledger-connect-btn').textContent = 'Connect & Import';
+  $('ledger-error').classList.add('hidden');
+  connectLedgerDevice();
+});
+$('ledger-cancel-btn').addEventListener('click', () => {
+  const inTab = new URLSearchParams(window.location.search).has('ledger');
+  if (inTab) { window.close(); } else { showView('account-type'); }
+});
 
 // ─────────────────────────────────────────────
 // EVENT LISTENERS — Generated seed view
@@ -3570,9 +3734,9 @@ $('refresh-balance-btn').addEventListener('click', () => {
 });
 
 $('copy-address-btn').addEventListener('click', async () => {
-  if (!state.wallet) return;
+  if (!state.activeAccount) return;
   try {
-    await navigator.clipboard.writeText(state.wallet.address);
+    await navigator.clipboard.writeText(state.activeAccount);
     $('copy-toast').classList.remove('hidden');
     setTimeout(() => $('copy-toast').classList.add('hidden'), 1800);
   } catch { /* clipboard permission denied */ }
@@ -3583,8 +3747,8 @@ $('qr-close-btn').addEventListener('click', hideQr);
 $('qr-modal').addEventListener('click', e => { if (e.target === $('qr-modal')) hideQr(); });
 
 async function showQr() {
-  if (!state.wallet) return;
-  const addr = state.wallet.address;
+  if (!state.activeAccount) return;
+  const addr = state.activeAccount;
   $('qr-address').textContent = addr;
   await QRCode.toCanvas($('qr-canvas'), addr, {
     width: 200,
@@ -3857,7 +4021,7 @@ $('review-copy-json-btn').addEventListener('click', () => {
 // ─────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message) => {
-  if (!state.wallet) return; // wallet locked — ignore, boot will pick up wcPending on next open
+  if (!state.activeAccount) return; // wallet locked — ignore, boot will pick up wcPending on next open
 
   if (message.type === 'WC_PROPOSAL') {
     showWcProposal(message.data);
@@ -3916,7 +4080,7 @@ async function applyNetworkChange() {
     state.client.disconnect().catch(() => {});
     state.client = null;
   }
-  if (state.wallet) {
+  if (state.activeAccount) {
     updateConnectionDot('disconnected');
     await connectXRPL();
     activateAccount(state.activeAccount);
@@ -4031,12 +4195,27 @@ $('mainnet-warning-reject-btn').addEventListener('click', () => {
       } catch (err) {
         console.warn('[boot] XRPL connect failed, will retry on demand:', err);
       }
+      // Tab opened to handle Ledger HID (popup closes when device picker appears).
+      if (new URLSearchParams(window.location.search).has('ledger')) {
+        const { _ledgerTabIdx } = await chrome.storage.session.get('_ledgerTabIdx');
+        await chrome.storage.session.remove('_ledgerTabIdx');
+        $('ledger-account-index').value = _ledgerTabIdx ?? 0;
+        $('ledger-path-preview').textContent = _ledgerTabIdx ?? 0;
+        $('ledger-connect-btn').disabled = false;
+        $('ledger-connect-btn').textContent = 'Connect & Import';
+        $('ledger-connect-btn').classList.remove('hidden');
+        $('ledger-error').classList.add('hidden');
+        $('ledger-retry-group').classList.add('hidden');
+        showView('ledger-import');
+        return;
+      }
+
       updateWalletUI();
       showView('wallet');
       refreshBalance();
       loadIouBalances();
       loadMptBalances();
-    loadCredentials();
+      loadCredentials();
       loadTxHistory();
       await initWalletConnect();
       await checkPendingWcEvent();

@@ -72,6 +72,22 @@
         <div class="type-label">Import Phrase</div>
         <div class="type-desc">Enter existing recovery phrase</div>
       </button>
+      <button class="account-type-card" id="type-ledger">
+        <div class="type-icon ledger-nano-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 18" width="48" height="18" aria-hidden="true">
+            <rect x="0" y="5" width="7" height="8" rx="1.2" fill="currentColor" opacity="0.55"/>
+            <rect x="1.5" y="7" width="4" height="4" rx="0.6" fill="rgba(0,0,0,0.35)"/>
+            <rect x="6" y="1" width="42" height="16" rx="3" fill="currentColor"/>
+            <rect x="11" y="0" width="7" height="5" rx="2" fill="currentColor" opacity="0.75"/>
+            <rect x="30" y="0" width="7" height="5" rx="2" fill="currentColor" opacity="0.75"/>
+            <rect x="17" y="4" width="14" height="10" rx="1.5" fill="rgba(0,0,0,0.65)"/>
+            <rect x="19" y="6.5" width="10" height="2" rx="1" fill="#38bdf8" opacity="0.9"/>
+            <rect x="19" y="10" width="7" height="1.5" rx="1" fill="#38bdf8" opacity="0.55"/>
+          </svg>
+        </div>
+        <div class="type-label">Ledger Device</div>
+        <div class="type-desc">Import from hardware wallet</div>
+      </button>
     </div>
 
     <button id="type-hd-account" class="btn btn-outline btn-full hidden" style="margin-top:8px">
@@ -227,6 +243,30 @@
     <div id="hd-add-error" class="alert alert-error hidden"></div>
 
     <button id="hd-add-confirm-btn" class="btn btn-primary btn-full" style="margin-top:6px">Add Account</button>
+  </div>
+
+  <!-- ===== LEDGER IMPORT ===== -->
+  <div id="view-ledger-import" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-ledger-btn" class="btn-back">‹</button>
+      <h2>Ledger Device</h2>
+    </div>
+    <ol class="ledger-steps">
+      <li>Connect your Ledger and unlock it.</li>
+      <li>Open the <strong>XRP Ledger</strong> app on the device.</li>
+      <li>Choose an account index below and click Connect.</li>
+    </ol>
+    <div class="form-group">
+      <label for="ledger-account-index">Account Index</label>
+      <input type="number" id="ledger-account-index" value="0" min="0" max="2147483647" />
+      <div class="input-hint">BIP44 path: m/44'/144'/<span id="ledger-path-preview">0</span>'/0/0</div>
+    </div>
+    <div id="ledger-error" class="alert alert-error hidden"></div>
+    <button id="ledger-connect-btn" class="btn btn-primary btn-full" style="margin-top:8px">Connect &amp; Import</button>
+    <div id="ledger-retry-group" class="ledger-retry-group hidden">
+      <button id="ledger-retry-btn" class="btn btn-primary" style="flex:1">Retry</button>
+      <button id="ledger-cancel-btn" class="btn btn-secondary" style="flex:1">Cancel</button>
+    </div>
   </div>
 
   <!-- ===== UNLOCK ===== -->

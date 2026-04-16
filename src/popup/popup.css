@@ -1227,6 +1227,11 @@ input[type="number"]:focus { border-color: var(--accent); }
 }
 
 .type-icon { font-size: 24px; }
+.ledger-nano-icon { font-size: 0; line-height: 0; display: flex; align-items: center; justify-content: center; height: 28px; }
+.ledger-steps { margin: 0 0 16px; padding-left: 20px; font-size: 13px; color: var(--text-2); line-height: 1.7; }
+.ledger-steps strong { color: var(--text-primary); }
+.input-hint { font-size: 11px; color: var(--text-3); margin-top: 4px; font-family: monospace; }
+.ledger-retry-group { display: flex; gap: 8px; margin-top: 8px; }
 
 .type-label {
   font-size: 12px;
