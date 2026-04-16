@@ -98,6 +98,11 @@ function showView(name) {
   $(`view-${name}`).classList.remove('hidden');
   // Close any open account dropdown
   $('account-dropdown')?.classList.add('hidden');
+  // Populate raw JSON panel on review screen
+  if (name === 'send-review' && state.pendingTxReview?.txJson) {
+    $('review-raw-json').textContent = JSON.stringify(state.pendingTxReview.txJson, null, 2);
+    $('review-json-details').removeAttribute('open');
+  }
 }
 
 function esc(text) {
@@ -1301,7 +1306,11 @@ function renderAmmBalances(lines) {
            data-display="${esc(pool)}"
            data-balance="${esc(lpBal)}"
            data-currency="${esc(line.currency)}"
-           data-issuer="${esc(line.account)}">
+           data-issuer="${esc(line.account)}"
+           data-asset1="${encodeURIComponent(JSON.stringify(ammInfo.amount))}"
+           data-asset2="${encodeURIComponent(JSON.stringify(ammInfo.amount2))}"
+           data-label1="${esc(label1)}"
+           data-label2="${esc(label2)}">
         <div class="amm-summary-row">
           <div class="amm-token-info">
             <span class="amm-pool">${esc(pool)}</span>
@@ -1767,6 +1776,8 @@ function getPickerAddress(selectEl, manualInputEl) {
 function openVaultDW() {
   const { pendingSend } = state;
   if (!pendingSend || pendingSend.type !== 'vault') return;
+  $('vault-dw-section').classList.remove('hidden');
+  $('amm-deposit-section').classList.add('hidden');
   $('vault-dw-shares').textContent = `${pendingSend.balance} shares`;
   $('vault-dw-amount').value = '';
   $('vault-dw-error').classList.add('hidden');
@@ -1879,6 +1890,363 @@ function reviewVaultDW() {
   showView('send-review');
 }
 
+// ─────────────────────────────────────────────
+// AMM DEPOSIT
+// ─────────────────────────────────────────────
+
+/** Return the current account balance of a pool asset (string=XRP drops, object=IOU). */
+async function fetchAmmAssetBalance(asset) {
+  await ensureConnected();
+  if (typeof asset === 'string') {
+    // XRP — asset value is drops
+    const resp = await state.client.request({
+      command: 'account_info',
+      account: state.wallet.address,
+      ledger_index: 'validated',
+    });
+    const xrp = parseFloat(dropsToXrp(resp.result.account_data.Balance));
+    return xrp.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  } else {
+    // IOU
+    const resp = await state.client.request({
+      command: 'account_lines',
+      account: state.wallet.address,
+      peer: asset.issuer,
+      ledger_index: 'validated',
+    });
+    const line = (resp.result.lines ?? [])
+      .find(l => l.currency === asset.currency && l.account === asset.issuer);
+    if (!line) return '0';
+    const n = parseFloat(line.balance);
+    return n.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  }
+}
+
+function openAmmDeposit() {
+  const { pendingSend } = state;
+  if (!pendingSend || pendingSend.type !== 'amm') return;
+
+  $('amm-deposit-section').classList.remove('hidden');
+  $('vault-dw-section').classList.add('hidden');
+
+  const { label1, label2, balance } = pendingSend;
+
+  // Deposit labels
+  $('amm-dep-label1').textContent       = label1;
+  $('amm-dep-label2').textContent       = label2;
+  $('amm-dep-amount1-label').textContent = `${label1} amount`;
+  $('amm-dep-amount2-label').textContent = `${label2} amount`;
+  $('amm-dep-asset1-btn').textContent   = label1;
+  $('amm-dep-asset2-btn').textContent   = label2;
+  $('amm-dep-eprice-label').textContent = `Effective price limit (${label1} per LP token)`;
+
+  // Withdraw labels
+  $('amm-wdw-asset1-btn').textContent   = label1;
+  $('amm-wdw-asset2-btn').textContent   = label2;
+  $('amm-wdw-amount2-label').textContent = `${label2} amount`;
+  $('amm-wdw-lp-bal').textContent       = balance;
+
+  // Reset deposit inputs
+  $('amm-dep-amount1').value = '';
+  $('amm-dep-amount2').value = '';
+  $('amm-dep-lptoken').value = '';
+  $('amm-dep-maxamt').value  = '';
+  $('amm-dep-eprice').value  = '';
+  $('amm-dep-error').classList.add('hidden');
+  $('amm-dep-mode').value    = 'two-asset';
+  pendingSend.ammDepAsset    = 1;
+
+  // Reset withdraw inputs
+  $('amm-wdw-amount1').value = '';
+  $('amm-wdw-amount2').value = '';
+  $('amm-wdw-lptoken').value = '';
+  $('amm-wdw-eprice').value  = '';
+  $('amm-wdw-error').classList.add('hidden');
+  $('amm-wdw-mode').value    = 'lp-token';
+  pendingSend.ammWdwAsset    = 1;
+
+  switchAmmMode('deposit');
+  updateAmmDepFields();
+  updateAmmWdwFields();
+
+  // Fetch current asset balances asynchronously
+  $('amm-dep-bal1').textContent = '…';
+  $('amm-dep-bal2').textContent = '…';
+  Promise.all([
+    fetchAmmAssetBalance(pendingSend.asset1),
+    fetchAmmAssetBalance(pendingSend.asset2),
+  ]).then(([b1, b2]) => {
+    $('amm-dep-bal1').textContent = b1;
+    $('amm-dep-bal2').textContent = b2;
+  }).catch(() => {
+    $('amm-dep-bal1').textContent = '—';
+    $('amm-dep-bal2').textContent = '—';
+  });
+}
+
+function switchAmmMode(mode) {
+  const isDeposit = mode === 'deposit';
+  $('amm-dep-sub').classList.toggle('hidden', !isDeposit);
+  $('amm-wdw-sub').classList.toggle('hidden', isDeposit);
+  $('amm-mode-deposit-btn').classList.toggle('vault-dw-tab-active', isDeposit);
+  $('amm-mode-withdraw-btn').classList.toggle('vault-dw-tab-active', !isDeposit);
+}
+
+function updateAmmDepFields() {
+  const mode  = $('amm-dep-mode').value;
+  const asset = state.pendingSend?.ammDepAsset ?? 1;
+
+  const showBothAssets = mode === 'two-asset';
+  const isOneAsset     = mode === 'one-asset' || mode === 'one-asset-lp' || mode === 'one-asset-limit';
+  const hasLp          = mode === 'two-asset-lp' || mode === 'one-asset-lp';
+  const hasEPrice      = mode === 'one-asset-limit';
+  // lpOnly: no amount input — ledger determines asset amounts from LPTokenOut
+  const lpOnly         = mode === 'two-asset-lp' || mode === 'one-asset-lp';
+
+  const hasMaxAmt = mode === 'one-asset-lp';
+
+  $('amm-dep-asset-group').classList.toggle('hidden', !isOneAsset);
+  $('amm-dep-amount1-group').classList.toggle('hidden', lpOnly || (isOneAsset && asset !== 1));
+  $('amm-dep-amount2-group').classList.toggle('hidden', lpOnly || (showBothAssets ? false : asset !== 2));
+  $('amm-dep-lptoken-group').classList.toggle('hidden', !hasLp);
+  $('amm-dep-maxamt-group').classList.toggle('hidden', !hasMaxAmt);
+  $('amm-dep-eprice-group').classList.toggle('hidden', !hasEPrice);
+
+  if (showBothAssets) $('amm-dep-amount2-group').classList.remove('hidden');
+
+  if (hasMaxAmt) {
+    const lbl = asset === 1 ? state.pendingSend?.label1 : state.pendingSend?.label2;
+    $('amm-dep-maxamt-label').textContent = `Maximum ${lbl ?? 'asset'} amount`;
+  }
+}
+
+function updateAmmWdwFields() {
+  const mode  = $('amm-wdw-mode').value;
+  const asset = state.pendingSend?.ammWdwAsset ?? 1;
+  const { label1, label2 } = state.pendingSend ?? {};
+
+  const isOneAsset = ['one-asset-all', 'single-asset', 'one-asset-lp', 'one-asset-limit'].includes(mode);
+  const isTwoAsset = mode === 'two-asset';
+  const hasAmount  = ['single-asset', 'one-asset-lp', 'one-asset-limit'].includes(mode);
+  const hasLpIn    = mode === 'lp-token' || mode === 'one-asset-lp';
+  const hasEPrice  = mode === 'one-asset-limit';
+
+  $('amm-wdw-asset-group').classList.toggle('hidden', !isOneAsset);
+  $('amm-wdw-amount1-group').classList.toggle('hidden', !hasAmount && !isTwoAsset);
+  $('amm-wdw-amount2-group').classList.toggle('hidden', !isTwoAsset);
+  $('amm-wdw-lptoken-group').classList.toggle('hidden', !hasLpIn);
+  $('amm-wdw-eprice-group').classList.toggle('hidden', !hasEPrice);
+
+  if (isTwoAsset) {
+    $('amm-wdw-amount1-label').textContent = `${label1 ?? 'Asset 1'} amount`;
+  } else if (hasAmount) {
+    const lbl = asset === 1 ? (label1 ?? 'Asset 1') : (label2 ?? 'Asset 2');
+    $('amm-wdw-amount1-label').textContent = `${lbl} amount`;
+    $('amm-wdw-eprice-label').textContent  = `Effective price limit (${lbl} per LP token)`;
+  }
+}
+
+function reviewAmmDeposit() {
+  const { pendingSend } = state;
+  if (!pendingSend || pendingSend.type !== 'amm') return;
+
+  $('amm-dep-error').classList.add('hidden');
+
+  const mode  = $('amm-dep-mode').value;
+  const asset = pendingSend.ammDepAsset ?? 1;
+  const { asset1, asset2, currency: lpCurrency, issuer: lpIssuer, label1, label2 } = pendingSend;
+
+  const showBothAssets = mode === 'two-asset';
+  const isOneAsset     = mode === 'one-asset' || mode === 'one-asset-lp' || mode === 'one-asset-limit';
+  const hasLp          = mode === 'two-asset-lp' || mode === 'one-asset-lp';
+  const hasEPrice      = mode === 'one-asset-limit';
+  const lpOnly         = mode === 'two-asset-lp' || mode === 'one-asset-lp';
+
+  // Build XRPL Amount field from user input + pool asset type
+  const buildAmt = (poolAsset, str) =>
+    typeof poolAsset === 'string' ? xrpToDrops(str) : { currency: poolAsset.currency, issuer: poolAsset.issuer, value: str };
+
+  // Build Asset spec (no value) for AMMDeposit Asset / Asset2 fields
+  const assetSpec = (poolAsset) =>
+    typeof poolAsset === 'string' ? { currency: 'XRP' } : { currency: poolAsset.currency, issuer: poolAsset.issuer };
+
+  const row = (label, value, cls = '') =>
+    `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+  const rows = [
+    row('Type', 'AMMDeposit', 'tx-type'),
+    row('Pool', esc(`${label1} / ${label2}`)),
+  ];
+
+  const txJson = {
+    TransactionType: 'AMMDeposit',
+    Account: state.wallet.address,
+    Asset: assetSpec(asset1),
+    Asset2: assetSpec(asset2),
+  };
+
+  // Explicit Flags required — ledger uses these to determine deposit mode
+  const modeFlags = {
+    'two-asset':       0x00100000,
+    'two-asset-lp':    0x00010000,
+    'one-asset':       0x00080000,
+    'one-asset-lp':    0x00200000,
+    'one-asset-limit': 0x00400000,
+  };
+  txJson.Flags = modeFlags[mode] ?? 0x00100000;
+
+  // Amount (asset1, for two-asset or one-asset modes — not for two-asset-lp)
+  if (!lpOnly && (showBothAssets || (isOneAsset && asset === 1))) {
+    const s = $('amm-dep-amount1').value.trim();
+    const n = parseFloat(s);
+    if (!s || isNaN(n) || n <= 0) { showAlert('amm-dep-error', `Enter a valid ${label1} amount.`); return; }
+    txJson.Amount = buildAmt(asset1, s);
+    rows.push(row(label1, s));
+  }
+
+  // Amount2 (asset2, for two-asset or one-asset modes — not for two-asset-lp)
+  if (!lpOnly && (showBothAssets || (isOneAsset && asset === 2))) {
+    const s = $('amm-dep-amount2').value.trim();
+    const n = parseFloat(s);
+    if (!s || isNaN(n) || n <= 0) { showAlert('amm-dep-error', `Enter a valid ${label2} amount.`); return; }
+    txJson.Amount2 = buildAmt(asset2, s);
+    rows.push(row(label2, s));
+  }
+
+  // one-asset-lp: Amount always refers to Asset; if asset2 is selected, swap Asset/Asset2
+  if (mode === 'one-asset-lp') {
+    const s = $('amm-dep-maxamt').value.trim();
+    const n = parseFloat(s);
+    const lbl = asset === 1 ? label1 : label2;
+    if (!s || isNaN(n) || n <= 0) { showAlert('amm-dep-error', `Enter a valid maximum ${lbl} amount.`); return; }
+    if (asset === 2) {
+      txJson.Asset  = assetSpec(asset2);
+      txJson.Asset2 = assetSpec(asset1);
+    }
+    txJson.Amount = buildAmt(asset === 1 ? asset1 : asset2, s);
+    rows.push(row(`Max ${lbl}`, s));
+  }
+
+  // LPTokenOut
+  if (hasLp) {
+    const s = $('amm-dep-lptoken').value.trim();
+    const n = parseFloat(s);
+    if (!s || isNaN(n) || n <= 0) { showAlert('amm-dep-error', 'Enter a valid LP token amount.'); return; }
+    txJson.LPTokenOut = { currency: lpCurrency, issuer: lpIssuer, value: s };
+    rows.push(row('LP Tokens out', s));
+  }
+
+  // EPrice
+  if (hasEPrice) {
+    const s = $('amm-dep-eprice').value.trim();
+    const n = parseFloat(s);
+    if (!s || isNaN(n) || n <= 0) { showAlert('amm-dep-error', 'Enter a valid effective price.'); return; }
+    txJson.EPrice = buildAmt(asset === 1 ? asset1 : asset2, s);
+    rows.push(row('Effective price', s));
+  }
+
+  $('send-review-details').innerHTML = rows.join('');
+  $('review-title').textContent = 'Review AMM Deposit';
+  state.pendingTxReview = { txJson, backView: 'send-payment', successMsg: 'AMM deposit submitted!' };
+  showView('send-review');
+}
+
+function reviewAmmWithdraw() {
+  const { pendingSend } = state;
+  if (!pendingSend || pendingSend.type !== 'amm') return;
+
+  $('amm-wdw-error').classList.add('hidden');
+
+  const mode  = $('amm-wdw-mode').value;
+  const asset = pendingSend.ammWdwAsset ?? 1;
+  const { asset1, asset2, currency: lpCurrency, issuer: lpIssuer, label1, label2 } = pendingSend;
+
+  const isOneAsset = ['one-asset-all', 'single-asset', 'one-asset-lp', 'one-asset-limit'].includes(mode);
+  const isTwoAsset = mode === 'two-asset';
+  const hasAmount  = ['single-asset', 'one-asset-lp', 'one-asset-limit'].includes(mode);
+  const hasLpIn    = mode === 'lp-token' || mode === 'one-asset-lp';
+  const hasEPrice  = mode === 'one-asset-limit';
+
+  const buildAmt = (poolAsset, str) =>
+    typeof poolAsset === 'string' ? xrpToDrops(str) : { currency: poolAsset.currency, issuer: poolAsset.issuer, value: str };
+  const assetSpec = (poolAsset) =>
+    typeof poolAsset === 'string' ? { currency: 'XRP' } : { currency: poolAsset.currency, issuer: poolAsset.issuer };
+  const row = (label, value, cls = '') =>
+    `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+  const assetLbl = asset === 1 ? label1 : label2;
+  const rows = [
+    row('Type', 'AMMWithdraw', 'tx-type'),
+    row('Pool', esc(`${label1} / ${label2}`)),
+  ];
+
+  // For single-asset modes, swap Asset/Asset2 when asset2 is selected so Amount always maps to Asset
+  const txJson = {
+    TransactionType: 'AMMWithdraw',
+    Account: state.wallet.address,
+    Asset:  (isOneAsset && asset === 2) ? assetSpec(asset2) : assetSpec(asset1),
+    Asset2: (isOneAsset && asset === 2) ? assetSpec(asset1) : assetSpec(asset2),
+  };
+
+  const modeFlags = {
+    'lp-token':        0x00010000,
+    'withdraw-all':    0x00020000,
+    'one-asset-all':   0x00040000,
+    'single-asset':    0x00080000,
+    'two-asset':       0x00100000,
+    'one-asset-lp':    0x00200000,
+    'one-asset-limit': 0x00400000,
+  };
+  txJson.Flags = modeFlags[mode] ?? 0x00010000;
+
+  // Single-asset amount (always Amount, not Amount2, due to swap)
+  if (hasAmount) {
+    const s = $('amm-wdw-amount1').value.trim();
+    const n = parseFloat(s);
+    if (!s || isNaN(n) || n <= 0) { showAlert('amm-wdw-error', `Enter a valid ${assetLbl} amount.`); return; }
+    txJson.Amount = buildAmt(asset === 1 ? asset1 : asset2, s);
+    rows.push(row(assetLbl, s));
+  }
+
+  // Two-asset: Amount + Amount2
+  if (isTwoAsset) {
+    const s1 = $('amm-wdw-amount1').value.trim();
+    const n1 = parseFloat(s1);
+    if (!s1 || isNaN(n1) || n1 <= 0) { showAlert('amm-wdw-error', `Enter a valid ${label1} amount.`); return; }
+    txJson.Amount = buildAmt(asset1, s1);
+    rows.push(row(label1, s1));
+
+    const s2 = $('amm-wdw-amount2').value.trim();
+    const n2 = parseFloat(s2);
+    if (!s2 || isNaN(n2) || n2 <= 0) { showAlert('amm-wdw-error', `Enter a valid ${label2} amount.`); return; }
+    txJson.Amount2 = buildAmt(asset2, s2);
+    rows.push(row(label2, s2));
+  }
+
+  // LPTokenIn
+  if (hasLpIn) {
+    const s = $('amm-wdw-lptoken').value.trim();
+    const n = parseFloat(s);
+    if (!s || isNaN(n) || n <= 0) { showAlert('amm-wdw-error', 'Enter a valid LP token amount.'); return; }
+    txJson.LPTokenIn = { currency: lpCurrency, issuer: lpIssuer, value: s };
+    rows.push(row('LP Tokens in', s));
+  }
+
+  // EPrice
+  if (hasEPrice) {
+    const s = $('amm-wdw-eprice').value.trim();
+    const n = parseFloat(s);
+    if (!s || isNaN(n) || n <= 0) { showAlert('amm-wdw-error', 'Enter a valid effective price.'); return; }
+    txJson.EPrice = buildAmt(asset === 1 ? asset1 : asset2, s);
+    rows.push(row('Effective price', s));
+  }
+
+  $('send-review-details').innerHTML = rows.join('');
+  $('review-title').textContent = 'Review AMM Withdrawal';
+  state.pendingTxReview = { txJson, backView: 'send-payment', successMsg: 'AMM withdrawal submitted!' };
+  showView('send-review');
+}
+
 function switchSendTab(tab) {
   const isTransfer = tab === 'transfer';
   $('send-tab-transfer-panel').classList.toggle('hidden', !isTransfer);
@@ -1899,6 +2267,7 @@ async function openSendPayment(type, data) {
 
   switchSendTab(type === 'amm' || type === 'vault' ? 'deposit' : 'transfer');
   if (type === 'vault') openVaultDW();
+  else if (type === 'amm') openAmmDeposit();
 
   await populateSendDestination();
   showView('send-payment');
@@ -3243,8 +3612,12 @@ $('amm-balance-list').addEventListener('click', (e) => {
   openSendPayment('amm', {
     displayName: item.dataset.display,
     balance:     item.dataset.balance,
-    currency:    item.dataset.currency,
-    issuer:      item.dataset.issuer,
+    currency:    item.dataset.currency,  // LP token currency
+    issuer:      item.dataset.issuer,    // LP token issuer (= AMM account)
+    asset1:      JSON.parse(decodeURIComponent(item.dataset.asset1 || 'null')),
+    asset2:      JSON.parse(decodeURIComponent(item.dataset.asset2 || 'null')),
+    label1:      item.dataset.label1,
+    label2:      item.dataset.label2,
   });
 });
 
@@ -3265,6 +3638,56 @@ $('vault-balance-list').addEventListener('click', (e) => {
 
 $('send-tab-transfer-btn').addEventListener('click', () => switchSendTab('transfer'));
 $('send-tab-deposit-btn').addEventListener('click', () => switchSendTab('deposit'));
+
+// AMM deposit
+$('amm-dep-mode').addEventListener('change', updateAmmDepFields);
+
+$('amm-dep-asset1-btn').addEventListener('click', () => {
+  if (!state.pendingSend) return;
+  state.pendingSend.ammDepAsset = 1;
+  $('amm-dep-asset1-btn').classList.add('vault-dw-tab-active');
+  $('amm-dep-asset2-btn').classList.remove('vault-dw-tab-active');
+  const { label1 } = state.pendingSend;
+  $('amm-dep-eprice-label').textContent = `Effective price limit (${label1} per LP token)`;
+  updateAmmDepFields();
+});
+
+$('amm-dep-asset2-btn').addEventListener('click', () => {
+  if (!state.pendingSend) return;
+  state.pendingSend.ammDepAsset = 2;
+  $('amm-dep-asset2-btn').classList.add('vault-dw-tab-active');
+  $('amm-dep-asset1-btn').classList.remove('vault-dw-tab-active');
+  const { label2 } = state.pendingSend;
+  $('amm-dep-eprice-label').textContent = `Effective price limit (${label2} per LP token)`;
+  updateAmmDepFields();
+});
+
+$('amm-dep-review-btn').addEventListener('click', reviewAmmDeposit);
+
+// AMM deposit/withdraw mode tabs
+$('amm-mode-deposit-btn').addEventListener('click', () => switchAmmMode('deposit'));
+$('amm-mode-withdraw-btn').addEventListener('click', () => switchAmmMode('withdraw'));
+
+// AMM withdraw
+$('amm-wdw-mode').addEventListener('change', updateAmmWdwFields);
+
+$('amm-wdw-asset1-btn').addEventListener('click', () => {
+  if (!state.pendingSend) return;
+  state.pendingSend.ammWdwAsset = 1;
+  $('amm-wdw-asset1-btn').classList.add('vault-dw-tab-active');
+  $('amm-wdw-asset2-btn').classList.remove('vault-dw-tab-active');
+  updateAmmWdwFields();
+});
+
+$('amm-wdw-asset2-btn').addEventListener('click', () => {
+  if (!state.pendingSend) return;
+  state.pendingSend.ammWdwAsset = 2;
+  $('amm-wdw-asset2-btn').classList.add('vault-dw-tab-active');
+  $('amm-wdw-asset1-btn').classList.remove('vault-dw-tab-active');
+  updateAmmWdwFields();
+});
+
+$('amm-wdw-review-btn').addEventListener('click', reviewAmmWithdraw);
 
 $('vault-deposit-mode-btn').addEventListener('click', () => switchVaultDWMode('deposit'));
 $('vault-withdraw-mode-btn').addEventListener('click', () => switchVaultDWMode('withdraw'));
@@ -3339,7 +3762,7 @@ $('send-review-cancel-btn').addEventListener('click', () => {
   const back = state.pendingTxReview?.backView ?? 'send-payment';
   state.pendingTxReview = null;
   showView(back);
-  if (back === 'send-payment' && state.pendingSend?.type === 'vault') {
+  if (back === 'send-payment' && (state.pendingSend?.type === 'vault' || state.pendingSend?.type === 'amm')) {
     switchSendTab('deposit');
   }
 });
@@ -3347,6 +3770,14 @@ $('send-review-cancel-btn').addEventListener('click', () => {
 $('send-review-submit-btn').addEventListener('click', () => {
   if (state.pendingTxReview) executeReviewedTx();
   else executeSendPayment();
+});
+
+$('review-copy-json-btn').addEventListener('click', () => {
+  const json = $('review-raw-json').textContent;
+  navigator.clipboard.writeText(json).then(() => {
+    $('review-copy-json-btn').textContent = 'Copied!';
+    setTimeout(() => { $('review-copy-json-btn').textContent = 'Copy'; }, 1500);
+  });
 });
 
 // ─────────────────────────────────────────────

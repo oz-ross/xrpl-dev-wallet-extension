@@ -680,32 +680,170 @@
     </div>
 
     <div id="send-tab-deposit-panel" class="hidden">
-      <div class="vault-dw-tabs">
-        <button id="vault-deposit-mode-btn" class="vault-dw-tab vault-dw-tab-active">Deposit</button>
-        <button id="vault-withdraw-mode-btn" class="vault-dw-tab">Withdraw</button>
-      </div>
 
-      <div class="send-balance-card vault-dw-info-card">
-        <div class="balance-label">Shares Held</div>
-        <div id="vault-dw-shares" class="balance-amount">—</div>
-      </div>
+      <!-- ── AMM Deposit / Withdraw ── -->
+      <div id="amm-deposit-section" class="hidden">
 
-      <div id="vault-withdraw-by-group" class="form-group hidden">
-        <label>Specify amount by</label>
-        <div class="vault-dw-tabs">
-          <button id="vault-withdraw-by-asset-btn" class="vault-dw-tab vault-dw-tab-active">Asset amount</button>
-          <button id="vault-withdraw-by-shares-btn" class="vault-dw-tab">Share amount</button>
+        <div class="vault-dw-tabs" style="margin-bottom:12px">
+          <button id="amm-mode-deposit-btn" class="vault-dw-tab vault-dw-tab-active">Deposit</button>
+          <button id="amm-mode-withdraw-btn" class="vault-dw-tab">Withdraw</button>
         </div>
+
+        <!-- ── Deposit sub-section ── -->
+        <div id="amm-dep-sub">
+
+          <div class="form-group" style="margin-bottom:4px">
+            <label>Current balances</label>
+          </div>
+          <div class="detail-card" style="margin-bottom:12px">
+            <div class="detail-row">
+              <span class="detail-label" id="amm-dep-label1">Asset 1</span>
+              <span id="amm-dep-bal1" class="detail-value">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label" id="amm-dep-label2">Asset 2</span>
+              <span id="amm-dep-bal2" class="detail-value">—</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="amm-dep-mode">Deposit Mode</label>
+            <select id="amm-dep-mode">
+              <option value="two-asset">Two-asset</option>
+              <option value="two-asset-lp">Two-asset + LP Token out</option>
+              <option value="one-asset">One-asset</option>
+              <option value="one-asset-lp">One-asset + LP Token out</option>
+              <option value="one-asset-limit">One-asset + Price limit</option>
+            </select>
+          </div>
+
+          <div id="amm-dep-asset-group" class="form-group hidden">
+            <label>Asset to deposit</label>
+            <div class="vault-dw-tabs">
+              <button id="amm-dep-asset1-btn" class="vault-dw-tab vault-dw-tab-active">Asset 1</button>
+              <button id="amm-dep-asset2-btn" class="vault-dw-tab">Asset 2</button>
+            </div>
+          </div>
+
+          <div id="amm-dep-amount1-group" class="form-group">
+            <label for="amm-dep-amount1" id="amm-dep-amount1-label">Asset 1 amount</label>
+            <input type="number" id="amm-dep-amount1" placeholder="0.00" min="0" step="any" />
+          </div>
+
+          <div id="amm-dep-amount2-group" class="form-group hidden">
+            <label for="amm-dep-amount2" id="amm-dep-amount2-label">Asset 2 amount</label>
+            <input type="number" id="amm-dep-amount2" placeholder="0.00" min="0" step="any" />
+          </div>
+
+          <div id="amm-dep-lptoken-group" class="form-group hidden">
+            <label for="amm-dep-lptoken">LP Tokens to receive</label>
+            <input type="number" id="amm-dep-lptoken" placeholder="0.00" min="0" step="any" />
+          </div>
+
+          <div id="amm-dep-maxamt-group" class="form-group hidden">
+            <label for="amm-dep-maxamt" id="amm-dep-maxamt-label">Maximum asset amount</label>
+            <input type="number" id="amm-dep-maxamt" placeholder="0.00" min="0" step="any" />
+          </div>
+
+          <div id="amm-dep-eprice-group" class="form-group hidden">
+            <label for="amm-dep-eprice" id="amm-dep-eprice-label">Effective price limit</label>
+            <input type="number" id="amm-dep-eprice" placeholder="0.00" min="0" step="any" />
+          </div>
+
+          <div id="amm-dep-error" class="alert alert-error hidden"></div>
+          <button id="amm-dep-review-btn" class="btn btn-primary btn-full" style="margin-top:6px">Review Deposit</button>
+        </div>
+
+        <!-- ── Withdraw sub-section ── -->
+        <div id="amm-wdw-sub" class="hidden">
+
+          <div class="form-group" style="margin-bottom:4px">
+            <label>LP Token balance</label>
+          </div>
+          <div class="detail-card" style="margin-bottom:12px">
+            <div class="detail-row">
+              <span class="detail-label">LP Tokens held</span>
+              <span id="amm-wdw-lp-bal" class="detail-value">—</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="amm-wdw-mode">Withdraw Mode</label>
+            <select id="amm-wdw-mode">
+              <option value="lp-token">LP Token In (proportional)</option>
+              <option value="withdraw-all">Withdraw All</option>
+              <option value="one-asset-all">One Asset - All LP Tokens</option>
+              <option value="single-asset">Single Asset</option>
+              <option value="two-asset">Two Asset</option>
+              <option value="one-asset-lp">One Asset + LP Token In</option>
+              <option value="one-asset-limit">One Asset + Price Limit</option>
+            </select>
+          </div>
+
+          <div id="amm-wdw-asset-group" class="form-group hidden">
+            <label>Asset to receive</label>
+            <div class="vault-dw-tabs">
+              <button id="amm-wdw-asset1-btn" class="vault-dw-tab vault-dw-tab-active">Asset 1</button>
+              <button id="amm-wdw-asset2-btn" class="vault-dw-tab">Asset 2</button>
+            </div>
+          </div>
+
+          <div id="amm-wdw-amount1-group" class="form-group hidden">
+            <label id="amm-wdw-amount1-label">Asset 1 amount</label>
+            <input type="number" id="amm-wdw-amount1" placeholder="0.00" min="0" step="any" />
+          </div>
+
+          <div id="amm-wdw-amount2-group" class="form-group hidden">
+            <label id="amm-wdw-amount2-label">Asset 2 amount</label>
+            <input type="number" id="amm-wdw-amount2" placeholder="0.00" min="0" step="any" />
+          </div>
+
+          <div id="amm-wdw-lptoken-group" class="form-group hidden">
+            <label for="amm-wdw-lptoken">LP Tokens to burn</label>
+            <input type="number" id="amm-wdw-lptoken" placeholder="0.00" min="0" step="any" />
+          </div>
+
+          <div id="amm-wdw-eprice-group" class="form-group hidden">
+            <label id="amm-wdw-eprice-label">Effective price limit</label>
+            <input type="number" id="amm-wdw-eprice" placeholder="0.00" min="0" step="any" />
+          </div>
+
+          <div id="amm-wdw-error" class="alert alert-error hidden"></div>
+          <button id="amm-wdw-review-btn" class="btn btn-primary btn-full" style="margin-top:6px">Review Withdrawal</button>
+        </div>
+
       </div>
 
-      <div class="form-group">
-        <label for="vault-dw-amount" id="vault-dw-amount-label">Amount</label>
-        <input type="number" id="vault-dw-amount" placeholder="0.00" min="0" step="any" />
+      <!-- ── Vault Deposit / Withdraw ── -->
+      <div id="vault-dw-section" class="hidden">
+        <div class="vault-dw-tabs">
+          <button id="vault-deposit-mode-btn" class="vault-dw-tab vault-dw-tab-active">Deposit</button>
+          <button id="vault-withdraw-mode-btn" class="vault-dw-tab">Withdraw</button>
+        </div>
+
+        <div class="send-balance-card vault-dw-info-card">
+          <div class="balance-label">Shares Held</div>
+          <div id="vault-dw-shares" class="balance-amount">—</div>
+        </div>
+
+        <div id="vault-withdraw-by-group" class="form-group hidden">
+          <label>Specify amount by</label>
+          <div class="vault-dw-tabs">
+            <button id="vault-withdraw-by-asset-btn" class="vault-dw-tab vault-dw-tab-active">Asset amount</button>
+            <button id="vault-withdraw-by-shares-btn" class="vault-dw-tab">Share amount</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="vault-dw-amount" id="vault-dw-amount-label">Amount</label>
+          <input type="number" id="vault-dw-amount" placeholder="0.00" min="0" step="any" />
+        </div>
+
+        <div id="vault-dw-error" class="alert alert-error hidden"></div>
+
+        <button id="vault-dw-review-btn" class="btn btn-primary btn-full" style="margin-top:6px">Review</button>
       </div>
 
-      <div id="vault-dw-error" class="alert alert-error hidden"></div>
-
-      <button id="vault-dw-review-btn" class="btn btn-primary btn-full" style="margin-top:6px">Review</button>
     </div>
   </div>
 
@@ -716,6 +854,14 @@
     </div>
 
     <div id="send-review-details" class="tx-card"></div>
+
+    <details id="review-json-details" class="review-json-panel">
+      <summary class="review-json-summary">Raw JSON</summary>
+      <div class="review-json-body">
+        <pre id="review-raw-json"></pre>
+        <button id="review-copy-json-btn" class="btn btn-ghost review-json-copy">Copy</button>
+      </div>
+    </details>
 
     <div class="action-row">
       <button id="send-review-cancel-btn" class="btn btn-ghost">Cancel</button>
