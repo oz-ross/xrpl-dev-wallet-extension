@@ -1834,6 +1834,100 @@ input[type="number"]:focus { border-color: var(--accent); }
   color: #ca8a04;
 }
 
+/* Lending positions — reuse .vault-balance-item + .amm-* classes for layout */
+.loan-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 0 4px;
+}
+.loan-section-label:not(:first-child) {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.loan-status-badges {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 4px;
+}
+.loan-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.loan-badge-default {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+.loan-badge-impaired {
+  background: rgba(234, 179, 8, 0.15);
+  color: #ca8a04;
+}
+.loan-badge-overdue {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+.loan-badge-overpayment {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+
+.loan-item .amm-asset-value.loan-due-overdue {
+  color: #ef4444;
+  font-weight: 700;
+}
+
+/* Collapsible sub-list of loans under a broker */
+.loan-sub-list {
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+}
+.loan-sub-list[open] > summary::after {
+  content: '▴';
+}
+.loan-sub-list > summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 4px 0;
+  user-select: none;
+}
+.loan-sub-list > summary::-webkit-details-marker { display: none; }
+.loan-sub-list > summary::after {
+  content: '▾';
+  margin-left: 6px;
+}
+.loan-sub-list > summary:hover { color: var(--text-2); }
+
+/* Loans inside a broker are tighter */
+.loan-sub-list .vault-balance-item {
+  padding: 6px 0;
+}
+
+.copy-address-btn {
+  background: transparent;
+  border: none;
+  padding: 0 0 0 4px;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  vertical-align: middle;
+}
+.copy-address-btn:hover { color: var(--text); }
+
 /* Credential detail view */
 .detail-card {
   background: var(--surface-2);

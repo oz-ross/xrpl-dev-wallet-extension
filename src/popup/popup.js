@@ -656,6 +656,7 @@ async function activateAccount(address) {
   loadIouBalances();
   loadMptBalances();
   loadCredentials();
+  loadLendingPositions();
   loadTxHistory();
 }
 
@@ -965,6 +966,7 @@ async function finalizeAccountCreation() {
     loadIouBalances();
     loadMptBalances();
     loadCredentials();
+    loadLendingPositions();
     loadTxHistory();
     await initWalletConnect();
     await checkPendingWcEvent();
@@ -1005,6 +1007,7 @@ async function unlock() {
     loadIouBalances();
     loadMptBalances();
     loadCredentials();
+    loadLendingPositions();
     loadTxHistory();
     await initWalletConnect();
     await checkPendingWcEvent();
@@ -1710,6 +1713,394 @@ function acceptCredential(cred) {
   $('review-title').textContent = 'Accept Credential';
   state.pendingTxReview = { txJson, backView: 'credential-detail', successMsg: 'Credential accepted!' };
   showView('send-review');
+}
+
+// ─── Lending Positions (LoanBroker + Loan) ──────────────────────────────────
+
+// 1/10th basis points: 1 = 0.001%, 1000 = 1%, 100000 = 100%.
+function formatTenthBps(n) {
+  const v = Number(n ?? 0);
+  if (!Number.isFinite(v)) return '—';
+  return `${(v / 1000).toFixed(3).replace(/\.?0+$/, '')}%`;
+}
+
+// Render a Loan's NUMBER amount in the underlying Vault asset.
+function formatLoanAmount(numStr, asset) {
+  if (numStr == null) return '—';
+  const n = parseFloat(numStr);
+  const pretty = Number.isFinite(n)
+    ? n.toLocaleString(undefined, { maximumFractionDigits: 6 })
+    : String(numStr);
+  const suffix = asset ? ` ${formatPoolAsset(asset)}` : '';
+  return `${pretty}${suffix}`;
+}
+
+function shortHash(h) {
+  if (!h) return '';
+  return h.length >= 12 ? `${h.slice(0, 8)}…${h.slice(-4)}` : h;
+}
+
+async function fetchVaultAsset(vaultID, cache) {
+  if (!vaultID) return null;
+  if (cache.has(vaultID)) return cache.get(vaultID);
+  try {
+    const resp = await state.client.request({
+      command: 'ledger_entry',
+      index: vaultID,
+      ledger_index: 'validated',
+    });
+    const asset = resp.result?.node?.Asset ?? null;
+    cache.set(vaultID, asset);
+    return asset;
+  } catch {
+    cache.set(vaultID, null);
+    return null;
+  }
+}
+
+async function fetchLoansUnderBroker(brokerAccount) {
+  if (!brokerAccount) return [];
+  try {
+    const resp = await state.client.request({
+      command: 'account_objects',
+      account: brokerAccount,
+      ledger_index: 'validated',
+    });
+    return (resp.result.account_objects ?? [])
+      .filter(o => o.LedgerEntryType === 'Loan');
+  } catch {
+    return [];
+  }
+}
+
+async function loadLendingPositions() {
+  if (!state.activeAccount || !state.client) return;
+  try {
+    await ensureConnected();
+    const resp = await state.client.request({
+      command: 'account_objects',
+      account: state.activeAccount,
+      ledger_index: 'validated',
+    });
+    const objects = resp.result.account_objects ?? [];
+    const brokers = objects.filter(o => o.LedgerEntryType === 'LoanBroker');
+    const borrowerLoans = objects.filter(o => o.LedgerEntryType === 'Loan');
+
+    // Seed the vault-asset cache with Vaults already present in this account's
+    // account_objects — LoanBroker.Owner == Vault.Owner per spec §2, so the
+    // Vault usually shows up in the same response and we avoid a round-trip.
+    const vaultAssetCache = new Map(
+      objects
+        .filter(o => o.LedgerEntryType === 'Vault' && o.index && o.Asset)
+        .map(o => [o.index, o.Asset])
+    );
+
+    // For each broker, resolve Vault asset + pull loans under the broker's
+    // pseudo-account. Fan out in parallel.
+    const brokerDetails = await Promise.all(brokers.map(async (b) => {
+      const [asset, loans] = await Promise.all([
+        fetchVaultAsset(b.VaultID, vaultAssetCache),
+        fetchLoansUnderBroker(b.Account),
+      ]);
+      return { broker: b, asset, loans };
+    }));
+
+    // Borrower-side loans: resolve the asset + lender address via LoanBrokerID.
+    // First try the cache populated from brokers we already walked; fall back
+    // to a ledger_entry lookup on the LoanBroker object.
+    const brokerInfoByID = new Map(
+      brokers.map(b => [b.index, { vaultID: b.VaultID, owner: b.Owner }])
+    );
+    const borrowerLoanDetails = await Promise.all(borrowerLoans.map(async (l) => {
+      let info = brokerInfoByID.get(l.LoanBrokerID);
+      if (!info) {
+        try {
+          const r = await state.client.request({
+            command: 'ledger_entry',
+            index: l.LoanBrokerID,
+            ledger_index: 'validated',
+          });
+          info = {
+            vaultID: r.result?.node?.VaultID ?? null,
+            owner:   r.result?.node?.Owner   ?? null,
+          };
+        } catch { info = { vaultID: null, owner: null }; }
+      }
+      const asset = info.vaultID ? await fetchVaultAsset(info.vaultID, vaultAssetCache) : null;
+      return { loan: l, asset, lender: info.owner, brokerID: l.LoanBrokerID };
+    }));
+
+    // Guard against stale responses after account switch.
+    if (state.activeAccount !== resp.result.account) return;
+
+    // Apply urgency-first ordering
+    brokerDetails.sort(compareBrokerDetails);
+    for (const d of brokerDetails) d.loans.sort(compareLoans);
+    borrowerLoanDetails.sort((x, y) => compareLoans(x.loan, y.loan));
+
+    renderLendingPositions(brokerDetails, borrowerLoanDetails);
+  } catch (err) {
+    if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
+      renderLendingPositions([], []);
+    } else {
+      console.error('[lending positions]', err);
+      renderLendingPositions([], []);
+    }
+  }
+}
+
+// Loan flags from spec §3.2.3
+const LSF_LOAN_DEFAULT     = 0x00010000;
+const LSF_LOAN_IMPAIRED    = 0x00020000;
+const LSF_LOAN_OVERPAYMENT = 0x00040000;
+
+const LOAN_COLLAPSE_THRESHOLD = 3;
+
+// Status tier for sorting loans — exceptions float up, terminal state sinks.
+// 0 = overdue (most urgent), 1 = impaired, 2 = normal, 3 = defaulted (sunk).
+function loanStatusTier(loan) {
+  const flags = loan.Flags ?? 0;
+  if (flags & LSF_LOAN_DEFAULT) return 3;
+  const due = xrplDateToLocal(loan.NextPaymentDueDate);
+  const remaining = loan.PaymentRemaining ?? 0;
+  const isOverdue = due && due.getTime() < Date.now() && remaining > 0;
+  if (isOverdue) return 0;
+  if (flags & LSF_LOAN_IMPAIRED) return 1;
+  return 2;
+}
+
+function compareLoans(a, b) {
+  const ta = loanStatusTier(a), tb = loanStatusTier(b);
+  if (ta !== tb) return ta - tb;
+  const da = a.NextPaymentDueDate ?? Number.MAX_SAFE_INTEGER;
+  const db = b.NextPaymentDueDate ?? Number.MAX_SAFE_INTEGER;
+  return da - db;
+}
+
+// Brokers: active (has loans) first, then by DebtTotal desc, then CoverAvailable desc.
+function compareBrokerDetails(a, b) {
+  const aActive = a.loans.length > 0 ? 1 : 0;
+  const bActive = b.loans.length > 0 ? 1 : 0;
+  if (aActive !== bActive) return bActive - aActive;
+  const dt = parseFloat(b.broker.DebtTotal ?? '0') - parseFloat(a.broker.DebtTotal ?? '0');
+  if (dt !== 0) return dt;
+  return parseFloat(b.broker.CoverAvailable ?? '0') - parseFloat(a.broker.CoverAvailable ?? '0');
+}
+
+function renderLendingPositions(brokerDetails, borrowerLoanDetails) {
+  const card      = $('lending-card');
+  const brokersEl = $('loan-broker-list');
+  const loansEl   = $('borrower-loan-list');
+
+  const isEmpty = brokerDetails.length === 0 && borrowerLoanDetails.length === 0;
+  if (isEmpty) {
+    card.classList.add('hidden');
+    brokersEl.innerHTML = '';
+    loansEl.innerHTML = '';
+    return;
+  }
+  card.classList.remove('hidden');
+
+  brokersEl.innerHTML = brokerDetails.length
+    ? renderCollapsible(
+        'LoanBrokers you own',
+        brokerDetails.map(d => renderBrokerItem(d)).join(''),
+        brokerDetails.length,
+        'broker',
+      )
+    : '';
+
+  loansEl.innerHTML = borrowerLoanDetails.length
+    ? renderCollapsible(
+        'Loans where you are the Borrower',
+        borrowerLoanDetails.map(d => renderLoanItem(d.loan, d.asset, {
+          showBorrower: false,
+          lender: d.lender,
+          brokerID: d.brokerID,
+        })).join(''),
+        borrowerLoanDetails.length,
+        'loan',
+      )
+    : '';
+}
+
+// Always wraps in <details> so the user can always fold, with the section label
+// above. Default-open if count ≤ threshold.
+function renderCollapsible(sectionLabel, itemsHtml, count, unitSingular) {
+  const unit = count === 1 ? unitSingular : `${unitSingular}s`;
+  const openAttr = count <= LOAN_COLLAPSE_THRESHOLD ? 'open' : '';
+  return `
+    <div class="loan-section-label">${sectionLabel}</div>
+    <details class="loan-sub-list" ${openAttr}>
+      <summary>${count} ${unit}</summary>
+      ${itemsHtml}
+    </details>`;
+}
+
+function renderBrokerItem({ broker, asset, loans }) {
+  const brokerID    = broker.index ?? '';
+  const vaultID     = broker.VaultID ?? '';
+  const pseudoAcct  = broker.Account ?? '';
+  const debtTotalF  = parseFloat(broker.DebtTotal ?? '0');
+  const debtMaxF    = parseFloat(broker.DebtMaximum ?? '0');
+  const debtMaxStr  = debtMaxF > 0 ? formatLoanAmount(broker.DebtMaximum, asset) : '∞';
+  const poolMgr     = broker.Owner ?? '';
+  const activeCount = broker.OwnerCount ?? 0;
+  const headline    = formatLoanAmount(broker.CoverAvailable, asset);
+
+  // Asset cell: "AAA (rBUx…y8KM)" so users can distinguish same-code issuers
+  const assetCell = asset
+    ? (typeof asset === 'string'
+        ? 'XRP'
+        : `${esc(formatPoolAsset(asset))} <span class="amm-issuer" title="${esc(asset.issuer ?? '')}">${esc(asset.issuer ? shortHash(asset.issuer) : '')}</span>`)
+    : '—';
+
+  // "Available to lend" — only meaningful when DebtMaximum is capped.
+  const availableF = debtMaxF > 0 ? Math.max(0, debtMaxF - debtTotalF) : null;
+  const availableRow = availableF != null
+    ? [['Available to Lend', esc(formatLoanAmount(availableF.toString(), asset))]]
+    : [];
+
+  const stats = [
+    ['Asset',            assetCell],
+    ['Vault',            `<span title="${esc(vaultID)}">${esc(shortHash(vaultID))}</span>`],
+    ['Debt',             `${esc(formatLoanAmount(broker.DebtTotal, asset))} / ${esc(debtMaxStr)}`],
+    ...availableRow,
+    ['Cover Available',  esc(formatLoanAmount(broker.CoverAvailable, asset))],
+    ['Management Fee',   esc(formatTenthBps(broker.ManagementFeeRate))],
+    ['Cover Min / Liq',  `${esc(formatTenthBps(broker.CoverRateMinimum))} / ${esc(formatTenthBps(broker.CoverRateLiquidation))}`],
+    ['Owner',            `<span title="${esc(poolMgr)}">${esc(resolveAddrDisplay(poolMgr))}</span>`],
+    ['Pseudo-account',   `
+      <span title="${esc(pseudoAcct)}">${esc(shortHash(pseudoAcct))}</span>
+      <button class="copy-address-btn" data-copy-address="${esc(pseudoAcct)}" title="Copy address">⧉</button>`],
+    ['Active Loans',     `${activeCount}`],
+  ];
+
+  const explorerAccount = getNetworkConfig().explorerAccount;
+  const explorerHref = pseudoAcct ? `${explorerAccount}${pseudoAcct}` : '';
+
+  const statsHtml = stats.map(([k, v]) => `
+    <div class="amm-asset-share">
+      <span class="amm-asset-label">${k}</span>
+      <span class="amm-asset-value">${v}</span>
+    </div>`).join('');
+
+  let loansSection = '';
+  if (loans.length) {
+    const loanItems = loans.map(l => renderLoanItem(l, asset, { showBorrower: true })).join('');
+    if (loans.length > LOAN_COLLAPSE_THRESHOLD) {
+      loansSection = `
+        <details class="loan-sub-list">
+          <summary>${loans.length} loans</summary>
+          ${loanItems}
+        </details>`;
+    } else {
+      loansSection = `
+        <details class="loan-sub-list" open>
+          <summary>${loans.length} loan${loans.length === 1 ? '' : 's'}</summary>
+          ${loanItems}
+        </details>`;
+    }
+  }
+
+  const explorerLink = explorerHref
+    ? `<a class="token-explorer-link" href="${esc(explorerHref)}" target="_blank" rel="noreferrer" title="View broker pseudo-account on explorer">↗</a>`
+    : '';
+
+  return `
+    <div class="vault-balance-item loan-broker-item">
+      <div class="amm-summary-row">
+        <div class="amm-token-info">
+          <span class="vault-name">LoanBroker</span>
+          <span class="amm-issuer" title="${esc(brokerID)}">${esc(shortHash(brokerID))}</span>
+        </div>
+        <div class="amm-balance-amount">${esc(headline)}</div>
+        ${explorerLink}
+      </div>
+      <div class="amm-assets-row">${statsHtml}</div>
+      ${loansSection}
+    </div>`;
+}
+
+function renderLoanItem(loan, asset, opts = {}) {
+  const { showBorrower = false, lender = null, brokerID = null } = opts;
+  const loanID    = loan.index ?? '';
+  const borrower  = loan.Borrower ?? '';
+  const flags     = loan.Flags ?? 0;
+  const defaulted = (flags & LSF_LOAN_DEFAULT) !== 0;
+  const impaired  = (flags & LSF_LOAN_IMPAIRED) !== 0;
+  const overpay   = (flags & LSF_LOAN_OVERPAYMENT) !== 0;
+
+  const dueDate   = xrplDateToLocal(loan.NextPaymentDueDate);
+  const remaining = loan.PaymentRemaining ?? 0;
+  const overdue   = dueDate && dueDate.getTime() < Date.now() && remaining > 0 && !defaulted;
+  const dueStr    = dueDate ? dueDate.toLocaleString() : '—';
+  const dueClass  = overdue ? 'loan-due-overdue' : '';
+
+  // Start date + elapsed payments.
+  // PaymentTotal isn't stored on the Loan object, so derive it from the schedule:
+  //   elapsed = (NextPaymentDueDate − StartDate) / PaymentInterval − 1
+  //   total   = elapsed + PaymentRemaining
+  const startDate   = xrplDateToLocal(loan.StartDate);
+  const startStr    = startDate ? startDate.toLocaleString() : '—';
+  let elapsedStr = '—';
+  if (loan.StartDate != null && loan.NextPaymentDueDate != null && loan.PaymentInterval) {
+    const periodsSinceStart = Math.round((loan.NextPaymentDueDate - loan.StartDate) / loan.PaymentInterval);
+    const elapsed = Math.max(0, periodsSinceStart - 1);
+    elapsedStr = `${elapsed} of ${elapsed + remaining}`;
+  }
+
+  const badges = [
+    defaulted ? '<span class="loan-badge loan-badge-default">Defaulted</span>' : '',
+    impaired  ? '<span class="loan-badge loan-badge-impaired">Impaired</span>'  : '',
+    overdue   ? '<span class="loan-badge loan-badge-overdue">Overdue</span>'    : '',
+    overpay   ? '<span class="loan-badge loan-badge-overpayment">Overpay OK</span>' : '',
+  ].filter(Boolean).join('');
+  const badgesHtml = badges ? `<span class="loan-status-badges">${badges}</span>` : '';
+
+  const stats = [
+    showBorrower
+      ? ['Borrower', `<span title="${esc(borrower)}">${esc(resolveAddrDisplay(borrower))}</span>`]
+      : null,
+    lender
+      ? ['Lender', `<span title="${esc(lender)}">${esc(resolveAddrDisplay(lender))}</span>`]
+      : null,
+    brokerID
+      ? ['LoanBroker', `<span title="${esc(brokerID)}">${esc(shortHash(brokerID))}</span>`]
+      : null,
+    ['Principal Outstanding', esc(formatLoanAmount(loan.PrincipalOutstanding, asset))],
+    ['Periodic Payment',      esc(formatLoanAmount(loan.PeriodicPayment, asset))],
+    ['Payments',              esc(elapsedStr)],
+    ['Interest Rate',         esc(formatTenthBps(loan.InterestRate))],
+    ['Started',               esc(startStr)],
+    ['Next Payment Due',      `<span class="amm-asset-value ${dueClass}">${esc(dueStr)}</span>`],
+  ].filter(Boolean);
+
+  const statsHtml = stats.map(([k, v]) => `
+    <div class="amm-asset-share">
+      <span class="amm-asset-label">${k}</span>
+      <span class="amm-asset-value">${v}</span>
+    </div>`).join('');
+
+  const explorerTx = getNetworkConfig().explorer;
+  const loanExplorerHref = loan.PreviousTxnID ? `${explorerTx}${loan.PreviousTxnID}` : '';
+  const loanExplorerLink = loanExplorerHref
+    ? `<a class="token-explorer-link" href="${esc(loanExplorerHref)}" target="_blank" rel="noreferrer" title="View last tx on explorer">↗</a>`
+    : '';
+
+  return `
+    <div class="vault-balance-item loan-item">
+      <div class="amm-summary-row">
+        <div class="amm-token-info">
+          <span class="vault-name">Loan</span>
+          <span class="amm-issuer" title="${esc(loanID)}">${esc(shortHash(loanID))}</span>
+          ${badgesHtml}
+        </div>
+        <div class="amm-balance-amount">${esc(formatLoanAmount(loan.TotalValueOutstanding, asset))}</div>
+        ${loanExplorerLink}
+      </div>
+      <div class="amm-assets-row">${statsHtml}</div>
+    </div>`;
 }
 
 function renderMptBalances(objects, issuanceMap = new Map()) {
@@ -2511,6 +2902,7 @@ async function executeSendPayment() {
     loadIouBalances();
     loadMptBalances();
     loadCredentials();
+    loadLendingPositions();
     loadTxHistory();
   } catch (err) {
     console.error('[sendPayment]', err);
@@ -2907,6 +3299,7 @@ async function executeReviewedTx() {
     loadIouBalances();
     loadMptBalances();
     loadCredentials();
+    loadLendingPositions();
     loadTxHistory();
   } catch (err) {
     console.error('[executeReviewedTx]', err);
@@ -2925,6 +3318,7 @@ function startAutoRefresh() {
     loadIouBalances();
     loadMptBalances();
     loadCredentials();
+    loadLendingPositions();
     loadTxHistory();
   }, AUTO_REFRESH_INTERVAL);
 }
@@ -3312,6 +3706,7 @@ async function approveTransaction() {
     loadIouBalances();
     loadMptBalances();
     loadCredentials();
+    loadLendingPositions();
     loadTxHistory();
   } catch (err) {
     console.error('[approveTransaction]', err);
@@ -3731,6 +4126,7 @@ $('refresh-balance-btn').addEventListener('click', () => {
   loadIouBalances();
   loadMptBalances();
   loadCredentials();
+  loadLendingPositions();
 });
 
 $('copy-address-btn').addEventListener('click', async () => {
@@ -3971,6 +4367,20 @@ $('mpt-review-btn').addEventListener('click', reviewMptAuthorize);
 // ─────────────────────────────────────────────
 
 $('add-vault-btn').addEventListener('click', openVaultDeposit);
+
+// Copy-to-clipboard for lending card (delegated — list re-renders on refresh)
+$('lending-card').addEventListener('click', async e => {
+  const btn = e.target.closest('.copy-address-btn');
+  if (!btn) return;
+  const addr = btn.dataset.copyAddress;
+  if (!addr) return;
+  try {
+    await navigator.clipboard.writeText(addr);
+    const prev = btn.textContent;
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = prev; }, 1500);
+  } catch { /* clipboard permission denied */ }
+});
 
 $('back-from-vault-deposit-btn').addEventListener('click', () => showView('wallet'));
 
@@ -4216,6 +4626,7 @@ $('mainnet-warning-reject-btn').addEventListener('click', () => {
       loadIouBalances();
       loadMptBalances();
       loadCredentials();
+      loadLendingPositions();
       loadTxHistory();
       await initWalletConnect();
       await checkPendingWcEvent();
