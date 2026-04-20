@@ -76,6 +76,11 @@
         <div class="type-label">Import Phrase</div>
         <div class="type-desc">Enter existing recovery phrase</div>
       </button>
+      <button class="account-type-card" id="type-watch">
+        <div class="type-icon">👁</div>
+        <div class="type-label">Watch Address</div>
+        <div class="type-desc">Monitor any address read-only</div>
+      </button>
       <button class="account-type-card" id="type-ledger">
         <div class="type-icon ledger-nano-icon">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 18" width="48" height="18" aria-hidden="true">
@@ -298,6 +303,79 @@
     <div id="project-from-list" class="project-from-list"></div>
   </div>
 
+  <!-- ===== WATCH ADDRESS ===== -->
+  <div id="view-import-watch" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-watch-btn" class="btn-back">‹</button>
+      <h2>Watch Address</h2>
+    </div>
+    <p class="type-hint">Monitor any XRPL address without importing a private key. Sending is not available for watch-only accounts.</p>
+    <div class="form-group">
+      <label for="watch-address-input">XRPL Address</label>
+      <input type="text" id="watch-address-input" placeholder="rXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="form-group">
+      <label for="watch-label-input">Label <span class="label-optional">(optional)</span></label>
+      <input type="text" id="watch-label-input" placeholder="e.g. Exchange Hot Wallet" maxlength="40" />
+    </div>
+    <div id="watch-error" class="alert alert-error hidden"></div>
+    <button id="watch-import-btn" class="btn btn-primary btn-full" style="margin-top:8px">Add Watch Address</button>
+  </div>
+
+  <!-- ===== EXPORT KEY ===== -->
+  <div id="view-export-key" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-export-key-btn" class="btn-back">‹</button>
+      <h2>Export Key</h2>
+    </div>
+    <div class="remove-acct-card">
+      <div class="remove-acct-name" id="export-key-acct-name"></div>
+      <div class="remove-acct-addr" id="export-key-acct-addr"></div>
+    </div>
+    <div class="alert alert-warn" style="margin-top:14px">Never share your secret key or recovery phrase. Anyone with access can take your funds.</div>
+    <div class="form-group" id="export-key-password-group" style="margin-top:14px">
+      <label for="export-key-password">Confirm Password</label>
+      <div class="input-row">
+        <input type="password" id="export-key-password" placeholder="Your wallet password" autocomplete="current-password" />
+        <button id="toggle-export-key-password-btn" class="btn-icon" title="Show/hide">👁</button>
+      </div>
+    </div>
+    <div id="export-key-error" class="alert alert-error hidden"></div>
+    <button id="export-key-reveal-btn" class="btn btn-primary btn-full" style="margin-top:8px">Reveal</button>
+    <div id="export-key-result" class="hidden" style="margin-top:14px">
+      <div id="export-key-result-label" class="export-key-label"></div>
+      <div class="export-key-box">
+        <span id="export-key-value" class="export-key-value"></span>
+        <div class="export-key-actions">
+          <button id="export-key-qr-btn" class="btn-icon" title="Show QR code">⊞</button>
+          <button id="export-key-copy-btn" class="btn-icon" title="Copy">⧉</button>
+        </div>
+      </div>
+      <div id="export-key-hide-timer" class="export-key-timer"></div>
+      <div id="export-key-qr-modal" class="export-key-qr-modal hidden">
+        <canvas id="export-key-qr-canvas"></canvas>
+        <button id="export-key-qr-close-btn" class="btn-icon qr-close" title="Close">✕</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== RAW TRANSACTION BUILDER ===== -->
+  <div id="view-raw-tx" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-raw-tx-btn" class="btn-back">‹</button>
+      <h2>Raw Transaction</h2>
+    </div>
+    <div class="form-group">
+      <label for="raw-tx-input">Transaction JSON</label>
+      <textarea id="raw-tx-input" class="raw-tx-textarea" spellcheck="false" autocomplete="off"></textarea>
+    </div>
+    <div id="raw-tx-error" class="alert alert-error hidden"></div>
+    <div class="action-row" style="margin-top:8px">
+      <button id="raw-tx-autofill-btn" class="btn btn-outline">Autofill</button>
+      <button id="raw-tx-submit-btn" class="btn btn-primary">Sign &amp; Submit</button>
+    </div>
+  </div>
+
   <!-- ===== RESTORE BACKUP ===== -->
   <div id="view-restore-backup" class="view hidden">
     <div class="view-header">
@@ -355,6 +433,7 @@
       </div>
       <div class="header-actions">
         <button id="refresh-balance-btn" class="btn-icon" title="Refresh balance">↻</button>
+        <button id="raw-tx-btn" class="btn-icon" title="Raw transaction builder">{ }</button>
         <button id="settings-btn" class="btn-icon" title="Settings">⚙</button>
         <button id="lock-btn" class="btn-icon" title="Lock wallet">🔒</button>
       </div>
@@ -379,6 +458,7 @@
     <div class="account-switcher-wrap" id="account-switcher-wrap">
       <button id="account-switcher-btn" class="account-switcher-pill">
         <span id="switcher-label" class="switcher-label"></span>
+        <span id="switcher-watch-badge" class="watch-badge hidden">watch-only</span>
         <span class="switcher-sep">·</span>
         <span id="switcher-addr" class="switcher-addr"></span>
         <span class="switcher-chevron">▾</span>
@@ -1011,6 +1091,15 @@
     </div>
 
     <div id="send-review-details" class="tx-card"></div>
+    <div id="review-fee-row" class="tx-card review-fee-card" style="margin-top:6px">
+      <div class="tx-row">
+        <span class="tx-label">Network Fee</span>
+        <span id="review-fee-value" class="tx-value review-fee-value">—</span>
+      </div>
+    </div>
+    <div id="send-review-paste-warn" class="alert alert-warn hidden" style="margin-top:10px">
+      ⚠ Destination was pasted from clipboard — verify this address is correct before sending.
+    </div>
 
     <details id="review-json-details" class="review-json-panel">
       <summary class="review-json-summary">Raw JSON</summary>

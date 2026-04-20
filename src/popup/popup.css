@@ -32,6 +32,8 @@
 body {
   width: 380px;
   min-height: 300px;
+  max-height: 600px;
+  overflow-y: auto;
   padding-bottom: 40px; /* space for fixed warning bar */
   background: var(--bg);
   color: var(--text);
@@ -1888,7 +1890,30 @@ input[type="number"]:focus { border-color: var(--accent); }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   margin-bottom: 6px;
+  cursor: grab;
+  user-select: none;
 }
+
+.manage-acct-item.dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+.manage-acct-item.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.drag-handle {
+  font-size: 16px;
+  color: var(--text-3);
+  margin-right: 10px;
+  flex-shrink: 0;
+  cursor: grab;
+  line-height: 1;
+}
+
+.manage-acct-item.dragging .drag-handle { cursor: grabbing; }
 
 .manage-acct-info { flex: 1; min-width: 0; margin-right: 10px; }
 
@@ -2189,6 +2214,16 @@ input[type="number"]:focus { border-color: var(--accent); }
 }
 
 
+/* ── Review screen fee row ── */
+.review-fee-card {
+  border-color: var(--border-light);
+}
+.review-fee-value {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
 /* ── Review screen raw JSON panel ── */
 .review-json-panel {
   margin-top: 10px;
@@ -2218,7 +2253,7 @@ details[open] .review-json-summary::before {
 .review-json-body {
   position: relative;
   border-top: 1px solid var(--border);
-  background: var(--bg-secondary);
+  background: var(--bg);
   padding: 8px;
 }
 .review-json-body pre {
@@ -2229,7 +2264,7 @@ details[open] .review-json-summary::before {
   word-break: break-all;
   max-height: 180px;
   overflow-y: auto;
-  color: var(--text-primary);
+  color: var(--text);
   padding-right: 44px;
 }
 .review-json-copy {

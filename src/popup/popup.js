@@ -142,6 +142,7 @@ const state = {
   // Address queued for removal, set before navigating to confirm view.
   pendingRemoveAddress: null,
   pendingProjectRemoveIsDelete: false, // true = account only in this project → full wallet deletion
+  pendingExportAddress: null,
 
   // Contact being edited in the address book; null when adding a new contact.
   pendingEditContact: null,
@@ -179,6 +180,37 @@ function showView(name) {
   if (name === 'send-review' && state.pendingTxReview?.txJson) {
     $('review-raw-json').textContent = JSON.stringify(state.pendingTxReview.txJson, null, 2);
     $('review-json-details').removeAttribute('open');
+  }
+  if (name === 'send-review') {
+    $('review-fee-value').textContent = '…';
+    fetchReviewFee().catch(() => { $('review-fee-value').textContent = '—'; });
+  }
+}
+
+async function fetchReviewFee() {
+  if (!state.client?.isConnected()) {
+    $('review-fee-value').textContent = '—';
+    return;
+  }
+  const txJson = state.pendingTxReview?.txJson;
+  try {
+    // Use autofill on a minimal copy of the tx to get the exact fee for this tx type
+    const minimal = txJson ? { ...txJson } : { TransactionType: 'Payment', Account: state.activeAccount };
+    delete minimal.Fee; // let autofill compute it
+    const filled = await state.client.autofill(minimal);
+    const drops = parseInt(filled.Fee ?? '12', 10);
+    const xrp = (drops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+    $('review-fee-value').textContent = `${xrp} XRP (${drops} drops)`;
+  } catch {
+    // Fall back to the fee RPC
+    try {
+      const resp = await state.client.request({ command: 'fee' });
+      const drops = parseInt(resp.result.drops.open_ledger_fee ?? '12', 10);
+      const xrp = (drops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+      $('review-fee-value').textContent = `${xrp} XRP (${drops} drops)`;
+    } catch {
+      $('review-fee-value').textContent = '—';
+    }
   }
 }
 
@@ -445,6 +477,8 @@ function getActiveWallet() {
       return deriveSimpleWallet(kr.seed);
     } else if (kr.type === 'ledger' && kr.address === state.activeAccount) {
       return null; // no local private key for hardware wallets
+    } else if (kr.type === 'watch' && kr.address === state.activeAccount) {
+      return null; // watch-only, no key
     }
   }
   return null;
@@ -463,9 +497,21 @@ function getAllAccounts() {
       out.push({ label: kr.label, address: kr.address, keyringIndex: ki, accountIndex: null });
     } else if (kr.type === 'ledger') {
       out.push({ label: kr.label, address: kr.address, keyringIndex: ki, accountIndex: null, isLedger: true });
+    } else if (kr.type === 'watch') {
+      out.push({ label: kr.label, address: kr.address, keyringIndex: ki, accountIndex: null, isWatch: true });
     }
   }
   return out;
+}
+
+/** True when the active account cannot sign transactions. */
+function isActiveAccountReadOnly() {
+  if (!state.activeAccount) return true;
+  const kr = state.keyrings.find(k =>
+    (k.type === 'watch'  && k.address === state.activeAccount) ||
+    (k.type === 'ledger' && k.address === state.activeAccount)
+  );
+  return kr?.type === 'watch';  // ledger CAN sign via device; watch cannot
 }
 
 // ─────────────────────────────────────────────
@@ -476,12 +522,12 @@ function getActiveProject() {
   return state.projects.find(p => p.id === state.activeProjectId) ?? state.projects[0] ?? null;
 }
 
-/** Accounts visible in the current project (subset of all keyrings). */
+/** Accounts visible in the current project, in project order. */
 function getProjectAccounts() {
   const proj = getActiveProject();
   if (!proj) return getAllAccounts();
-  const set = new Set(proj.accounts);
-  return getAllAccounts().filter(a => set.has(a.address));
+  const allMap = new Map(getAllAccounts().map(a => [a.address, a]));
+  return proj.accounts.map(addr => allMap.get(addr)).filter(Boolean);
 }
 
 async function loadProjects() {
@@ -654,6 +700,9 @@ function computeTxHash(txBlobHex) {
  * otherwise uses the local software wallet.
  */
 async function signPreparedTx(prepared) {
+  if (isActiveAccountReadOnly()) {
+    throw new Error('This is a watch-only account. Transactions cannot be signed.');
+  }
   const ledgerKr = getActiveLedgerKeyring();
   if (!ledgerKr) {
     return state.wallet.sign(prepared);
@@ -704,6 +753,9 @@ function getRemovalInfo(address) {
     if (kr.type === 'ledger' && kr.address === address) {
       return { keyringsIdx: ki, type: 'ledger', label: kr.label, phraseToo: false, siblings: 0 };
     }
+    if (kr.type === 'watch' && kr.address === address) {
+      return { keyringsIdx: ki, type: 'watch', label: kr.label, phraseToo: false, siblings: 0 };
+    }
     if (kr.type === 'HD') {
       const ai = kr.accounts.findIndex(a => a.address === address);
       if (ai !== -1) {
@@ -733,7 +785,7 @@ async function executeRemoveAccount() {
   const info = getRemovalInfo(address);
   if (!info) return;
 
-  if (info.type === 'simple' || info.type === 'ledger') {
+  if (info.type === 'simple' || info.type === 'ledger' || info.type === 'watch') {
     state.keyrings.splice(info.keyringsIdx, 1);
   } else {
     const kr = state.keyrings[info.keyringsIdx];
@@ -792,18 +844,25 @@ function renderManageAccountsList() {
   }
 
   accounts.forEach(acct => {
+    const info    = getRemovalInfo(acct.address);
+    const canExport = info && (info.type === 'simple' || info.type === 'HD');
     const item = document.createElement('div');
     item.className = 'manage-acct-item';
+    item.draggable = true;
+    item.dataset.address = acct.address;
     item.innerHTML = `
+      <span class="drag-handle" title="Drag to reorder">⠿</span>
       <div class="manage-acct-info">
-        <div class="manage-acct-label">${esc(acct.label || 'Account')}</div>
+        <div class="manage-acct-label">${esc(acct.label || 'Account')}${acct.isWatch ? ' <span class="watch-tag">watch</span>' : ''}</div>
         <div class="manage-acct-addr">${truncAddr(acct.address)}</div>
       </div>
-      <button class="btn btn-danger btn-sm" data-address="${esc(acct.address)}">Remove</button>
+      <div class="manage-acct-btns">
+        ${canExport ? `<button class="btn btn-outline btn-sm export-btn" data-address="${esc(acct.address)}">Export</button>` : ''}
+        <button class="btn btn-danger btn-sm remove-btn" data-address="${esc(acct.address)}">Remove</button>
+      </div>
     `;
-    item.querySelector('button').addEventListener('click', () => {
-      openProjectRemoveConfirm(acct.address);
-    });
+    item.querySelector('.remove-btn').addEventListener('click', () => openProjectRemoveConfirm(acct.address));
+    item.querySelector('.export-btn')?.addEventListener('click', () => openExportKey(acct.address));
     list.appendChild(item);
   });
 }
@@ -829,6 +888,8 @@ function openProjectRemoveConfirm(address) {
   let warn;
   if (inOtherProject) {
     warn = `This will remove the account from the "${proj?.name ?? 'current'}" project. It will remain accessible in other projects.`;
+  } else if (info?.type === 'watch') {
+    warn = 'This is a watch-only address. Removing it will delete it from this wallet. No keys or funds are affected.';
   } else if (info?.type === 'ledger') {
     warn = 'This account is not in any other project. Removing it will permanently delete it from this wallet. Your Ledger device and funds are not affected.';
   } else if (info?.type === 'simple') {
@@ -889,7 +950,7 @@ async function executeProjectRemove() {
   const info = getRemovalInfo(address);
   if (!info) return;
 
-  if (info.type === 'simple' || info.type === 'ledger') {
+  if (info.type === 'simple' || info.type === 'ledger' || info.type === 'watch') {
     state.keyrings.splice(info.keyringsIdx, 1);
   } else {
     const kr = state.keyrings[info.keyringsIdx];
@@ -1499,7 +1560,9 @@ function updateWalletUI() {
   badge.textContent = net.name;
   badge.className = `network-badge ${net.group}`;
 
-  $('faucet-btn').classList.toggle('hidden', !net.faucet);
+  const readOnly = isActiveAccountReadOnly();
+  $('faucet-btn').classList.toggle('hidden', !net.faucet || readOnly);
+  $('send-xrp-btn').classList.toggle('hidden', readOnly);
 
   // Project switcher
   renderProjectSwitcher();
@@ -1508,6 +1571,7 @@ function updateWalletUI() {
   const accounts = getAllAccounts();
   const active   = accounts.find(a => a.address === addr);
   $('switcher-label').textContent = active?.label ?? 'Account';
+  $('switcher-watch-badge').classList.toggle('hidden', !active?.isWatch);
   $('switcher-addr').textContent  = truncAddr(addr);
 
   renderAccountDropdown(accounts, addr);
@@ -2784,6 +2848,23 @@ function reviewSendPayment() {
 
   $('send-review-details').innerHTML = rows.join('');
   $('review-title').textContent = 'Review Payment';
+
+  // Clipboard hijack warning: show when destination was pasted
+  const destIsPasted = _pastedDestination !== null && _pastedDestination === destAddress;
+  $('send-review-paste-warn').classList.toggle('hidden', !destIsPasted);
+
+  // Build partial txJson for the Raw JSON panel
+  const partialTx = {
+    TransactionType: 'Payment',
+    Account: state.activeAccount,
+    Destination: destAddress,
+    Amount: pendingSend.type === 'xrp'
+      ? String(Math.round(parseFloat(amountStr) * 1_000_000))
+      : { currency: pendingSend.currency, issuer: pendingSend.issuer, value: amountStr },
+  };
+  if (destTagStr) partialTx.DestinationTag = parseInt(destTagStr, 10);
+  state.pendingTxReview = { txJson: partialTx, backView: 'send-payment', successMsg: '' };
+
   showView('send-review');
 }
 
@@ -3815,6 +3896,218 @@ $('type-hd-account').addEventListener('click', () => initHdAddView());
 $('type-ledger').addEventListener('click', openLedgerImport);
 
 // ─────────────────────────────────────────────
+// WATCH-ONLY ACCOUNTS
+// ─────────────────────────────────────────────
+
+function openWatchImport() {
+  $('watch-address-input').value = '';
+  $('watch-label-input').value   = '';
+  hideAlert('watch-error');
+  showView('import-watch');
+}
+
+async function confirmImportWatch() {
+  hideAlert('watch-error');
+  const address = $('watch-address-input').value.trim();
+  if (!address) { showAlert('watch-error', 'Enter an XRPL address.'); return; }
+  if (!isValidClassicAddress(address)) { showAlert('watch-error', 'Invalid XRPL address.'); return; }
+  if (accountExists(address)) { showAlert('watch-error', 'This address is already in your wallet.'); return; }
+  const label = $('watch-label-input').value.trim() || nextAccountLabel();
+  state.keyrings.push({ type: 'watch', address, label });
+  state.activeAccount = address;
+  await finalizeAccountCreation();
+}
+
+$('type-watch').addEventListener('click', openWatchImport);
+$('back-from-watch-btn').addEventListener('click', () => showView('account-type'));
+$('watch-import-btn').addEventListener('click', confirmImportWatch);
+
+// ─────────────────────────────────────────────
+// EXPORT KEY / SEED
+// ─────────────────────────────────────────────
+
+let _exportKeyHideTimer = null;
+
+function openExportKey(address) {
+  const acct = getAllAccounts().find(a => a.address === address);
+  const info = getRemovalInfo(address);
+  if (!info || (info.type !== 'simple' && info.type !== 'HD')) return;
+
+  state.pendingExportAddress = address;
+  $('export-key-acct-name').textContent = acct?.label || 'Account';
+  $('export-key-acct-addr').textContent = truncAddr(address);
+  $('export-key-password').value = '';
+  hideAlert('export-key-error');
+  $('export-key-result').classList.add('hidden');
+  $('export-key-reveal-btn').classList.remove('hidden');
+  $('export-key-password-group').classList.remove('hidden');
+  if (_exportKeyHideTimer) { clearInterval(_exportKeyHideTimer); _exportKeyHideTimer = null; }
+  showView('export-key');
+}
+
+async function confirmExportKey() {
+  hideAlert('export-key-error');
+  const address = state.pendingExportAddress;
+  if (!address) return;
+
+  const password = $('export-key-password').value;
+  if (!password) { showAlert('export-key-error', 'Enter your password.'); return; }
+
+  // Verify password by attempting vault decrypt
+  try {
+    const { vault } = await chrome.storage.local.get('vault');
+    await decryptVault(password, vault);
+  } catch {
+    showAlert('export-key-error', 'Incorrect password.'); return;
+  }
+
+  const info = getRemovalInfo(address);
+  let label, value;
+  if (info.type === 'simple') {
+    label = 'Family Seed';
+    value = state.keyrings[info.keyringsIdx].seed;
+  } else if (info.type === 'HD') {
+    label = 'Recovery Phrase';
+    value = state.keyrings[info.keyringsIdx].mnemonic;
+  } else {
+    return;
+  }
+
+  $('export-key-result-label').textContent = label;
+  $('export-key-value').textContent = value;
+  $('export-key-result').classList.remove('hidden');
+  $('export-key-reveal-btn').classList.add('hidden');
+  $('export-key-password-group').classList.add('hidden');
+  hideAlert('export-key-error');
+
+  // Auto-hide after 60 seconds
+  let remaining = 60;
+  $('export-key-hide-timer').textContent = `Hidden in ${remaining}s`;
+  _exportKeyHideTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(_exportKeyHideTimer); _exportKeyHideTimer = null;
+      $('export-key-result').classList.add('hidden');
+      $('export-key-reveal-btn').classList.remove('hidden');
+      $('export-key-password-group').classList.remove('hidden');
+      $('export-key-password').value = '';
+    } else {
+      $('export-key-hide-timer').textContent = `Hidden in ${remaining}s`;
+    }
+  }, 1000);
+}
+
+$('back-from-export-key-btn').addEventListener('click', () => {
+  if (_exportKeyHideTimer) { clearInterval(_exportKeyHideTimer); _exportKeyHideTimer = null; }
+  state.pendingExportAddress = null;
+  showView('manage-accounts');
+});
+$('export-key-reveal-btn').addEventListener('click', confirmExportKey);
+$('export-key-password').addEventListener('keypress', e => { if (e.key === 'Enter') confirmExportKey(); });
+$('toggle-export-key-password-btn').addEventListener('click', () => togglePasswordVisibility('export-key-password'));
+$('export-key-copy-btn').addEventListener('click', async () => {
+  await navigator.clipboard.writeText($('export-key-value').textContent);
+  $('export-key-copy-btn').textContent = '✓';
+  setTimeout(() => { $('export-key-copy-btn').textContent = '⧉'; }, 1500);
+});
+$('export-key-qr-btn').addEventListener('click', async () => {
+  const value = $('export-key-value').textContent;
+  if (!value) return;
+  await QRCode.toCanvas($('export-key-qr-canvas'), value, {
+    width: 200,
+    margin: 2,
+    color: { dark: '#0f172a', light: '#f8fafc' },
+  });
+  $('export-key-qr-modal').classList.remove('hidden');
+});
+$('export-key-qr-close-btn').addEventListener('click', () => {
+  $('export-key-qr-modal').classList.add('hidden');
+});
+
+// ─────────────────────────────────────────────
+// RAW TRANSACTION BUILDER
+// ─────────────────────────────────────────────
+
+const RAW_TX_TEMPLATE = () => JSON.stringify({
+  TransactionType: 'Payment',
+  Account: state.activeAccount ?? '',
+  Destination: '',
+  Amount: '1000000',
+}, null, 2);
+
+function openRawTxBuilder() {
+  $('raw-tx-input').value = RAW_TX_TEMPLATE();
+  hideAlert('raw-tx-error');
+  showView('raw-tx');
+}
+
+async function autofillRawTx() {
+  hideAlert('raw-tx-error');
+  if (!state.client?.isConnected()) { showAlert('raw-tx-error', 'Not connected to XRPL.'); return; }
+  let parsed;
+  try { parsed = JSON.parse($('raw-tx-input').value); }
+  catch (e) { showAlert('raw-tx-error', `JSON parse error: ${e.message}`); return; }
+  try {
+    const filled = await state.client.autofill(parsed);
+    $('raw-tx-input').value = JSON.stringify(filled, null, 2);
+  } catch (e) { showAlert('raw-tx-error', `Autofill failed: ${e.message}`); }
+}
+
+async function submitRawTx() {
+  hideAlert('raw-tx-error');
+  if (!state.client?.isConnected()) { showAlert('raw-tx-error', 'Not connected to XRPL.'); return; }
+  if (isActiveAccountReadOnly()) { showAlert('raw-tx-error', 'Watch-only accounts cannot sign transactions.'); return; }
+  let parsed;
+  try { parsed = JSON.parse($('raw-tx-input').value); }
+  catch (e) { showAlert('raw-tx-error', `JSON parse error: ${e.message}`); return; }
+  try {
+    const filled = await state.client.autofill(parsed);
+    const { tx_blob } = await signPreparedTx(filled);
+    setTxStatus('pending', 'Submitting…');
+    showView('tx-status');
+    const result = await state.client.submitAndWait(tx_blob);
+    const success = result.result?.meta?.TransactionResult === 'tesSUCCESS';
+    const hash = result.result?.hash ?? '';
+    const net  = getNetworkConfig();
+    setTxStatus(success ? 'success' : 'failed',
+      success ? 'Transaction submitted successfully.' : `Failed: ${result.result?.meta?.TransactionResult}`);
+    if (hash && net.explorer) {
+      $('tx-hash-container').classList.remove('hidden');
+      $('tx-hash-link').textContent = hash;
+      $('tx-hash-link').href = `${net.explorer}${hash}`;
+    }
+    $('tx-done-btn').classList.remove('hidden');
+  } catch (e) {
+    showAlert('raw-tx-error', `Error: ${e.message}`);
+    showView('raw-tx');
+  }
+}
+
+$('raw-tx-btn').addEventListener('click', openRawTxBuilder);
+$('back-from-raw-tx-btn').addEventListener('click', () => showView('wallet'));
+$('raw-tx-autofill-btn').addEventListener('click', autofillRawTx);
+$('raw-tx-submit-btn').addEventListener('click', submitRawTx);
+
+// ─────────────────────────────────────────────
+// CLIPBOARD HIJACK DETECTION
+// ─────────────────────────────────────────────
+
+let _pastedDestination = null;
+let _dragSrcAddress    = null;
+
+$('send-manual-address').addEventListener('paste', (e) => {
+  // Capture what was actually pasted so we can flag it on the review screen.
+  _pastedDestination = e.clipboardData?.getData('text')?.trim() ?? null;
+});
+
+// Clear paste tracking when the user manually types (not pastes)
+$('send-manual-address').addEventListener('input', (e) => {
+  if (!e.inputType?.startsWith('insertFromPaste')) {
+    _pastedDestination = null;
+  }
+});
+
+// ─────────────────────────────────────────────
 // LEDGER HARDWARE WALLET
 // ─────────────────────────────────────────────
 
@@ -4042,7 +4335,63 @@ $('back-from-address-book-edit-btn').addEventListener('click', async () => {
   showView('address-book');
 });
 $('contact-save-btn').addEventListener('click', saveContact);
-$('back-from-manage-accounts-btn').addEventListener('click', () => showView('settings'));
+$('back-from-manage-accounts-btn').addEventListener('click', () => {
+  updateWalletUI();
+  showView('settings');
+});
+
+// One-time drag-and-drop setup for manage accounts list
+(function initManageAccountsDrag() {
+  const list = $('manage-accounts-list');
+
+  list.addEventListener('dragstart', e => {
+    const item = e.target.closest('.manage-acct-item');
+    if (!item) return;
+    _dragSrcAddress = item.dataset.address;
+    item.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+
+  list.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const item = e.target.closest('.manage-acct-item');
+    if (!item || item.dataset.address === _dragSrcAddress) return;
+    list.querySelectorAll('.manage-acct-item').forEach(el => el.classList.remove('drag-over'));
+    item.classList.add('drag-over');
+  });
+
+  list.addEventListener('dragleave', e => {
+    if (!list.contains(e.relatedTarget)) {
+      list.querySelectorAll('.manage-acct-item').forEach(el => el.classList.remove('drag-over'));
+    }
+  });
+
+  list.addEventListener('drop', async e => {
+    e.preventDefault();
+    const targetItem = e.target.closest('.manage-acct-item');
+    if (!targetItem || !_dragSrcAddress) return;
+    const targetAddress = targetItem.dataset.address;
+    if (targetAddress === _dragSrcAddress) return;
+
+    const proj = getActiveProject();
+    if (!proj) return;
+    const order = [...proj.accounts];
+    const srcIdx = order.indexOf(_dragSrcAddress);
+    const tgtIdx = order.indexOf(targetAddress);
+    if (srcIdx === -1 || tgtIdx === -1) return;
+    order.splice(srcIdx, 1);
+    order.splice(tgtIdx, 0, _dragSrcAddress);
+    proj.accounts = order;
+    await saveProjects();
+    renderManageAccountsList();
+  });
+
+  list.addEventListener('dragend', () => {
+    list.querySelectorAll('.manage-acct-item').forEach(el => el.classList.remove('dragging', 'drag-over'));
+    _dragSrcAddress = null;
+  });
+}());
 $('back-from-remove-account-btn').addEventListener('click', () => showView('manage-accounts'));
 $('remove-acct-cancel-btn').addEventListener('click', () => {
   state.pendingRemoveAddress         = null;
