@@ -1181,8 +1181,12 @@ input[type="number"]:focus { border-color: var(--accent); }
 
 /* ===== RESET LINK ===== */
 .reset-link-wrap {
-  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   margin-top: 16px;
+  margin-bottom: 12px;
 }
 
 .btn-link-danger {
@@ -1569,6 +1573,51 @@ input[type="number"]:focus { border-color: var(--accent); }
   font-size: 13px;
   text-align: center;
   padding: 24px 12px;
+}
+
+/* ── Backup & Restore ──────────────────────────── */
+.backup-drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 28px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+  margin-top: 8px;
+}
+
+.backup-drop-zone:hover,
+.backup-drop-zone.backup-drop-hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.backup-drop-zone.backup-drop-ready {
+  border-color: var(--success);
+  background: var(--success-dim);
+}
+
+.backup-drop-icon {
+  font-size: 28px;
+  margin-bottom: 8px;
+}
+
+.backup-drop-label {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.backup-drop-zone.backup-drop-ready .backup-drop-label {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.alert-success {
+  background: var(--success-dim);
+  color: var(--success);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 13px;
 }
 
 /* ===== SETTINGS ===== */

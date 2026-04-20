@@ -4379,6 +4379,111 @@ chrome.runtime.onMessage.addListener((message) => {
 $('setup-reset-btn').addEventListener('click', resetWallet);
 
 // ─────────────────────────────────────────────
+// BACKUP & RESTORE
+// ─────────────────────────────────────────────
+
+async function downloadBackup() {
+  const data = await chrome.storage.local.get(null);
+  const backup = {
+    _meta: {
+      app:     'xrpl-dev-wallet',
+      version: chrome.runtime.getManifest().version,
+      date:    new Date().toISOString(),
+    },
+    data,
+  };
+  const json = JSON.stringify(backup, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const date = new Date().toISOString().slice(0, 10);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `xrpl-wallet-backup-${date}.xrplbak`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Holds the parsed backup data awaiting confirmation.
+let _pendingRestoreData = null;
+let _restoreBackTarget  = 'unlock'; // 'unlock' | 'setup-password'
+
+function openRestoreBackup() {
+  _pendingRestoreData = null;
+  _restoreBackTarget  = 'unlock';
+  $('backup-file-input').value = '';
+  $('backup-drop-label').textContent = 'Click to choose file, or drag & drop';
+  $('backup-drop-zone').classList.remove('backup-drop-ready');
+  hideAlert('restore-backup-status');
+  $('restore-backup-confirm-btn').classList.add('hidden');
+  showView('restore-backup');
+}
+
+function handleBackupFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      // Accept either raw storage dump or wrapped backup format.
+      const data = parsed._meta ? parsed.data : parsed;
+      if (!data?.vault) throw new Error('No encrypted vault found in file.');
+      _pendingRestoreData = data;
+      $('backup-drop-label').textContent = `✓ ${file.name}`;
+      $('backup-drop-zone').classList.add('backup-drop-ready');
+      $('restore-backup-confirm-btn').classList.remove('hidden');
+      hideAlert('restore-backup-status');
+    } catch (err) {
+      _pendingRestoreData = null;
+      $('restore-backup-confirm-btn').classList.add('hidden');
+      $('backup-drop-zone').classList.remove('backup-drop-ready');
+      showAlert('restore-backup-status', `Invalid backup file: ${err.message}`);
+      $('restore-backup-status').className = 'alert alert-error';
+    }
+  };
+  reader.readAsText(file);
+}
+
+async function confirmRestoreBackup() {
+  if (!_pendingRestoreData) return;
+  try {
+    await chrome.storage.local.clear();
+    await chrome.storage.local.set(_pendingRestoreData);
+    await chrome.storage.session.clear();
+    _pendingRestoreData = null;
+    // Reload dev settings and projects from the restored data.
+    await loadDevSettings();
+    await loadProjects();
+    showAlert('restore-backup-status', 'Backup restored. Enter your password to unlock.');
+    $('restore-backup-status').className = 'alert alert-success';
+    $('restore-backup-confirm-btn').classList.add('hidden');
+    // Navigate to unlock after a short pause so the user reads the message.
+    setTimeout(() => showView('unlock'), 1200);
+  } catch (err) {
+    showAlert('restore-backup-status', `Restore failed: ${err.message}`);
+    $('restore-backup-status').className = 'alert alert-error';
+  }
+}
+
+// Backup drop-zone interactions
+$('backup-drop-zone').addEventListener('click', () => $('backup-file-input').click());
+$('backup-file-input').addEventListener('change', (e) => handleBackupFile(e.target.files[0]));
+$('backup-drop-zone').addEventListener('dragover', (e) => { e.preventDefault(); $('backup-drop-zone').classList.add('backup-drop-hover'); });
+$('backup-drop-zone').addEventListener('dragleave', () => $('backup-drop-zone').classList.remove('backup-drop-hover'));
+$('backup-drop-zone').addEventListener('drop', (e) => {
+  e.preventDefault();
+  $('backup-drop-zone').classList.remove('backup-drop-hover');
+  handleBackupFile(e.dataTransfer.files[0]);
+});
+$('restore-backup-confirm-btn').addEventListener('click', confirmRestoreBackup);
+$('back-from-restore-backup-btn').addEventListener('click', () => {
+  _pendingRestoreData = null;
+  showView(_restoreBackTarget);
+});
+$('settings-backup-btn').addEventListener('click', downloadBackup);
+$('restore-backup-link-btn').addEventListener('click', () => { _restoreBackTarget = 'unlock'; openRestoreBackup(); });
+$('setup-restore-backup-btn').addEventListener('click', () => { _restoreBackTarget = 'setup-password'; openRestoreBackup(); });
+
+// ─────────────────────────────────────────────
 // DEVELOPER SETTINGS
 // ─────────────────────────────────────────────
 

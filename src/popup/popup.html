@@ -37,6 +37,10 @@
 
     <button id="setup-password-btn" class="btn btn-primary btn-full" style="margin-top:6px">Create Password</button>
 
+    <div class="reset-link-wrap">
+      <button id="setup-restore-backup-btn" class="btn-link">Restore from backup file instead</button>
+    </div>
+
     <div class="reset-link-wrap" id="setup-reset-wrap" style="display:none">
       <button id="setup-reset-btn" class="btn-link-danger">Wallet already exists — reset it instead</button>
     </div>
@@ -294,6 +298,26 @@
     <div id="project-from-list" class="project-from-list"></div>
   </div>
 
+  <!-- ===== RESTORE BACKUP ===== -->
+  <div id="view-restore-backup" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-restore-backup-btn" class="btn-back">‹</button>
+      <h2>Restore Backup</h2>
+    </div>
+
+    <p class="type-hint">Select a wallet backup file (<code>.xrplbak</code> or <code>.json</code>). Your existing wallet data will be replaced.</p>
+
+    <div class="backup-drop-zone" id="backup-drop-zone">
+      <div class="backup-drop-icon">📂</div>
+      <div class="backup-drop-label" id="backup-drop-label">Click to choose file, or drag &amp; drop</div>
+      <input type="file" id="backup-file-input" accept=".xrplbak,.json" style="display:none" />
+    </div>
+
+    <div id="restore-backup-status" class="alert hidden" style="margin-top:12px"></div>
+
+    <button id="restore-backup-confirm-btn" class="btn btn-primary btn-full hidden" style="margin-top:12px">Restore &amp; Unlock</button>
+  </div>
+
   <!-- ===== UNLOCK ===== -->
   <div id="view-unlock" class="view hidden">
     <div class="brand">
@@ -317,6 +341,7 @@
     <button id="unlock-btn" class="btn btn-primary btn-full" style="margin-top:6px">Unlock</button>
 
     <div class="reset-link-wrap">
+      <button id="restore-backup-link-btn" class="btn-link">Restore from backup file</button>
       <button id="reset-wallet-btn" class="btn-link-danger">Forgot password? Reset wallet</button>
     </div>
   </div>
@@ -593,6 +618,14 @@
           <button id="network-manual-apply-btn" class="btn btn-primary btn-sm" style="width:100%">Connect</button>
         </div>
       </div>
+    </div>
+
+    <div class="settings-section-header">Backup &amp; Recovery</div>
+    <div class="settings-list">
+      <button id="settings-backup-btn" class="settings-item">
+        <span class="settings-item-label">Download Wallet Backup</span>
+        <span class="settings-item-chevron">↓</span>
+      </button>
     </div>
 
     <div class="settings-section-header">Security</div>
