@@ -126,6 +126,10 @@ const state = {
   keyrings: [],        // array of decrypted keyring objects
   activeAccount: null, // active r-address
 
+  // Projects — groupings of accounts + per-project address books
+  projects: [],          // [{ id, name, accounts: [addr, ...] }]
+  activeProjectId: null, // string
+
   // Temp during setup/add flows
   flowContext: 'setup',    // 'setup' | 'add'
   pendingMnemonic: null,   // mnemonic being confirmed
@@ -137,6 +141,7 @@ const state = {
 
   // Address queued for removal, set before navigating to confirm view.
   pendingRemoveAddress: null,
+  pendingProjectRemoveIsDelete: false, // true = account only in this project → full wallet deletion
 
   // Contact being edited in the address book; null when adding a new contact.
   pendingEditContact: null,
@@ -463,6 +468,173 @@ function getAllAccounts() {
   return out;
 }
 
+// ─────────────────────────────────────────────
+// PROJECTS
+// ─────────────────────────────────────────────
+
+function getActiveProject() {
+  return state.projects.find(p => p.id === state.activeProjectId) ?? state.projects[0] ?? null;
+}
+
+/** Accounts visible in the current project (subset of all keyrings). */
+function getProjectAccounts() {
+  const proj = getActiveProject();
+  if (!proj) return getAllAccounts();
+  const set = new Set(proj.accounts);
+  return getAllAccounts().filter(a => set.has(a.address));
+}
+
+async function loadProjects() {
+  const { projects, activeProjectId } = await chrome.storage.local.get(['projects', 'activeProjectId']);
+  state.projects       = projects       ?? [];
+  state.activeProjectId = activeProjectId ?? null;
+}
+
+async function saveProjects() {
+  await chrome.storage.local.set({ projects: state.projects, activeProjectId: state.activeProjectId });
+}
+
+/**
+ * On first run after adding projects feature: create a Default project
+ * containing all existing accounts and migrate any existing address book.
+ */
+async function ensureProjectsInitialized() {
+  if (state.projects.length === 0) {
+    const allAddrs = getAllAccounts().map(a => a.address);
+    state.projects       = [{ id: 'default', name: 'Default', accounts: allAddrs }];
+    state.activeProjectId = 'default';
+    // Migrate global addressBook → project-scoped key
+    const { addressBook } = await chrome.storage.local.get('addressBook');
+    if (Array.isArray(addressBook) && addressBook.length) {
+      await chrome.storage.local.set({ addressBook_default: addressBook });
+    }
+    await saveProjects();
+  } else if (!state.activeProjectId || !state.projects.find(p => p.id === state.activeProjectId)) {
+    state.activeProjectId = state.projects[0]?.id ?? null;
+    await saveProjects();
+  }
+}
+
+function addAccountToActiveProject(address) {
+  const proj = getActiveProject();
+  if (proj && !proj.accounts.includes(address)) {
+    proj.accounts.push(address);
+  }
+}
+
+async function switchProject(projectId) {
+  state.activeProjectId = projectId;
+  const proj = state.projects.find(p => p.id === projectId);
+  if (proj && proj.accounts.length > 0 && !proj.accounts.includes(state.activeAccount)) {
+    await activateAccount(proj.accounts[0]);
+  } else {
+    renderProjectSwitcher();
+    updateWalletUI();
+    refreshBalance();
+    loadIouBalances();
+    loadMptBalances();
+    loadCredentials();
+    loadTxHistory();
+  }
+  await saveProjects();
+}
+
+function renderProjectSwitcher() {
+  const proj = getActiveProject();
+  $('project-name-label').textContent = proj?.name ?? 'Default';
+  const listEl = $('project-list');
+  listEl.innerHTML = state.projects.map(p => `
+    <button class="project-list-item ${p.id === state.activeProjectId ? 'active-project' : ''}"
+            data-project-id="${esc(p.id)}">
+      <span class="proj-item-name">${esc(p.name)}</span>
+      ${p.id === state.activeProjectId ? '<span class="proj-item-check">✓</span>' : ''}
+    </button>`).join('');
+  listEl.querySelectorAll('.project-list-item').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      $('project-dropdown').classList.add('hidden');
+      const pid = btn.dataset.projectId;
+      if (pid !== state.activeProjectId) await switchProject(pid);
+    });
+  });
+}
+
+function openNewProject() {
+  $('new-project-name').value = '';
+  hideAlert('new-project-error');
+  showView('new-project');
+}
+
+async function createProject() {
+  const name = $('new-project-name').value.trim();
+  if (!name) { showAlert('new-project-error', 'Enter a project name.'); return; }
+  if (state.projects.some(p => p.name.toLowerCase() === name.toLowerCase())) {
+    showAlert('new-project-error', 'A project with that name already exists.');
+    return;
+  }
+  const id = `proj_${Date.now()}`;
+  state.projects.push({ id, name, accounts: [] });
+  state.activeProjectId = id;
+  await saveProjects();
+  renderProjectSwitcher();
+  updateWalletUI();
+  showView('wallet');
+}
+
+function openProjectFromAccounts() {
+  const currentProj = getActiveProject();
+  const currentSet  = new Set(currentProj?.accounts ?? []);
+  const allAccts    = getAllAccounts();
+
+  const otherProjects = state.projects.filter(p => p.id !== state.activeProjectId);
+  const listEl = $('project-from-list');
+  listEl.innerHTML = '';
+
+  // Build list of accounts from other projects not already in this project
+  const rows = [];
+  for (const proj of otherProjects) {
+    for (const addr of proj.accounts) {
+      if (!currentSet.has(addr)) {
+        const acct = allAccts.find(a => a.address === addr);
+        if (acct) rows.push({ proj, acct });
+      }
+    }
+  }
+
+  if (rows.length === 0) {
+    listEl.innerHTML = '<p class="proj-from-empty">No other accounts available to add.</p>';
+    showView('project-from-accounts');
+    return;
+  }
+
+  // Group by project
+  let lastProjId = null;
+  for (const { proj, acct } of rows) {
+    if (proj.id !== lastProjId) {
+      const hdr = document.createElement('div');
+      hdr.className = 'proj-from-header';
+      hdr.textContent = proj.name;
+      listEl.appendChild(hdr);
+      lastProjId = proj.id;
+    }
+    const btn = document.createElement('button');
+    btn.className = 'account-list-item';
+    btn.innerHTML = `
+      <div class="acct-item-left">
+        <span class="acct-item-label">${esc(acct.label)}</span>
+        <span class="acct-item-addr">${esc(truncAddr(acct.address))}</span>
+      </div>`;
+    btn.addEventListener('click', async () => {
+      addAccountToActiveProject(acct.address);
+      await saveProjects();
+      await activateAccount(acct.address);
+      showView('wallet');
+    });
+    listEl.appendChild(btn);
+  }
+
+  showView('project-from-accounts');
+}
+
 /** Return the ledger keyring for the active account, or null. */
 function getActiveLedgerKeyring() {
   if (!state.activeAccount) return null;
@@ -583,6 +755,12 @@ async function executeRemoveAccount() {
     }
   }
 
+  // Remove address from all projects
+  for (const proj of state.projects) {
+    proj.accounts = proj.accounts.filter(a => a !== address);
+  }
+  await saveProjects();
+
   await saveVault();
   const { vaultPassword } = await chrome.storage.session.get('vaultPassword');
   if (vaultPassword) await persistSession(vaultPassword);
@@ -599,14 +777,21 @@ async function executeRemoveAccount() {
   }
 }
 
-/** Render the manage-accounts list (called each time the view is opened). */
+/** Render the manage-accounts list — shows only accounts in the current project. */
 function renderManageAccountsList() {
-  const accounts = getAllAccounts();
-  const list = $('manage-accounts-list');
+  const proj     = getActiveProject();
+  const accounts = getProjectAccounts();
+  const list     = $('manage-accounts-list');
   list.innerHTML = '';
 
+  $('manage-accounts-project-name').textContent = proj?.name ?? 'Default';
+
+  if (accounts.length === 0) {
+    list.innerHTML = '<p class="proj-from-empty">No accounts in this project.</p>';
+    return;
+  }
+
   accounts.forEach(acct => {
-    const info = getRemovalInfo(acct.address);
     const item = document.createElement('div');
     item.className = 'manage-acct-item';
     item.innerHTML = `
@@ -617,28 +802,126 @@ function renderManageAccountsList() {
       <button class="btn btn-danger btn-sm" data-address="${esc(acct.address)}">Remove</button>
     `;
     item.querySelector('button').addEventListener('click', () => {
-      state.pendingRemoveAddress = acct.address;
-
-      // Build the warning shown on the confirm screen.
-      $('remove-acct-name').textContent = acct.label || 'Account';
-      $('remove-acct-addr').textContent = truncAddr(acct.address);
-
-      let warn;
-      if (info.type === 'ledger') {
-        warn = 'This will remove the Ledger account from this wallet. Your Ledger device and funds are not affected.';
-      } else if (info.type === 'simple') {
-        warn = 'This will permanently remove the account and its secret seed from this wallet. This cannot be undone.';
-      } else if (info.phraseToo) {
-        warn = 'This is the only account using its recovery phrase. Removing it will also permanently delete the recovery phrase from this wallet. This cannot be undone.';
-      } else {
-        warn = `This will remove the account from this wallet. The recovery phrase and ${info.siblings} other account(s) derived from it will remain.`;
-      }
-      $('remove-acct-warning').textContent = warn;
-
-      showView('remove-account-confirm');
+      openProjectRemoveConfirm(acct.address);
     });
     list.appendChild(item);
   });
+}
+
+/** Open the remove-confirm view with project-aware messaging. */
+function openProjectRemoveConfirm(address) {
+  const acct = getAllAccounts().find(a => a.address === address);
+  const info = getRemovalInfo(address);
+  const proj = getActiveProject();
+
+  // Is this account referenced in any other project?
+  const inOtherProject = state.projects.some(
+    p => p.id !== state.activeProjectId && p.accounts.includes(address)
+  );
+
+  state.pendingRemoveAddress      = address;
+  state.pendingProjectRemoveIsDelete = !inOtherProject;
+
+  $('remove-acct-name').textContent = acct?.label || 'Account';
+  $('remove-acct-addr').textContent = truncAddr(address);
+  $('remove-acct-title').textContent = inOtherProject ? 'Remove from Project' : 'Remove Account';
+
+  let warn;
+  if (inOtherProject) {
+    warn = `This will remove the account from the "${proj?.name ?? 'current'}" project. It will remain accessible in other projects.`;
+  } else if (info?.type === 'ledger') {
+    warn = 'This account is not in any other project. Removing it will permanently delete it from this wallet. Your Ledger device and funds are not affected.';
+  } else if (info?.type === 'simple') {
+    warn = 'This account is not in any other project. Removing it will permanently delete the account and its secret seed from this wallet. This cannot be undone.';
+  } else if (info?.phraseToo) {
+    warn = 'This account is not in any other project. This is the only account using its recovery phrase — removing it will also permanently delete the recovery phrase. This cannot be undone.';
+  } else {
+    warn = `This account is not in any other project. Removing it will delete it from this wallet. The recovery phrase and ${info?.siblings} other account(s) derived from it will remain.`;
+  }
+  $('remove-acct-warning').textContent = warn;
+
+  // Show or hide the deletion checkbox
+  const needsCheck = !inOtherProject;
+  const checkRow = $('remove-acct-delete-check-row');
+  checkRow.classList.toggle('hidden', !needsCheck);
+  $('remove-acct-delete-checkbox').checked = false;
+  const confirmBtn = $('remove-acct-confirm-btn');
+  confirmBtn.textContent = inOtherProject ? 'Remove from Project' : 'Delete Account';
+  confirmBtn.disabled = needsCheck; // disabled until checkbox is ticked
+
+  showView('remove-account-confirm');
+}
+
+/** Execute the pending project-remove action. */
+async function executeProjectRemove() {
+  const address  = state.pendingRemoveAddress;
+  const isDelete = state.pendingProjectRemoveIsDelete;
+  state.pendingRemoveAddress         = null;
+  state.pendingProjectRemoveIsDelete = false;
+  if (!address) return;
+
+  if (!isDelete) {
+    // Just remove from current project — keep keyring and other projects intact.
+    const proj = getActiveProject();
+    if (proj) {
+      proj.accounts = proj.accounts.filter(a => a !== address);
+      await saveProjects();
+    }
+    // If active account was the removed one, switch to another in the project.
+    if (state.activeAccount === address) {
+      const remaining = getProjectAccounts();
+      const next = remaining.find(a => a.address !== address);
+      if (next) {
+        await activateAccount(next.address);
+      } else {
+        // No accounts left in project — fall through to manage list.
+        state.activeAccount = getAllAccounts()[0]?.address ?? null;
+        state.wallet = getActiveWallet();
+      }
+    }
+    updateWalletUI();
+    renderManageAccountsList();
+    showView('manage-accounts');
+    return;
+  }
+
+  // Full deletion path — same as the original executeRemoveAccount.
+  const info = getRemovalInfo(address);
+  if (!info) return;
+
+  if (info.type === 'simple' || info.type === 'ledger') {
+    state.keyrings.splice(info.keyringsIdx, 1);
+  } else {
+    const kr = state.keyrings[info.keyringsIdx];
+    kr.accounts.splice(info.accountsIdx, 1);
+    if (kr.accounts.length === 0) state.keyrings.splice(info.keyringsIdx, 1);
+  }
+
+  if (state.activeAccount === address) {
+    const remaining = getAllAccounts();
+    state.activeAccount = remaining[0]?.address ?? null;
+    state.wallet = getActiveWallet();
+  }
+
+  // Remove from all projects.
+  for (const proj of state.projects) {
+    proj.accounts = proj.accounts.filter(a => a !== address);
+  }
+  await saveProjects();
+
+  await saveVault();
+  const { vaultPassword } = await chrome.storage.session.get('vaultPassword');
+  if (vaultPassword) await persistSession(vaultPassword);
+
+  const remaining = getAllAccounts();
+  if (remaining.length === 0) {
+    state.flowContext = 'add';
+    showView('account-type');
+  } else {
+    updateWalletUI();
+    renderManageAccountsList();
+    showView('manage-accounts');
+  }
 }
 
 /**
@@ -954,6 +1237,11 @@ async function finalizeAccountCreation() {
     state._setupFlowPassword = null; // clear immediately after use
     await persistSession(usedPassword);
 
+    // Register the new account with the active project (init project first if needed)
+    await ensureProjectsInitialized();
+    addAccountToActiveProject(state.activeAccount);
+    await saveProjects();
+
     state.wallet = getActiveWallet();
 
     await connectXRPL();
@@ -995,6 +1283,7 @@ async function unlock() {
     await loadAndDecryptVault(password);
     state.wallet  = getActiveWallet();
     state.network = state.network || 'devnet';
+    await ensureProjectsInitialized();
 
     await connectXRPL();
     updateWalletUI();
@@ -1079,12 +1368,14 @@ async function changePassword() {
 // ─────────────────────────────────────────────
 
 async function loadAddressBook() {
-  const { addressBook } = await chrome.storage.local.get('addressBook');
-  return addressBook ?? [];
+  const key  = `addressBook_${state.activeProjectId ?? 'default'}`;
+  const data = await chrome.storage.local.get(key);
+  return data[key] ?? [];
 }
 
 async function saveAddressBook(entries) {
-  await chrome.storage.local.set({ addressBook: entries });
+  const key = `addressBook_${state.activeProjectId ?? 'default'}`;
+  await chrome.storage.local.set({ [key]: entries });
 }
 
 async function renderAddressBook() {
@@ -1210,6 +1501,9 @@ function updateWalletUI() {
 
   $('faucet-btn').classList.toggle('hidden', !net.faucet);
 
+  // Project switcher
+  renderProjectSwitcher();
+
   // Account switcher pill
   const accounts = getAllAccounts();
   const active   = accounts.find(a => a.address === addr);
@@ -1220,8 +1514,12 @@ function updateWalletUI() {
 }
 
 function renderAccountDropdown(accounts, activeAddr) {
+  // Only show accounts belonging to the active project
+  const projAccts = getProjectAccounts();
+  const activeSet = new Set(projAccts.map(a => a.address));
+
   const listEl = $('account-list');
-  listEl.innerHTML = accounts.map(a => `
+  listEl.innerHTML = projAccts.map(a => `
     <button class="account-list-item ${a.address === activeAddr ? 'active-account' : ''}"
             data-address="${esc(a.address)}">
       <div class="acct-item-left">
@@ -1240,6 +1538,13 @@ function renderAccountDropdown(accounts, activeAddr) {
       }
     });
   });
+
+  // Show "from another project" only if other projects have accounts not in this project
+  const currentSet = new Set(getActiveProject()?.accounts ?? []);
+  const hasOthers  = state.projects.some(p =>
+    p.id !== state.activeProjectId && p.accounts.some(a => !currentSet.has(a))
+  );
+  $('add-from-project-btn').classList.toggle('hidden', !hasOthers);
 }
 
 // Toggle the account dropdown
@@ -1248,9 +1553,10 @@ $('account-switcher-btn').addEventListener('click', (e) => {
   $('account-dropdown').classList.toggle('hidden');
 });
 
-// Close dropdown on outside click
+// Close dropdowns on outside click
 document.addEventListener('click', () => {
   $('account-dropdown')?.classList.add('hidden');
+  $('project-dropdown')?.classList.add('hidden');
 });
 
 $('account-dropdown').addEventListener('click', e => e.stopPropagation());
@@ -1259,6 +1565,31 @@ $('add-account-dropdown-btn').addEventListener('click', () => {
   $('account-dropdown').classList.add('hidden');
   goToAddAccount();
 });
+
+$('add-from-project-btn').addEventListener('click', () => {
+  $('account-dropdown').classList.add('hidden');
+  openProjectFromAccounts();
+});
+
+// Project switcher
+$('project-switcher-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  $('account-dropdown').classList.add('hidden');
+  $('project-dropdown').classList.toggle('hidden');
+});
+$('project-dropdown').addEventListener('click', e => e.stopPropagation());
+$('new-project-dropdown-btn').addEventListener('click', () => {
+  $('project-dropdown').classList.add('hidden');
+  openNewProject();
+});
+
+// New project view
+$('create-project-btn').addEventListener('click', createProject);
+$('new-project-name').addEventListener('keypress', e => { if (e.key === 'Enter') createProject(); });
+$('back-from-new-project-btn').addEventListener('click', () => showView('wallet'));
+
+// Project-from-accounts view
+$('back-from-project-from-btn').addEventListener('click', () => showView('wallet'));
 
 // ─────────────────────────────────────────────
 // WALLET — XRPL CLIENT
@@ -3546,6 +3877,11 @@ async function connectLedgerDevice() {
     state._setupFlowPassword = null;
     await persistSession(usedPassword);
 
+    // Register with active project
+    await ensureProjectsInitialized();
+    addAccountToActiveProject(result.address);
+    await saveProjects();
+
     // Tab mode: close this tab — the user's popup will show the new account next open.
     window.close();
   } catch (err) {
@@ -3709,10 +4045,14 @@ $('contact-save-btn').addEventListener('click', saveContact);
 $('back-from-manage-accounts-btn').addEventListener('click', () => showView('settings'));
 $('back-from-remove-account-btn').addEventListener('click', () => showView('manage-accounts'));
 $('remove-acct-cancel-btn').addEventListener('click', () => {
-  state.pendingRemoveAddress = null;
+  state.pendingRemoveAddress         = null;
+  state.pendingProjectRemoveIsDelete = false;
   showView('manage-accounts');
 });
-$('remove-acct-confirm-btn').addEventListener('click', executeRemoveAccount);
+$('remove-acct-delete-checkbox').addEventListener('change', (e) => {
+  $('remove-acct-confirm-btn').disabled = !e.target.checked;
+});
+$('remove-acct-confirm-btn').addEventListener('click', executeProjectRemove);
 $('settings-change-password-btn').addEventListener('click', () => {
   hideAlert('cp-error');
   hideAlert('cp-success');
@@ -4160,6 +4500,7 @@ $('mainnet-warning-reject-btn').addEventListener('click', () => {
 (async () => {
   try {
     await loadDevSettings();
+    await loadProjects();
     const vaultExists = await hasVault();
 
     if (!vaultExists) {
@@ -4190,6 +4531,7 @@ $('mainnet-warning-reject-btn').addEventListener('click', () => {
 
       state.wallet  = getActiveWallet();
       state.network = state.network || 'devnet';
+      await ensureProjectsInitialized();
       try {
         await connectXRPL();
       } catch (err) {

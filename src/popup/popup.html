@@ -269,6 +269,31 @@
     </div>
   </div>
 
+  <!-- ===== NEW PROJECT ===== -->
+  <div id="view-new-project" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-new-project-btn" class="btn-back">‹</button>
+      <h2>New Project</h2>
+    </div>
+    <p class="type-hint">Projects group accounts and address books independently.</p>
+    <div class="form-group">
+      <label for="new-project-name">Project Name</label>
+      <input type="text" id="new-project-name" placeholder="e.g. Trading Accounts" maxlength="40" />
+    </div>
+    <div id="new-project-error" class="alert alert-error hidden"></div>
+    <button id="create-project-btn" class="btn btn-primary btn-full" style="margin-top:8px">Create Project</button>
+  </div>
+
+  <!-- ===== PROJECT — IMPORT ACCOUNT FROM ANOTHER PROJECT ===== -->
+  <div id="view-project-from-accounts" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-project-from-btn" class="btn-back">‹</button>
+      <h2>From Another Project</h2>
+    </div>
+    <p class="type-hint">Select an account to add to the current project.</p>
+    <div id="project-from-list" class="project-from-list"></div>
+  </div>
+
   <!-- ===== UNLOCK ===== -->
   <div id="view-unlock" class="view hidden">
     <div class="brand">
@@ -310,6 +335,21 @@
       </div>
     </div>
 
+    <!-- Project switcher -->
+    <div class="project-switcher-wrap" id="project-switcher-wrap">
+      <button id="project-switcher-btn" class="project-switcher-pill">
+        <span class="proj-pill-prefix">Project:</span>
+        <span id="project-name-label" class="proj-pill-name">Default</span>
+        <span class="switcher-chevron">▾</span>
+      </button>
+      <div id="project-dropdown" class="project-dropdown hidden">
+        <div id="project-list" class="project-list"></div>
+        <div class="project-dropdown-footer">
+          <button id="new-project-dropdown-btn" class="btn btn-ghost btn-full">+ New Project</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Account switcher -->
     <div class="account-switcher-wrap" id="account-switcher-wrap">
       <button id="account-switcher-btn" class="account-switcher-pill">
@@ -322,6 +362,7 @@
         <div id="account-list" class="account-list"></div>
         <div class="account-dropdown-footer">
           <button id="add-account-dropdown-btn" class="btn btn-ghost btn-full">+ Add / Import Account</button>
+          <button id="add-from-project-btn" class="btn btn-ghost btn-full hidden">↙ From Another Project</button>
         </div>
       </div>
     </div>
@@ -620,6 +661,7 @@
       <button id="back-from-manage-accounts-btn" class="btn-back">‹</button>
       <h2>Manage Accounts</h2>
     </div>
+    <div class="manage-accounts-project-label">Project: <strong id="manage-accounts-project-name"></strong></div>
     <div id="manage-accounts-list"></div>
   </div>
 
@@ -627,7 +669,7 @@
   <div id="view-remove-account-confirm" class="view hidden">
     <div class="view-header">
       <button id="back-from-remove-account-btn" class="btn-back">‹</button>
-      <h2>Remove Account</h2>
+      <h2 id="remove-acct-title">Remove Account</h2>
     </div>
 
     <div class="remove-acct-card">
@@ -636,6 +678,11 @@
     </div>
 
     <div class="alert alert-warn" id="remove-acct-warning" style="margin-top:14px"></div>
+
+    <label class="checkbox-row hidden" id="remove-acct-delete-check-row" style="margin-top:14px">
+      <input type="checkbox" id="remove-acct-delete-checkbox" />
+      I understand this account will be permanently deleted from my wallet
+    </label>
 
     <div class="action-row" style="margin-top:20px">
       <button id="remove-acct-cancel-btn" class="btn btn-ghost">Cancel</button>
