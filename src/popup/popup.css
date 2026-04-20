@@ -1688,6 +1688,124 @@ input[type="number"]:focus { border-color: var(--accent); }
   justify-content: center;
 }
 
+/* ── Account Info panel ────────────────────────── */
+.acct-info-address {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text-3);
+  word-break: break-all;
+  margin-bottom: 14px;
+}
+
+.acct-info-loading,
+.acct-info-error {
+  text-align: center;
+  padding: 24px 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.acct-info-error { color: var(--danger); }
+
+.acct-info-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.acct-info-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  padding: 7px 12px 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.acct-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.acct-info-row:last-child { border-bottom: none; }
+
+.acct-info-label {
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.acct-info-value {
+  color: var(--text);
+  text-align: right;
+  word-break: break-all;
+}
+
+.acct-info-mono {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+}
+
+.acct-info-hash {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.acct-info-flag {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.acct-info-flag:last-child { border-bottom: none; }
+
+.acct-info-flag-left { flex: 1; min-width: 0; }
+
+.acct-info-flag-name {
+  display: block;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.acct-info-flag-desc {
+  display: block;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.acct-info-flag-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.flag-on {
+  background: var(--success-dim);
+  color: var(--success);
+}
+
+.flag-off {
+  background: var(--surface-2);
+  color: var(--text-3);
+}
+
 /* ── Raw Transaction builder ───────────────────── */
 .raw-tx-textarea {
   width: 100%;

@@ -4025,6 +4025,124 @@ $('export-key-qr-close-btn').addEventListener('click', () => {
 });
 
 // ─────────────────────────────────────────────
+// ACCOUNT INFO PANEL
+// ─────────────────────────────────────────────
+
+const ACCOUNT_FLAGS = [
+  { bit: 0x00800000, name: 'DefaultRipple',  desc: 'Rippling enabled on trust lines by default' },
+  { bit: 0x01000000, name: 'DepositAuth',    desc: 'Deposit authorization required' },
+  { bit: 0x00100000, name: 'DisableMaster',  desc: 'Master key disabled' },
+  { bit: 0x00080000, name: 'DisallowXRP',    desc: 'Incoming XRP payments disallowed' },
+  { bit: 0x00400000, name: 'GlobalFreeze',   desc: 'All trust lines frozen' },
+  { bit: 0x00200000, name: 'NoFreeze',       desc: 'Freeze authority permanently revoked' },
+  { bit: 0x00010000, name: 'PasswordSpent',  desc: 'Account password has been used' },
+  { bit: 0x00040000, name: 'RequireAuth',    desc: 'Authorization required for trust lines' },
+  { bit: 0x00020000, name: 'RequireDestTag', desc: 'Destination tag required on incoming payments' },
+  { bit: 0x02000000, name: 'AllowTrustLineClawback', desc: 'Clawback enabled for issued tokens' },
+];
+
+function openAccountInfo() {
+  $('account-info-address').textContent = state.activeAccount ?? '';
+  $('account-info-body').innerHTML = '<div class="acct-info-loading">Loading…</div>';
+  showView('account-info');
+  loadAccountInfo();
+}
+
+async function loadAccountInfo() {
+  const body = $('account-info-body');
+  if (!state.client?.isConnected()) {
+    body.innerHTML = '<div class="acct-info-error">Not connected to XRPL.</div>';
+    return;
+  }
+
+  try {
+    const [acctResp, srvResp] = await Promise.all([
+      state.client.request({ command: 'account_info', account: state.activeAccount, ledger_index: 'validated' }),
+      state.client.request({ command: 'server_info' }),
+    ]);
+
+    const d   = acctResp.result.account_data;
+    const srv = srvResp.result.info;
+    const reserveBase = srv.validated_ledger?.reserve_base_xrp ?? 2;
+    const reserveInc  = srv.validated_ledger?.reserve_inc_xrp  ?? 0.2;
+    const ownerCount  = d.OwnerCount ?? 0;
+    const totalReserve = reserveBase + reserveInc * ownerCount;
+
+    const row = (label, value, mono = false) =>
+      `<div class="acct-info-row">
+        <span class="acct-info-label">${label}</span>
+        <span class="acct-info-value${mono ? ' acct-info-mono' : ''}">${value}</span>
+      </div>`;
+
+    const section = (title, rows) =>
+      `<div class="acct-info-section">
+        <div class="acct-info-section-title">${title}</div>
+        ${rows}
+      </div>`;
+
+    // ── Sequence & Reserves ──
+    const seqRows =
+      row('Sequence',    d.Sequence) +
+      row('Owner Count', ownerCount) +
+      row('Base Reserve',  `${reserveBase} XRP`) +
+      row('Owner Reserve', `${(reserveInc * ownerCount).toFixed(2)} XRP  (${ownerCount} × ${reserveInc} XRP)`) +
+      row('Total Reserve', `<strong>${totalReserve.toFixed(2)} XRP</strong>`);
+
+    // ── Flags ──
+    const flagRows = ACCOUNT_FLAGS.map(f => {
+      const on = (d.Flags & f.bit) !== 0;
+      return `<div class="acct-info-flag">
+        <div class="acct-info-flag-left">
+          <span class="acct-info-flag-name">${f.name}</span>
+          <span class="acct-info-flag-desc">${f.desc}</span>
+        </div>
+        <span class="acct-info-flag-badge ${on ? 'flag-on' : 'flag-off'}">${on ? 'ON' : 'OFF'}</span>
+      </div>`;
+    }).join('');
+
+    // ── Optional fields ──
+    const optRows = [];
+    if (d.RegularKey)    optRows.push(row('Regular Key',    esc(d.RegularKey), true));
+    if (d.Domain)        optRows.push(row('Domain',         esc(hexToUtf8(d.Domain)), true));
+    if (d.EmailHash)     optRows.push(row('Email Hash',     esc(d.EmailHash), true));
+    if (d.TransferRate)  optRows.push(row('Transfer Rate',  transferRateToPercent(d.TransferRate)));
+    if (d.TickSize)      optRows.push(row('Tick Size',      d.TickSize));
+    if (d.MintedNFTokens !== undefined) optRows.push(row('NFTs Minted', d.MintedNFTokens));
+    if (d.BurnedNFTokens !== undefined) optRows.push(row('NFTs Burned', d.BurnedNFTokens));
+    if (d.NFTokenMinter) optRows.push(row('NFT Minter', esc(d.NFTokenMinter), true));
+    if (d.MessageKey)    optRows.push(row('Message Key', esc(d.MessageKey), true));
+    if (d.WalletLocator) optRows.push(row('Wallet Locator', esc(d.WalletLocator), true));
+    if (d.AMMID)         optRows.push(row('AMM ID', esc(d.AMMID), true));
+
+    // ── Ledger meta ──
+    const metaRows =
+      row('Ledger Index', acctResp.result.ledger_index ?? '—') +
+      row('Previous Txn', `<span class="acct-info-hash" title="${esc(d.PreviousTxnID ?? '')}">${(d.PreviousTxnID ?? '—').slice(0, 16)}…</span>`);
+
+    body.innerHTML =
+      section('Sequence &amp; Reserves', seqRows) +
+      section('Flags', flagRows) +
+      (optRows.length ? section('Properties', optRows.join('')) : '') +
+      section('Ledger', metaRows);
+
+  } catch (err) {
+    $('account-info-body').innerHTML = `<div class="acct-info-error">Failed to load: ${esc(err.message)}</div>`;
+  }
+}
+
+function transferRateToPercent(rate) {
+  if (!rate || rate === 1000000000) return '0% (no fee)';
+  return `${((rate / 1000000000 - 1) * 100).toFixed(2)}%`;
+}
+
+$('account-info-btn').addEventListener('click', openAccountInfo);
+$('back-from-account-info-btn').addEventListener('click', () => showView('wallet'));
+$('account-info-refresh-btn').addEventListener('click', () => {
+  $('account-info-body').innerHTML = '<div class="acct-info-loading">Loading…</div>';
+  loadAccountInfo();
+});
+
+// ─────────────────────────────────────────────
 // RAW TRANSACTION BUILDER
 // ─────────────────────────────────────────────
 

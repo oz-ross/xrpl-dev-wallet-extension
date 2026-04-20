@@ -322,6 +322,19 @@
     <button id="watch-import-btn" class="btn btn-primary btn-full" style="margin-top:8px">Add Watch Address</button>
   </div>
 
+  <!-- ===== ACCOUNT INFO ===== -->
+  <div id="view-account-info" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-account-info-btn" class="btn-back">‹</button>
+      <h2>Account Info</h2>
+      <button id="account-info-refresh-btn" class="btn-icon" title="Refresh" style="margin-left:auto">↻</button>
+    </div>
+    <div id="account-info-address" class="acct-info-address"></div>
+    <div id="account-info-body">
+      <div class="acct-info-loading">Loading…</div>
+    </div>
+  </div>
+
   <!-- ===== EXPORT KEY ===== -->
   <div id="view-export-key" class="view hidden">
     <div class="view-header">
@@ -477,6 +490,7 @@
       <div class="account-row">
         <span id="account-address" class="account-address" title="">—</span>
         <div class="account-actions">
+          <button id="account-info-btn" class="btn-icon" title="Account info">ℹ</button>
           <button id="qr-btn" class="btn-icon" title="Show QR code">⊞</button>
           <button id="copy-address-btn" class="btn-icon" title="Copy address">⧉</button>
           <a id="account-explorer-link" class="btn-icon" href="#" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
