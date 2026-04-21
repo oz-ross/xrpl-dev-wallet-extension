@@ -34,7 +34,7 @@ body {
   min-height: 300px;
   max-height: 600px;
   overflow-y: auto;
-  padding-bottom: 40px; /* space for fixed warning bar */
+  padding-bottom: 59px; /* space for fixed warning bar + 5 mm clearance */
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
