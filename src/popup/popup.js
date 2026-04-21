@@ -1804,6 +1804,7 @@ function renderIouBalances(lines) {
            data-currency="${esc(line.currency)}"
            data-issuer="${esc(line.account)}"
            data-balance="${esc(balance)}"
+           data-balance-raw="${esc(line.balance)}"
            data-display="${esc(code)}">
         <div class="iou-token-info">
           <span class="iou-currency">${esc(code)}</span>
@@ -3201,6 +3202,23 @@ async function openSendPayment(type, data) {
   else if (type === 'amm') openAmmDeposit();
 
   await populateSendDestination();
+
+  // For self-issued IOUs (negative balance), pre-select the counterparty as destination.
+  if (data.selfIssued && data.counterparty) {
+    const select = $('send-destination-select');
+    const opt = Array.from(select.options).find(o =>
+      (o.value.startsWith('acct:') && o.value.slice(5) === data.counterparty) ||
+      (o.value.startsWith('book:') && o.value.split(':')[1] === data.counterparty)
+    );
+    if (opt) {
+      select.value = opt.value;
+    } else {
+      select.value = '__manual__';
+      $('send-manual-address').value = data.counterparty;
+    }
+    handleSendDestChange();
+  }
+
   showView('send-payment');
 }
 
@@ -3270,7 +3288,7 @@ function reviewSendPayment() {
     Destination: destAddress,
     Amount: pendingSend.type === 'xrp'
       ? String(Math.round(parseFloat(amountStr) * 1_000_000))
-      : { currency: pendingSend.currency, issuer: pendingSend.issuer, value: amountStr },
+      : { currency: pendingSend.currency, issuer: pendingSend.selfIssued ? state.activeAccount : pendingSend.issuer, value: amountStr },
   };
   if (destTagStr) partialTx.DestinationTag = parseInt(destTagStr, 10);
   state.pendingTxReview = { txJson: partialTx, backView: 'send-payment', successMsg: '' };
@@ -3292,7 +3310,7 @@ async function executeSendPayment() {
   if (pendingSend.type === 'xrp') {
     txAmount = xrpToDrops(amountStr);
   } else if (pendingSend.type === 'iou') {
-    txAmount = { currency: pendingSend.currency, issuer: pendingSend.issuer, value: amountStr };
+    txAmount = { currency: pendingSend.currency, issuer: pendingSend.selfIssued ? state.activeAccount : pendingSend.issuer, value: amountStr };
   } else if (pendingSend.type === 'mpt') {
     const scale = pendingSend.assetScale ?? 0;
     const raw = scale > 0 ? Math.round(amountNum * Math.pow(10, scale)) : Math.round(amountNum);
@@ -5055,11 +5073,14 @@ $('iou-balance-list').addEventListener('click', (e) => {
   if (e.target.closest('.token-explorer-link')) return;
   const item = e.target.closest('[data-send-type]');
   if (!item) return;
+  const selfIssued = parseFloat(item.dataset.balanceRaw) < 0;
   openSendPayment('iou', {
-    displayName: item.dataset.display,
-    balance:     item.dataset.balance,
-    currency:    item.dataset.currency,
-    issuer:      item.dataset.issuer,
+    displayName:  item.dataset.display,
+    balance:      item.dataset.balance,
+    currency:     item.dataset.currency,
+    issuer:       item.dataset.issuer,
+    selfIssued,
+    counterparty: selfIssued ? item.dataset.issuer : null,
   });
 });
 
