@@ -1716,6 +1716,18 @@ async function refreshBalance() {
   }
 }
 
+/**
+ * Encode a plain-text currency name as a 40-char hex currency code (XRPL
+ * non-standard format).  Each character is encoded as its ASCII byte value,
+ * right-padded with zeros to fill the 20-byte (40 hex-char) field.
+ */
+function currencyStringToHex(str) {
+  const hex = Array.from(str)
+    .map(c => c.charCodeAt(0).toString(16).padStart(2, '0').toUpperCase())
+    .join('');
+  return hex.padEnd(40, '0');
+}
+
 function formatCurrencyCode(currency) {
   if (currency.length !== 40) return currency;
   try {
@@ -3351,13 +3363,26 @@ function reviewTrustSet() {
     return;
   }
 
-  const currency = $('trust-currency').value.trim().toUpperCase();
-  if (!currency) { showAlert('trust-error', 'Enter a currency code.'); return; }
-  const is3Char = /^[A-Z0-9]{3}$/.test(currency) && currency !== 'XRP';
-  const isHex   = /^[0-9A-F]{40}$/.test(currency);
-  if (!is3Char && !isHex) {
-    showAlert('trust-error', 'Currency must be 3 alphanumeric chars (e.g. USD) or 40 hex chars.');
-    return;
+  const rawCurrency = $('trust-currency').value.trim();
+  if (!rawCurrency) { showAlert('trust-error', 'Enter a currency code.'); return; }
+
+  const upper   = rawCurrency.toUpperCase();
+  const is3Char = /^[A-Z0-9]{3}$/.test(upper) && upper !== 'XRP';
+  const isHex   = /^[0-9A-F]{40}$/.test(upper);
+
+  let currency;
+  if (is3Char || isHex) {
+    currency = upper;
+  } else {
+    if (rawCurrency.length > 20) {
+      showAlert('trust-error', 'Currency name too long — max 20 characters.');
+      return;
+    }
+    if (!/^[\x20-\x7E]+$/.test(rawCurrency)) {
+      showAlert('trust-error', 'Currency contains unsupported characters (ASCII only).');
+      return;
+    }
+    currency = currencyStringToHex(rawCurrency);
   }
 
   const limitStr = $('trust-limit').value.trim() || '1000000000000';
@@ -3373,7 +3398,7 @@ function reviewTrustSet() {
 
   $('send-review-details').innerHTML = [
     row('Type', 'TrustSet', 'tx-type'),
-    row('Currency', esc(currency)),
+    row('Currency', esc(formatCurrencyCode(currency))),
     row('Issuer', `<span title="${esc(issuer)}">${esc(truncAddr(issuer))}</span>`, 'tx-address'),
     row('Limit', esc(parseFloat(limitStr).toLocaleString())),
   ].join('');
