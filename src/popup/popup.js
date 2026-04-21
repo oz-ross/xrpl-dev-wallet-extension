@@ -1921,53 +1921,25 @@ async function fetchMptIssuanceInfo(issuanceId) {
 
     let vaultInfo = null;
 
-    // Strategy 1: MPT issuance node directly references its vault via VaultID.
-    if (node.VaultID) {
+    // Check if the issuer account has a VaultID — if so, this MPT is a vault
+    // share token and the VaultID tells us exactly which vault to look up.
+    if (issuer) {
       try {
-        const vaultResp = await state.client.request({
-          command: 'ledger_entry',
-          index: node.VaultID,
+        const acctResp = await state.client.request({
+          command: 'account_info',
+          account: issuer,
           ledger_index: 'validated',
         });
-        vaultInfo = { ...vaultResp.result.node, vaultId: node.VaultID };
-      } catch { /* vault lookup failed */ }
-    }
-
-    // Strategy 2: Scan issuer's account objects for a vault entry whose
-    // ShareMPTID matches this issuance.  Accept both 'Vault' and
-    // 'SingleAssetVault' as the entry type and compare case-insensitively.
-    if (!vaultInfo && issuer) {
-      try {
-        const issuerObjects = await fetchAllAccountObjects(issuer);
-        const idUpper = issuanceId.toUpperCase();
-
-        console.log('[vault detection] issuer', issuer, 'objects:',
-          issuerObjects.map(o => ({ type: o.LedgerEntryType, ShareMPTID: o.ShareMPTID, index: o.index })));
-
-        const directVault = issuerObjects.find(o =>
-          (o.LedgerEntryType === 'Vault' || o.LedgerEntryType === 'SingleAssetVault') &&
-          o.ShareMPTID?.toUpperCase() === idUpper
-        );
-        if (directVault) {
-          vaultInfo = { ...directVault, vaultId: directVault.index };
-        } else {
-          // Fallback: LoanBroker objects that carry a VaultID pointer.
-          const loanBrokers = issuerObjects
-            .filter(o => o.LedgerEntryType === 'LoanBroker' && o.VaultID);
-          for (const lb of loanBrokers) {
-            const vaultResp = await state.client.request({
-              command: 'ledger_entry',
-              index: lb.VaultID,
-              ledger_index: 'validated',
-            });
-            const vault = vaultResp.result.node;
-            if (vault.ShareMPTID?.toUpperCase() === idUpper) {
-              vaultInfo = { ...vault, vaultId: lb.VaultID };
-              break;
-            }
-          }
+        const vaultId = acctResp.result.account_data?.VaultID ?? null;
+        if (vaultId) {
+          const vaultResp = await state.client.request({
+            command: 'ledger_entry',
+            index: vaultId,
+            ledger_index: 'validated',
+          });
+          vaultInfo = { ...vaultResp.result.node, vaultId };
         }
-      } catch (e) { console.warn('[vault detection] failed for issuer', issuer, e); }
+      } catch { /* not a vault issuer */ }
     }
 
     const outstandingAmount = node.OutstandingAmount ?? '0';
