@@ -2642,7 +2642,7 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
 async function populateAddressPicker(selectEl) {
   selectEl.innerHTML = '';
 
-  const myAccounts = getAllAccounts().filter(a => a.address !== state.activeAccount);
+  const myAccounts = getProjectAccounts().filter(a => a.address !== state.activeAccount);
   if (myAccounts.length > 0) {
     const grp = document.createElement('optgroup');
     grp.label = 'My Accounts';
