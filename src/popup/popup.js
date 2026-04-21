@@ -1888,6 +1888,20 @@ function issuerFromMptIssuanceId(issuanceId) {
   }
 }
 
+/** Fetch every account_objects page for an account, returning the combined array. */
+async function fetchAllAccountObjects(account) {
+  const objects = [];
+  let marker;
+  do {
+    const req = { command: 'account_objects', account, ledger_index: 'validated', limit: 400 };
+    if (marker) req.marker = marker;
+    const resp = await state.client.request(req);
+    objects.push(...(resp.result.account_objects ?? []));
+    marker = resp.result.marker;
+  } while (marker);
+  return objects;
+}
+
 async function fetchMptIssuanceInfo(issuanceId) {
   try {
     const resp = await state.client.request({
@@ -1908,12 +1922,7 @@ async function fetchMptIssuanceInfo(issuanceId) {
     let vaultInfo = null;
     if (issuer) {
       try {
-        const allObjs = await state.client.request({
-          command: 'account_objects',
-          account: issuer,
-          ledger_index: 'validated',
-        });
-        const issuerObjects = allObjs.result.account_objects ?? [];
+        const issuerObjects = await fetchAllAccountObjects(issuer);
 
         // Check for direct Vault objects on the issuer's account whose
         // ShareMPTID matches this issuance.
@@ -1952,12 +1961,7 @@ async function loadMptBalances() {
   if (!state.activeAccount || !state.client) return;
   try {
     await ensureConnected();
-    const resp = await state.client.request({
-      command: 'account_objects',
-      account: state.activeAccount,
-      ledger_index: 'validated',
-    });
-    const allObjects = resp.result.account_objects ?? [];
+    const allObjects = await fetchAllAccountObjects(state.activeAccount);
     const objects = allObjects.filter(o => o.LedgerEntryType === 'MPToken');
 
     // Build a lookup of ShareMPTID → Vault for vaults owned by this account.
