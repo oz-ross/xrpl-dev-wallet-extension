@@ -19,6 +19,7 @@ const NETWORK_SERVERS = {
   // ── Devnet ──────────────────────────────────
   'devnet': {
     name: 'Ripple Devnet', group: 'devnet',
+    chainId:         'xrpl:2',
     wsUrl:           'wss://s.devnet.rippletest.net:51233',
     explorer:        'https://devnet.xrpl.org/transactions/',
     explorerAccount: 'https://devnet.xrpl.org/accounts/',
@@ -29,6 +30,7 @@ const NETWORK_SERVERS = {
   // ── Testnet ──────────────────────────────────
   'testnet': {
     name: 'Ripple Testnet', group: 'testnet',
+    chainId:         'xrpl:1',
     wsUrl:           'wss://s.altnet.rippletest.net:51233',
     explorer:        'https://testnet.xrpl.org/transactions/',
     explorerAccount: 'https://testnet.xrpl.org/accounts/',
@@ -38,6 +40,7 @@ const NETWORK_SERVERS = {
   },
   'testnet-xrplf': {
     name: 'XRPL Foundation Testnet', group: 'testnet',
+    chainId:         'xrpl:1',
     wsUrl:           'wss://testnet.xrpl-labs.com',
     explorer:        'https://testnet.xrpl.org/transactions/',
     explorerAccount: 'https://testnet.xrpl.org/accounts/',
@@ -48,6 +51,7 @@ const NETWORK_SERVERS = {
   // ── Mainnet ──────────────────────────────────
   'mainnet-s1': {
     name: 'Ripple Mainnet (s1)', group: 'mainnet',
+    chainId:         'xrpl:0',
     wsUrl:           'wss://s1.ripple.com',
     explorer:        'https://livenet.xrpl.org/transactions/',
     explorerAccount: 'https://livenet.xrpl.org/accounts/',
@@ -57,6 +61,7 @@ const NETWORK_SERVERS = {
   },
   'mainnet-s2': {
     name: 'Ripple Mainnet (s2)', group: 'mainnet',
+    chainId:         'xrpl:0',
     wsUrl:           'wss://s2.ripple.com',
     explorer:        'https://livenet.xrpl.org/transactions/',
     explorerAccount: 'https://livenet.xrpl.org/accounts/',
@@ -66,6 +71,7 @@ const NETWORK_SERVERS = {
   },
   'mainnet-xrplf': {
     name: 'XRPL Foundation Mainnet', group: 'mainnet',
+    chainId:         'xrpl:0',
     wsUrl:           'wss://xrplcluster.com',
     explorer:        'https://livenet.xrpl.org/transactions/',
     explorerAccount: 'https://livenet.xrpl.org/accounts/',
@@ -82,6 +88,7 @@ function getNetworkConfig() {
     const b = wsUrl ? `https://custom.xrpl.org/${wsUrl}` : '';
     return {
       name: 'Custom', group: 'custom',
+      chainId:         'xrpl:0',
       wsUrl,
       explorer:        b ? `${b}/transactions/` : '',
       explorerAccount: b ? `${b}/accounts/`     : '',
