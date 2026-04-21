@@ -235,7 +235,7 @@ function truncAddr(addr) {
 /** Rebuild the address → name lookup from wallet accounts and address book. */
 async function refreshAddressNames() {
   const map = new Map();
-  for (const acct of getAllAccounts()) {
+  for (const acct of getProjectAccounts()) {
     if (acct.label) map.set(acct.address, acct.label);
   }
   const contacts = await loadAddressBook();
