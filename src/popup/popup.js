@@ -1956,9 +1956,10 @@ async function fetchMptIssuanceInfo(issuanceId) {
     }
 
     const outstandingAmount = node.OutstandingAmount ?? '0';
-    return { ticker, assetScale, outstandingAmount, vaultInfo };
+    const domainId = node.DomainID ?? null;
+    return { ticker, assetScale, outstandingAmount, vaultInfo, domainId };
   } catch {
-    return { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null };
+    return { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null, domainId: null };
   }
 }
 
@@ -1981,10 +1982,22 @@ async function loadMptBalances() {
     const infos = await Promise.all(objects.map(async o => {
       const info = await fetchMptIssuanceInfo(o.MPTokenIssuanceID);
       // If the issuer-side lookup found no vault link, check if this account
-      // owns a Vault whose ShareMPTID matches.
+      // owns a Vault whose ShareMPTID matches. Do a full ledger_entry lookup
+      // so we get all fields including PermissionedDomainID.
       if (!info.vaultInfo) {
         const ownedVault = vaultByShareMPT.get(o.MPTokenIssuanceID?.toUpperCase());
-        if (ownedVault) info.vaultInfo = ownedVault;
+        if (ownedVault) {
+          try {
+            const vaultResp = await state.client.request({
+              command: 'ledger_entry',
+              index: ownedVault.vaultId,
+              ledger_index: 'validated',
+            });
+            info.vaultInfo = { ...vaultResp.result.node, vaultId: ownedVault.vaultId };
+          } catch {
+            info.vaultInfo = ownedVault;
+          }
+        }
       }
       return info;
     }));
@@ -2637,19 +2650,23 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
   const explorerAccount = getNetworkConfig().explorerAccount;
   listEl.innerHTML = held.map(obj => {
     const issuanceId = obj.MPTokenIssuanceID ?? '';
-    const { ticker, assetScale, outstandingAmount, vaultInfo } =
-      issuanceMap.get(issuanceId) ?? { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null };
+    const { ticker, assetScale, outstandingAmount, vaultInfo, domainId } =
+      issuanceMap.get(issuanceId) ?? { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null, domainId: null };
 
     const raw         = obj.MPTAmount ? parseInt(obj.MPTAmount, 10) : 0;
     const scaled      = assetScale > 0 ? raw / Math.pow(10, assetScale) : raw;
     const totalShares = parseInt(outstandingAmount, 10) / Math.pow(10, assetScale || 1);
     const holderShare = totalShares > 0 ? scaled / totalShares : 0;
     const shares      = scaled.toLocaleString(undefined, { maximumFractionDigits: assetScale });
+    const vaultId     = vaultInfo?.vaultId ?? '';
+    const shortVaultId = vaultId.length >= 12
+      ? `${vaultId.slice(0, 8)}…${vaultId.slice(-4)}`
+      : vaultId;
     const shortId     = issuanceId.length >= 12
       ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
       : issuanceId;
 
-    let vaultLabel = ticker || shortId;
+    let vaultLabel = ticker || shortVaultId || shortId;
     if (vaultInfo?.Data) {
       try {
         const decoded = Buffer.from(vaultInfo.Data, 'hex').toString('utf8').trim();
@@ -2677,7 +2694,7 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
            data-underlying-label="${esc(underlying)}">
         <div class="amm-summary-row">
           <div class="amm-token-info">
-            <span class="vault-name" title="${esc(issuanceId)}">${esc(vaultLabel)}</span>
+            <span class="vault-name" title="${esc(vaultId)}">${esc(vaultLabel)}</span>
             <span class="amm-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
           </div>
           <div class="amm-balance-amount">${esc(shares)} shares</div>
@@ -2703,6 +2720,22 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
             <span class="amm-asset-value">${esc(total)}</span>
           </div>` : ''}
         </div>
+        <div class="vault-domain-row">
+          <span class="vault-domain-label">Vault ID</span>
+          <span class="vault-domain-id" title="${esc(vaultId)}">${esc(shortVaultId || '—')}</span>
+        </div>
+        <div class="vault-domain-row">
+          <span class="vault-domain-label">Share MPT ID</span>
+          <span class="vault-domain-id" title="${esc(issuanceId)}">${esc(shortId || '—')}</span>
+        </div>
+        ${(domainId || vaultInfo?.PermissionedDomainID) ? (() => {
+          const domId = domainId || vaultInfo.PermissionedDomainID;
+          const shortDom = domId.length >= 12 ? `${domId.slice(0, 8)}…${domId.slice(-4)}` : domId;
+          return `<div class="vault-domain-row">
+            <span class="vault-domain-label">Domain</span>
+            <span class="vault-domain-id" title="${esc(domId)}">${esc(shortDom)}</span>
+          </div>`;
+        })() : ''}
       </div>`;
   }).join('');
 }

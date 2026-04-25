@@ -1018,6 +1018,29 @@ div.vault-balance-item:hover {
 }
 .vault-balance-item:last-child { border-bottom: none; }
 
+.vault-domain-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.vault-domain-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  flex-shrink: 0;
+}
+
+.vault-domain-id {
+  font-size: 11px;
+  color: var(--text-2);
+  font-family: monospace;
+  word-break: break-all;
+}
+
 .vault-name {
   font-size: 13px;
   font-weight: 700;
