@@ -587,6 +587,7 @@ async function switchProject(projectId) {
     loadIouBalances();
     loadMptBalances();
     loadCredentials();
+    loadPermissionedDomains();
     loadTxHistory();
   }
   await saveProjects();
@@ -1008,6 +1009,7 @@ async function activateAccount(address) {
   loadMptBalances();
   loadCredentials();
   loadLendingPositions();
+  loadPermissionedDomains();
   loadTxHistory();
 }
 
@@ -1323,6 +1325,7 @@ async function finalizeAccountCreation() {
     loadMptBalances();
     loadCredentials();
     loadLendingPositions();
+    loadPermissionedDomains();
     loadTxHistory();
     await initWalletConnect();
     await checkPendingWcEvent();
@@ -1365,6 +1368,7 @@ async function unlock() {
     loadMptBalances();
     loadCredentials();
     loadLendingPositions();
+    loadPermissionedDomains();
     loadTxHistory();
     await initWalletConnect();
     await checkPendingWcEvent();
@@ -2055,6 +2059,69 @@ function renderCredentials(creds) {
 
   // Store credentials on the element for click access
   listEl._credentials = creds;
+}
+
+// ─────────────────────────────────────────────
+// PERMISSIONED DOMAINS
+// ─────────────────────────────────────────────
+
+async function loadPermissionedDomains() {
+  if (!state.activeAccount || !state.client) return;
+  try {
+    await ensureConnected();
+    const allObjects = await fetchAllAccountObjects(state.activeAccount);
+    const domains = allObjects.filter(o => o.LedgerEntryType === 'PermissionedDomain');
+    renderPermissionedDomains(domains);
+  } catch (err) {
+    if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
+      renderPermissionedDomains([]);
+    } else {
+      console.error('[permissioned domains]', err);
+    }
+  }
+}
+
+function renderPermissionedDomains(domains) {
+  const card   = $('domain-card');
+  const listEl = $('domain-list');
+
+  if (!domains.length) {
+    card.classList.add('hidden');
+    listEl.innerHTML = '';
+    return;
+  }
+
+  card.classList.remove('hidden');
+  listEl.innerHTML = domains.map(domain => {
+    const domainId = domain.index ?? '';
+    const shortId  = domainId.length >= 12 ? `${domainId.slice(0, 8)}…${domainId.slice(-4)}` : domainId;
+
+    // AcceptedCredentials inner objects may be wrapped under different key names
+    // depending on the rippled version (PermissionedDomainCredential or Credential).
+    const rawCreds = domain.AcceptedCredentials ?? [];
+    const creds = rawCreds.map(entry =>
+      entry.PermissionedDomainCredential ?? entry.Credential ?? entry
+    );
+
+    const credRows = creds.map(c => {
+      const issuer    = c.Issuer ?? '';
+      const typeHex   = c.CredentialType ?? '';
+      const typeLabel = hexToUtf8(typeHex) || typeHex.slice(0, 16) || '—';
+      return `
+        <div class="domain-cred-row">
+          <span class="domain-cred-type">${esc(typeLabel)}</span>
+          <span class="domain-cred-issuer" title="${esc(issuer)}">${esc(resolveAddrDisplay(issuer))}</span>
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="domain-item">
+        <div class="domain-id" title="${esc(domainId)}">${esc(shortId)}</div>
+        <div class="domain-creds">
+          ${credRows || '<span class="domain-creds-empty">No credentials</span>'}
+        </div>
+      </div>`;
+  }).join('');
 }
 
 function openCredentialDetail(cred) {
@@ -3348,6 +3415,7 @@ async function executeSendPayment() {
     loadMptBalances();
     loadCredentials();
     loadLendingPositions();
+    loadPermissionedDomains();
     loadTxHistory();
   } catch (err) {
     console.error('[sendPayment]', err);
@@ -3758,6 +3826,7 @@ async function executeReviewedTx() {
     loadMptBalances();
     loadCredentials();
     loadLendingPositions();
+    loadPermissionedDomains();
     loadTxHistory();
   } catch (err) {
     console.error('[executeReviewedTx]', err);
@@ -3777,6 +3846,7 @@ function startAutoRefresh() {
     loadMptBalances();
     loadCredentials();
     loadLendingPositions();
+    loadPermissionedDomains();
     loadTxHistory();
   }, AUTO_REFRESH_INTERVAL);
 }
@@ -4165,6 +4235,7 @@ async function approveTransaction() {
     loadMptBalances();
     loadCredentials();
     loadLendingPositions();
+    loadPermissionedDomains();
     loadTxHistory();
   } catch (err) {
     console.error('[approveTransaction]', err);
@@ -4980,6 +5051,7 @@ $('refresh-balance-btn').addEventListener('click', () => {
   loadMptBalances();
   loadCredentials();
   loadLendingPositions();
+  loadPermissionedDomains();
 });
 
 $('copy-address-btn').addEventListener('click', async () => {
@@ -5590,6 +5662,7 @@ $('mainnet-warning-reject-btn').addEventListener('click', () => {
       loadMptBalances();
       loadCredentials();
       loadLendingPositions();
+    loadPermissionedDomains();
       loadTxHistory();
       await initWalletConnect();
       await checkPendingWcEvent();
