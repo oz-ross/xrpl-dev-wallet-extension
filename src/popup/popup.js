@@ -1089,12 +1089,13 @@ async function confirmGenSeed() {
   const address = $('generated-seed-text').dataset.address;
   const label   = $('gen-seed-label').value.trim() || nextAccountLabel();
 
-  if (accountExists(address)) {
+  if (getProjectAccounts().some(a => a.address === address)) {
     showAlert('gen-seed-error', 'This account is already in your wallet.');
     return;
   }
-
-  state.keyrings.push({ type: 'simple', seed, address, label });
+  if (!accountExists(address)) {
+    state.keyrings.push({ type: 'simple', seed, address, label });
+  }
   state.activeAccount = address;
   await finalizeAccountCreation();
 }
@@ -1119,13 +1120,15 @@ async function confirmImportSeed() {
     return;
   }
 
-  if (accountExists(wallet.address)) {
+  if (getProjectAccounts().some(a => a.address === wallet.address)) {
     showAlert('import-seed-error', 'This account is already in your wallet.');
     return;
   }
 
   const label = $('import-seed-label').value.trim() || nextAccountLabel();
-  state.keyrings.push({ type: 'simple', seed, address: wallet.address, label });
+  if (!accountExists(wallet.address)) {
+    state.keyrings.push({ type: 'simple', seed, address: wallet.address, label });
+  }
   state.activeAccount = wallet.address;
   await finalizeAccountCreation();
 }
@@ -1180,17 +1183,19 @@ async function confirmMnemonicGeneration() {
     return;
   }
 
-  if (accountExists(wallet.address)) {
+  if (getProjectAccounts().some(a => a.address === wallet.address)) {
     showAlert('gen-mnemonic-error', 'This account is already in your wallet.');
     return;
   }
 
   const label = $('gen-mnemonic-label').value.trim() || nextAccountLabel();
-  state.keyrings.push({
-    type:     'HD',
-    mnemonic: state.pendingMnemonic,
-    accounts: [{ accountIndex: 0, address: wallet.address, label }],
-  });
+  if (!accountExists(wallet.address)) {
+    state.keyrings.push({
+      type:     'HD',
+      mnemonic: state.pendingMnemonic,
+      accounts: [{ accountIndex: 0, address: wallet.address, label }],
+    });
+  }
   state.activeAccount  = wallet.address;
   state.pendingMnemonic = null;
   await finalizeAccountCreation();
@@ -1222,17 +1227,19 @@ async function confirmImportMnemonic() {
     return;
   }
 
-  if (accountExists(wallet.address)) {
+  if (getProjectAccounts().some(a => a.address === wallet.address)) {
     showAlert('import-mnemonic-error', 'This account is already in your wallet.');
     return;
   }
 
   const label = $('import-mnemonic-label').value.trim() || nextAccountLabel();
-  state.keyrings.push({
-    type:     'HD',
-    mnemonic: raw,
-    accounts: [{ accountIndex: 0, address: wallet.address, label }],
-  });
+  if (!accountExists(wallet.address)) {
+    state.keyrings.push({
+      type:     'HD',
+      mnemonic: raw,
+      accounts: [{ accountIndex: 0, address: wallet.address, label }],
+    });
+  }
   state.activeAccount = wallet.address;
   await finalizeAccountCreation();
 }
@@ -1285,13 +1292,15 @@ async function confirmHdAdd() {
     return;
   }
 
-  if (accountExists(wallet.address)) {
+  if (getProjectAccounts().some(a => a.address === wallet.address)) {
     showAlert('hd-add-error', 'This account is already in your wallet.');
     return;
   }
 
   const label = $('hd-account-label').value.trim() || nextAccountLabel();
-  kr.accounts.push({ accountIndex, address: wallet.address, label });
+  if (!accountExists(wallet.address)) {
+    kr.accounts.push({ accountIndex, address: wallet.address, label });
+  }
   state.activeAccount = wallet.address;
   await finalizeAccountCreation();
 }
@@ -4423,9 +4432,15 @@ async function confirmImportWatch() {
   const address = $('watch-address-input').value.trim();
   if (!address) { showAlert('watch-error', 'Enter an XRPL address.'); return; }
   if (!isValidClassicAddress(address)) { showAlert('watch-error', 'Invalid XRPL address.'); return; }
-  if (accountExists(address)) { showAlert('watch-error', 'This address is already in your wallet.'); return; }
+  if (getProjectAccounts().some(a => a.address === address)) {
+    showAlert('watch-error', 'This address is already in your wallet.');
+    return;
+  }
   const label = $('watch-label-input').value.trim() || nextAccountLabel();
-  state.keyrings.push({ type: 'watch', address, label });
+  // Only add a new keyring entry if the address isn't already in another project.
+  if (!accountExists(address)) {
+    state.keyrings.push({ type: 'watch', address, label });
+  }
   state.activeAccount = address;
   await finalizeAccountCreation();
 }
@@ -4784,7 +4799,7 @@ async function connectLedgerDevice() {
     btn.textContent = 'Confirm on device…';
     const result = await xrpApp.getAddress(path, true);
 
-    if (accountExists(result.address)) {
+    if (getProjectAccounts().some(a => a.address === result.address)) {
       showAlert('ledger-error', 'This account is already in your wallet.');
       btn.disabled = false;
       btn.textContent = 'Connect & Import';
@@ -4792,7 +4807,9 @@ async function connectLedgerDevice() {
     }
 
     const label = idx > 0 ? `Ledger Account ${idx}` : 'Ledger Account';
-    state.keyrings.push({ type: 'ledger', address: result.address, publicKey: result.publicKey, derivationPath: path, label });
+    if (!accountExists(result.address)) {
+      state.keyrings.push({ type: 'ledger', address: result.address, publicKey: result.publicKey, derivationPath: path, label });
+    }
     state.activeAccount = result.address;
     state.wallet        = null;
 
