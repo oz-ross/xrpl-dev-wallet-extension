@@ -235,7 +235,7 @@ function truncAddr(addr) {
 /** Rebuild the address → name lookup from wallet accounts and address book. */
 async function refreshAddressNames() {
   const map = new Map();
-  for (const acct of getProjectAccounts()) {
+  for (const acct of getAllAccounts()) {
     if (acct.label) map.set(acct.address, acct.label);
   }
   const contacts = await loadAddressBook();
@@ -2452,7 +2452,7 @@ function renderBrokerItem({ broker, asset, loans }) {
   const assetCell = asset
     ? (typeof asset === 'string'
         ? 'XRP'
-        : `${esc(formatPoolAsset(asset))} <span class="amm-issuer" title="${esc(asset.issuer ?? '')}">${esc(asset.issuer ? shortHash(asset.issuer) : '')}</span>`)
+        : `${esc(formatPoolAsset(asset))} <span class="amm-issuer" title="${esc(asset.issuer ?? '')}">${esc(asset.issuer ? resolveAddrDisplay(asset.issuer) : '')}</span>`)
     : '—';
 
   // "Available to lend" — only meaningful when DebtMaximum is capped.
@@ -2666,11 +2666,28 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
       ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
       : issuanceId;
 
-    let vaultLabel = ticker || shortVaultId || shortId;
+    let vaultName    = ticker || shortVaultId || shortId;
+    let vaultWebsite = '';
     if (vaultInfo?.Data) {
       try {
         const decoded = Buffer.from(vaultInfo.Data, 'hex').toString('utf8').trim();
-        if (decoded && /^[\x20-\x7E]+$/.test(decoded)) vaultLabel = decoded;
+        if (decoded) {
+          try {
+            const parsed = JSON.parse(decoded);
+            const xn     = typeof parsed?.n === 'string' ? parsed.n.trim() : '';
+            const xw     = typeof parsed?.w === 'string' ? parsed.w.trim() : '';
+            if (xn || xw) {
+              // XLS-98 vault metadata standard
+              vaultName    = xn || xw;
+              vaultWebsite = xw;
+            } else if (/^[\x20-\x7E]+$/.test(decoded)) {
+              vaultName = decoded;
+            }
+          } catch {
+            // Not JSON — use raw text if it is printable ASCII
+            if (/^[\x20-\x7E]+$/.test(decoded)) vaultName = decoded;
+          }
+        }
       } catch { /* keep existing label */ }
     }
 
@@ -2685,7 +2702,7 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
     return `
       <div class="vault-balance-item"
            data-send-type="vault"
-           data-display="${esc(vaultLabel)}"
+           data-display="${esc(vaultName)}"
            data-balance="${esc(shares)}"
            data-mpt-id="${esc(issuanceId)}"
            data-asset-scale="${assetScale}"
@@ -2694,7 +2711,7 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
            data-underlying-label="${esc(underlying)}">
         <div class="amm-summary-row">
           <div class="amm-token-info">
-            <span class="vault-name" title="${esc(vaultId)}">${esc(vaultLabel)}</span>
+            <span class="vault-name" title="${esc(vaultId)}">${esc(vaultName)}</span>
             <span class="amm-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
           </div>
           <div class="amm-balance-amount">${esc(shares)} shares</div>
@@ -2720,6 +2737,10 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
             <span class="amm-asset-value">${esc(total)}</span>
           </div>` : ''}
         </div>
+        ${vaultWebsite ? `<div class="vault-domain-row">
+          <span class="vault-domain-label">Website</span>
+          <span class="vault-domain-id">${esc(vaultWebsite)}</span>
+        </div>` : ''}
         <div class="vault-domain-row">
           <span class="vault-domain-label">Vault ID</span>
           <span class="vault-domain-id" title="${esc(vaultId)}">${esc(shortVaultId || '—')}</span>
@@ -3742,7 +3763,18 @@ async function fetchAndPopulateVaults() {
       if (vault.Data) {
         try {
           const decoded = Buffer.from(vault.Data, 'hex').toString('utf8').trim();
-          if (decoded && /^[\x20-\x7E]+$/.test(decoded)) name = decoded;
+          if (decoded) {
+            try {
+              const parsed = JSON.parse(decoded);
+              const vn     = typeof parsed?.n === 'string' ? parsed.n.trim() : '';
+              const vw     = typeof parsed?.w === 'string' ? parsed.w.trim() : '';
+              // XLS-98: use name only — asset label is appended separately
+              if (vn || vw) name = vn || vw;
+              else if (/^[\x20-\x7E]+$/.test(decoded)) name = decoded;
+            } catch {
+              if (/^[\x20-\x7E]+$/.test(decoded)) name = decoded;
+            }
+          }
         } catch { /* keep id */ }
       }
       const assetLabel = vault.Asset ? formatPoolAsset(vault.Asset) : '?';
