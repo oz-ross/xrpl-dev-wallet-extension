@@ -1048,6 +1048,29 @@ div.vault-balance-item:hover {
   flex-shrink: 0;
 }
 
+.vault-owner-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 0 4px;
+  vertical-align: middle;
+  opacity: 0.8;
+}
+
+.mpt-issuer-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+  padding: 0 4px;
+  vertical-align: middle;
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
 /* ===== TRANSACTION HISTORY ===== */
 .tx-history-empty {
   font-size: 12px;

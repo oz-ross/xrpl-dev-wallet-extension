@@ -2006,7 +2006,8 @@ async function loadMptBalances() {
     const regularObjects = objects.filter((_, i) => !infos[i]?.vaultInfo);
     const vaultObjects   = objects.filter((_, i) =>  infos[i]?.vaultInfo);
 
-    renderMptBalances(regularObjects, issuanceMap);
+    const issuances = allObjects.filter(o => o.LedgerEntryType === 'MPTokenIssuance');
+    renderMptBalances(regularObjects, issuanceMap, issuances);
     renderVaultBalances(vaultObjects, issuanceMap);
   } catch (err) {
     if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
@@ -2240,7 +2241,22 @@ function shortHash(h) {
   return h.length >= 12 ? `${h.slice(0, 8)}…${h.slice(-4)}` : h;
 }
 
-async function fetchVaultAsset(vaultID, cache) {
+function parseVaultName(dataHex) {
+  if (!dataHex) return null;
+  try {
+    const decoded = Buffer.from(dataHex, 'hex').toString('utf8').trim();
+    if (!decoded) return null;
+    try {
+      const parsed = JSON.parse(decoded);
+      const name = typeof parsed?.n === 'string' ? parsed.n.trim() : '';
+      if (name) return name;
+    } catch { /* not JSON */ }
+    if (/^[\x20-\x7E]+$/.test(decoded)) return decoded;
+  } catch { /* ignore */ }
+  return null;
+}
+
+async function fetchVaultAsset(vaultID, cache, nodeCache = null) {
   if (!vaultID) return null;
   if (cache.has(vaultID)) return cache.get(vaultID);
   try {
@@ -2249,8 +2265,10 @@ async function fetchVaultAsset(vaultID, cache) {
       index: vaultID,
       ledger_index: 'validated',
     });
-    const asset = resp.result?.node?.Asset ?? null;
+    const node  = resp.result?.node ?? {};
+    const asset = node.Asset ?? null;
     cache.set(vaultID, asset);
+    if (nodeCache) nodeCache.set(vaultID, node);
     return asset;
   } catch {
     cache.set(vaultID, null);
@@ -2289,20 +2307,19 @@ async function loadLendingPositions() {
     // Seed the vault-asset cache with Vaults already present in this account's
     // account_objects — LoanBroker.Owner == Vault.Owner per spec §2, so the
     // Vault usually shows up in the same response and we avoid a round-trip.
-    const vaultAssetCache = new Map(
-      objects
-        .filter(o => o.LedgerEntryType === 'Vault' && o.index && o.Asset)
-        .map(o => [o.index, o.Asset])
-    );
+    const vaultObjects = objects.filter(o => o.LedgerEntryType === 'Vault' && o.index);
+    const vaultAssetCache = new Map(vaultObjects.filter(o => o.Asset).map(o => [o.index, o.Asset]));
+    const vaultNodeCache  = new Map(vaultObjects.map(o => [o.index, o]));
 
     // For each broker, resolve Vault asset + pull loans under the broker's
     // pseudo-account. Fan out in parallel.
     const brokerDetails = await Promise.all(brokers.map(async (b) => {
       const [asset, loans] = await Promise.all([
-        fetchVaultAsset(b.VaultID, vaultAssetCache),
+        fetchVaultAsset(b.VaultID, vaultAssetCache, vaultNodeCache),
         fetchLoansUnderBroker(b.Account),
       ]);
-      return { broker: b, asset, loans };
+      const vaultName = parseVaultName(vaultNodeCache.get(b.VaultID)?.Data ?? null);
+      return { broker: b, asset, loans, vaultName };
     }));
 
     // Borrower-side loans: resolve the asset + lender address via LoanBrokerID.
@@ -2437,7 +2454,7 @@ function renderCollapsible(sectionLabel, itemsHtml, count, unitSingular) {
     </details>`;
 }
 
-function renderBrokerItem({ broker, asset, loans }) {
+function renderBrokerItem({ broker, asset, loans, vaultName = null }) {
   const brokerID    = broker.index ?? '';
   const vaultID     = broker.VaultID ?? '';
   const pseudoAcct  = broker.Account ?? '';
@@ -2463,7 +2480,7 @@ function renderBrokerItem({ broker, asset, loans }) {
 
   const stats = [
     ['Asset',            assetCell],
-    ['Vault',            `<span title="${esc(vaultID)}">${esc(shortHash(vaultID))}</span>`],
+    ['Vault',            `<span title="${esc(vaultID)}">${esc(vaultName || shortHash(vaultID))}</span>`],
     ['Debt',             `${esc(formatLoanAmount(broker.DebtTotal, asset))} / ${esc(debtMaxStr)}`],
     ...availableRow,
     ['Cover Available',  esc(formatLoanAmount(broker.CoverAvailable, asset))],
@@ -2603,13 +2620,14 @@ function renderLoanItem(loan, asset, opts = {}) {
     </div>`;
 }
 
-function renderMptBalances(objects, issuanceMap = new Map()) {
+function renderMptBalances(objects, issuanceMap = new Map(), issuances = []) {
   const listEl = $('mpt-balance-list');
   const held   = objects.filter(o => o.LedgerEntryType === 'MPToken');
 
-  if (!held.length) { listEl.innerHTML = ''; return; }
+  if (!held.length && !issuances.length) { listEl.innerHTML = ''; return; }
   const explorerMpt = getNetworkConfig().explorerMpt;
-  listEl.innerHTML = held.map(obj => {
+
+  const heldHtml = held.map(obj => {
     const issuanceId = obj.MPTokenIssuanceID ?? '';
     const { ticker, assetScale } = issuanceMap.get(issuanceId) ?? { ticker: null, assetScale: 0 };
     const raw         = obj.MPTAmount ? parseInt(obj.MPTAmount, 10) : 0;
@@ -2618,10 +2636,10 @@ function renderMptBalances(objects, issuanceMap = new Map()) {
     const shortId     = issuanceId.length >= 12
       ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
       : issuanceId;
-    const displayName  = ticker || shortId;
-    const issuer       = issuerFromMptIssuanceId(issuanceId);
+    const displayName   = ticker || shortId;
+    const issuer        = issuerFromMptIssuanceId(issuanceId);
     const issuerDisplay = issuer ? resolveAddrDisplay(issuer) : (issuanceId.slice(8, 16) + '…');
-    const href         = `${explorerMpt}${issuanceId}`;
+    const href          = `${explorerMpt}${issuanceId}`;
     return `
       <div class="mpt-balance-item"
            data-send-type="mpt"
@@ -2636,7 +2654,39 @@ function renderMptBalances(objects, issuanceMap = new Map()) {
         <div class="mpt-balance-amount">${esc(amount)}</div>
         <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
       </div>`;
-  }).join('');
+  });
+
+  const issuedHtml = issuances.map(obj => {
+    const issuanceId   = obj.MPTokenIssuanceID ?? obj.index ?? '';
+    const assetScale   = obj.AssetScale ?? 0;
+    const rawOut       = obj.OutstandingAmount ? parseInt(obj.OutstandingAmount, 10) : 0;
+    const outstanding  = assetScale > 0 ? rawOut / Math.pow(10, assetScale) : rawOut;
+    const outstandingFmt = outstanding.toLocaleString(undefined, { maximumFractionDigits: assetScale });
+    let ticker = null;
+    if (obj.MPTokenMetadata) {
+      try {
+        const decoded = decodeMPTokenMetadata(obj.MPTokenMetadata);
+        ticker = (typeof decoded?.ticker === 'string' && decoded.ticker) ? decoded.ticker : null;
+      } catch { /* ignore */ }
+    }
+    const shortId    = issuanceId.length >= 12
+      ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
+      : issuanceId;
+    const displayName = ticker || shortId;
+    const href        = `${explorerMpt}${issuanceId}`;
+    return `
+      <div class="mpt-balance-item mpt-issuance-item">
+        <div class="mpt-token-info">
+          <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
+          <span class="mpt-issuer-badge">Issuer</span>
+          ${ticker ? `<span class="mpt-issuer" title="${esc(issuanceId)}">${esc(shortId)}</span>` : ''}
+        </div>
+        <div class="mpt-balance-amount">${esc(outstandingFmt)}</div>
+        <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
+      </div>`;
+  });
+
+  listEl.innerHTML = [...heldHtml, ...issuedHtml].join('');
 }
 
 function renderVaultBalances(objects, issuanceMap = new Map()) {
@@ -2648,6 +2698,7 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
   if (!held.length) { listEl.innerHTML = ''; return; }
 
   const explorerAccount = getNetworkConfig().explorerAccount;
+  const activeAccount   = state.activeAccount;
   listEl.innerHTML = held.map(obj => {
     const issuanceId = obj.MPTokenIssuanceID ?? '';
     const { ticker, assetScale, outstandingAmount, vaultInfo, domainId } =
@@ -2658,6 +2709,7 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
     const totalShares = parseInt(outstandingAmount, 10) / Math.pow(10, assetScale || 1);
     const holderShare = totalShares > 0 ? scaled / totalShares : 0;
     const shares      = scaled.toLocaleString(undefined, { maximumFractionDigits: assetScale });
+    const isOwner     = vaultInfo?.Owner === activeAccount;
     const vaultId     = vaultInfo?.vaultId ?? '';
     const shortVaultId = vaultId.length >= 12
       ? `${vaultId.slice(0, 8)}…${vaultId.slice(-4)}`
@@ -2695,8 +2747,11 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
     const issuerDisplay = issuer ? resolveAddrDisplay(issuer) : (issuanceId.slice(8, 16) + '…');
     const underlying    = vaultInfo?.Asset ? formatPoolAsset(vaultInfo.Asset) : '—';
     const fmtAmt        = (v) => (parseFloat(v ?? 0) * holderShare).toLocaleString(undefined, { maximumFractionDigits: 6 });
+    const fmtPoolTotal  = (v) => parseFloat(v ?? 0).toLocaleString(undefined, { maximumFractionDigits: 6 });
     const available     = vaultInfo?.AssetsAvailable != null ? fmtAmt(vaultInfo.AssetsAvailable) : null;
     const total         = vaultInfo?.AssetsTotal      != null ? fmtAmt(vaultInfo.AssetsTotal)     : null;
+    const availablePool = vaultInfo?.AssetsAvailable != null ? fmtPoolTotal(vaultInfo.AssetsAvailable) : null;
+    const totalPool     = vaultInfo?.AssetsTotal      != null ? fmtPoolTotal(vaultInfo.AssetsTotal)     : null;
     const href          = `${explorerAccount}${issuer ?? ''}`;
 
     return `
@@ -2711,7 +2766,7 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
            data-underlying-label="${esc(underlying)}">
         <div class="amm-summary-row">
           <div class="amm-token-info">
-            <span class="vault-name" title="${esc(vaultId)}">${esc(vaultName)}</span>
+            <span class="vault-name" title="${esc(vaultId)}">${esc(vaultName)}</span>${isOwner ? ' <span class="vault-owner-badge">Owner</span>' : ''}
             <span class="amm-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
           </div>
           <div class="amm-balance-amount">${esc(shares)} shares</div>
@@ -2722,6 +2777,16 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
             <span class="amm-asset-label">Underlying</span>
             <span class="amm-asset-value">${esc(underlying)}</span>
           </div>
+          ${availablePool != null ? `
+          <div class="amm-asset-share">
+            <span class="amm-asset-label">Available Pool</span>
+            <span class="amm-asset-value">${esc(availablePool)}</span>
+          </div>` : ''}
+          ${totalPool != null ? `
+          <div class="amm-asset-share">
+            <span class="amm-asset-label">Total Pool</span>
+            <span class="amm-asset-value">${esc(totalPool)}</span>
+          </div>` : ''}
           <div class="amm-asset-share">
             <span class="amm-asset-label">Pool share</span>
             <span class="amm-asset-value">${(holderShare * 100).toFixed(2)}%</span>
