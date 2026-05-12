@@ -364,10 +364,24 @@
           <button id="export-key-copy-btn" class="btn-icon" title="Copy">⧉</button>
         </div>
       </div>
+      <div id="export-privkey-section" style="margin-top:12px">
+        <div class="export-key-label">Private Key</div>
+        <div class="export-key-box">
+          <span id="export-privkey-value" class="export-key-value"></span>
+          <div class="export-key-actions">
+            <button id="export-privkey-qr-btn" class="btn-icon" title="Show QR code">⊞</button>
+            <button id="export-privkey-copy-btn" class="btn-icon" title="Copy">⧉</button>
+          </div>
+        </div>
+      </div>
       <div id="export-key-hide-timer" class="export-key-timer"></div>
       <div id="export-key-qr-modal" class="export-key-qr-modal hidden">
         <canvas id="export-key-qr-canvas"></canvas>
         <button id="export-key-qr-close-btn" class="btn-icon qr-close" title="Close">✕</button>
+      </div>
+      <div id="export-privkey-qr-modal" class="export-key-qr-modal hidden">
+        <canvas id="export-privkey-qr-canvas"></canvas>
+        <button id="export-privkey-qr-close-btn" class="btn-icon qr-close" title="Close">✕</button>
       </div>
     </div>
   </div>

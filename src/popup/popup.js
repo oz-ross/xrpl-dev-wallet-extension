@@ -4630,8 +4630,22 @@ async function confirmExportKey() {
     return;
   }
 
+  // Derive private key for the specific account
+  let privKey = null;
+  try {
+    if (info.type === 'simple') {
+      privKey = deriveSimpleWallet(state.keyrings[info.keyringsIdx].seed).privateKey;
+    } else if (info.type === 'HD') {
+      const kr   = state.keyrings[info.keyringsIdx];
+      const acct = kr.accounts[info.accountsIdx];
+      if (acct) privKey = deriveHDWallet(kr.mnemonic, acct.accountIndex).privateKey;
+    }
+  } catch { /* derivation failure — omit private key */ }
+
   $('export-key-result-label').textContent = label;
   $('export-key-value').textContent = value;
+  $('export-privkey-value').textContent = privKey ?? '';
+  $('export-privkey-section').style.display = privKey ? '' : 'none';
   $('export-key-result').classList.remove('hidden');
   $('export-key-reveal-btn').classList.add('hidden');
   $('export-key-password-group').classList.add('hidden');
@@ -4645,6 +4659,9 @@ async function confirmExportKey() {
     if (remaining <= 0) {
       clearInterval(_exportKeyHideTimer); _exportKeyHideTimer = null;
       $('export-key-result').classList.add('hidden');
+      $('export-privkey-value').textContent = '';
+      $('export-key-qr-modal').classList.add('hidden');
+      $('export-privkey-qr-modal').classList.add('hidden');
       $('export-key-reveal-btn').classList.remove('hidden');
       $('export-key-password-group').classList.remove('hidden');
       $('export-key-password').value = '';
@@ -4656,6 +4673,10 @@ async function confirmExportKey() {
 
 $('back-from-export-key-btn').addEventListener('click', () => {
   if (_exportKeyHideTimer) { clearInterval(_exportKeyHideTimer); _exportKeyHideTimer = null; }
+  $('export-key-value').textContent = '';
+  $('export-privkey-value').textContent = '';
+  $('export-key-qr-modal').classList.add('hidden');
+  $('export-privkey-qr-modal').classList.add('hidden');
   state.pendingExportAddress = null;
   showView('manage-accounts');
 });
@@ -4679,6 +4700,26 @@ $('export-key-qr-btn').addEventListener('click', async () => {
 });
 $('export-key-qr-close-btn').addEventListener('click', () => {
   $('export-key-qr-modal').classList.add('hidden');
+});
+$('export-privkey-copy-btn').addEventListener('click', async () => {
+  const val = $('export-privkey-value').textContent;
+  if (!val) return;
+  await navigator.clipboard.writeText(val);
+  $('export-privkey-copy-btn').textContent = '✓';
+  setTimeout(() => { $('export-privkey-copy-btn').textContent = '⧉'; }, 1500);
+});
+$('export-privkey-qr-btn').addEventListener('click', async () => {
+  const value = $('export-privkey-value').textContent;
+  if (!value) return;
+  await QRCode.toCanvas($('export-privkey-qr-canvas'), value, {
+    width: 200,
+    margin: 2,
+    color: { dark: '#0f172a', light: '#f8fafc' },
+  });
+  $('export-privkey-qr-modal').classList.remove('hidden');
+});
+$('export-privkey-qr-close-btn').addEventListener('click', () => {
+  $('export-privkey-qr-modal').classList.add('hidden');
 });
 
 // ─────────────────────────────────────────────
