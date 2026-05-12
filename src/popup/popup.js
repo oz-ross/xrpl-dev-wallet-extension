@@ -163,7 +163,7 @@ const state = {
   pendingTxReview: null,
 
   // Developer settings persisted to chrome.storage.local
-  devSettings: { printTxJson: false, lockTimeoutSecs: 10 },
+  devSettings: { printTxJson: false, lockTimeoutSecs: 10, wideMode: false },
 
   // Vaults fetched on the vault-deposit screen, keyed by VaultID
   fetchedVaults: new Map(),
@@ -5673,6 +5673,13 @@ $('setup-restore-backup-btn').addEventListener('click', () => { _restoreBackTarg
 // DEVELOPER SETTINGS
 // ─────────────────────────────────────────────
 
+function applyWideMode() {
+  const on = state.devSettings.wideMode;
+  document.body.classList.toggle('wide-mode', on);
+  $('wide-mode-btn').textContent = on ? '⤡' : '⤢';
+  $('wide-mode-btn').title = on ? 'Shrink view' : 'Expand view';
+}
+
 async function loadDevSettings() {
   const { devSettings, networkSettings } = await chrome.storage.local.get(['devSettings', 'networkSettings']);
   if (devSettings) state.devSettings = { ...state.devSettings, ...devSettings };
@@ -5682,6 +5689,7 @@ async function loadDevSettings() {
   }
   $('dev-print-tx-json').checked = state.devSettings.printTxJson;
   $('lock-timeout-secs').value   = state.devSettings.lockTimeoutSecs;
+  applyWideMode();
   populateNetworkSelector();
 }
 
@@ -5717,6 +5725,12 @@ async function applyNetworkChange() {
     activateAccount(state.activeAccount);
   }
 }
+
+$('wide-mode-btn').addEventListener('click', async () => {
+  state.devSettings.wideMode = !state.devSettings.wideMode;
+  applyWideMode();
+  await saveDevSettings();
+});
 
 $('dev-print-tx-json').addEventListener('change', async (e) => {
   state.devSettings.printTxJson = e.target.checked;
