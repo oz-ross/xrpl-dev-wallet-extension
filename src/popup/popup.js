@@ -2763,7 +2763,8 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
            data-asset-scale="${assetScale}"
            data-vault-id="${esc(vaultInfo?.vaultId ?? '')}"
            data-vault-asset="${encodeURIComponent(JSON.stringify(vaultInfo?.Asset ?? null))}"
-           data-underlying-label="${esc(underlying)}">
+           data-underlying-label="${esc(underlying)}"
+           data-domain-id="${esc(domainId ?? vaultInfo?.PermissionedDomainID ?? '')}">
         <div class="amm-summary-row">
           <div class="amm-token-info">
             <span class="vault-name" title="${esc(vaultId)}">${esc(vaultName)}</span>${isOwner ? ' <span class="vault-owner-badge">Owner</span>' : ''}
@@ -3394,8 +3395,8 @@ async function openSendPayment(type, data) {
 
   await populateSendDestination();
 
-  // For self-issued IOUs (negative balance), pre-select the counterparty as destination.
-  if (data.selfIssued && data.counterparty) {
+  // Pre-select the counterparty as destination (issuer for all IOUs, or explicit counterparty for self-issued).
+  if (data.counterparty) {
     const select = $('send-destination-select');
     const opt = Array.from(select.options).find(o =>
       (o.value.startsWith('acct:') && o.value.slice(5) === data.counterparty) ||
@@ -3787,11 +3788,24 @@ async function fetchAndPopulateVaults() {
     });
     const objects = resp.result.account_objects ?? [];
 
-    // Vaults owned by this account appear as Vault-type objects; their own
-    // ledger index is the vault ID.
-    const directVaults = objects
+    // Vaults owned by this account appear as Vault-type objects. Re-fetch each
+    // via ledger_entry to get all fields including PermissionedDomainID, which
+    // account_objects omits.
+    const directVaultIds = objects
       .filter(o => o.LedgerEntryType === 'Vault')
-      .map(o => ({ vaultId: o.index ?? o.VaultID, vault: o }));
+      .map(o => o.index ?? o.VaultID)
+      .filter(Boolean);
+    const directVaults = [];
+    for (const vaultId of directVaultIds) {
+      try {
+        const vaultResp = await state.client.request({
+          command: 'ledger_entry',
+          index: vaultId,
+          ledger_index: 'validated',
+        });
+        directVaults.push({ vaultId, vault: vaultResp.result.node });
+      } catch { /* skip */ }
+    }
 
     // Fallback: some devnet builds link vaults via LoanBroker objects which
     // carry a VaultID field; fetch the actual vault node separately.
@@ -3843,11 +3857,25 @@ async function fetchAndPopulateVaults() {
         } catch { /* keep id */ }
       }
       const assetLabel = vault.Asset ? formatPoolAsset(vault.Asset) : '?';
+
+      // DomainID lives on the MPToken issuance (share token), not the vault node.
+      let domainId = null;
+      if (vault.ShareMPTID) {
+        try {
+          const mptResp = await state.client.request({
+            command: 'ledger_entry',
+            mpt_issuance: vault.ShareMPTID,
+            ledger_index: 'validated',
+          });
+          domainId = mptResp.result.node?.DomainID ?? null;
+        } catch { /* no domain */ }
+      }
+
       const opt = document.createElement('option');
       opt.value = vaultId;
       opt.textContent = `${name} (${assetLabel})`;
       sel.appendChild(opt);
-      state.fetchedVaults.set(vaultId, { name, asset: vault.Asset, assetLabel });
+      state.fetchedVaults.set(vaultId, { name, asset: vault.Asset, assetLabel, domainId });
     }
 
     if (vaults.length === 0) {
@@ -5336,7 +5364,7 @@ $('iou-balance-list').addEventListener('click', (e) => {
     currency:     item.dataset.currency,
     issuer:       item.dataset.issuer,
     selfIssued,
-    counterparty: selfIssued ? item.dataset.issuer : null,
+    counterparty: item.dataset.issuer,
   });
 });
 
@@ -5380,6 +5408,7 @@ $('vault-balance-list').addEventListener('click', (e) => {
     vaultId:         item.dataset.vaultId,
     vaultAsset:      JSON.parse(decodeURIComponent(item.dataset.vaultAsset || 'null')),
     underlyingLabel: item.dataset.underlyingLabel,
+    domainId:        item.dataset.domainId || null,
   });
 });
 
