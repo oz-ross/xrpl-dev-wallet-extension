@@ -4313,12 +4313,19 @@ async function showWcRequest(pending) {
 }
 
 function renderTransactionView(pending) {
-  const txJson  = pending.params.request.params.tx_json;
-  const appName = pending.appName ?? 'Unknown App';
+  const reqParams = pending.params.request.params;
+  const txJson    = reqParams.tx_json;
+  const appName   = pending.appName ?? 'Unknown App';
+  const signOnly  = reqParams.submit === false;
 
   $('tx-from-app').innerHTML = `Request from <strong>${esc(appName)}</strong>`;
   $('tx-details').innerHTML  = buildTxRows(txJson);
-  hideAlert('tx-warning');
+
+  if (signOnly) {
+    showAlert('tx-warning', 'Sign only — this transaction will not be submitted to the ledger.');
+  } else {
+    hideAlert('tx-warning');
+  }
 
   $('tx-raw-json').textContent = JSON.stringify(txJson, null, 2);
   $('tx-raw-json').classList.add('hidden');
@@ -4371,7 +4378,9 @@ async function approveTransaction() {
   $('reject-tx-btn').disabled  = true;
 
   const { topic, id, params } = state.pendingRequest;
-  const txJson = params.request.params.tx_json;
+  const reqParams = params.request.params;
+  const txJson    = reqParams.tx_json;
+  const signOnly  = reqParams.submit === false;
 
   showView('tx-status');
   setTxStatus('pending', 'Preparing transaction…');
@@ -4386,24 +4395,29 @@ async function approveTransaction() {
     if (state.devSettings.printTxJson) console.log('[tx json]', prepared);
     const { tx_blob, hash } = await signPreparedTx(prepared);
 
-    setTxStatus('pending', 'Submitting to XRPL…');
-    const response = await state.client.submitAndWait(tx_blob);
+    if (signOnly) {
+      setTxStatus('success', 'Transaction signed!', hash);
+      await respondWc(topic, id, { tx_blob, hash });
+    } else {
+      setTxStatus('pending', 'Submitting to XRPL…');
+      const response = await state.client.submitAndWait(tx_blob);
 
-    const txResult = response.result?.meta?.TransactionResult;
-    if (txResult !== 'tesSUCCESS') throw new Error(`Transaction failed on ledger: ${txResult}`);
+      const txResult = response.result?.meta?.TransactionResult;
+      if (txResult !== 'tesSUCCESS') throw new Error(`Transaction failed on ledger: ${txResult}`);
 
-    setTxStatus('success', 'Transaction validated!', hash);
+      setTxStatus('success', 'Transaction validated!', hash);
+      await respondWc(topic, id, { tx_json: response.result, tx_blob, hash });
 
-    await respondWc(topic, id, { tx_json: response.result, tx_blob, hash });
+      refreshBalance();
+      loadIouBalances();
+      loadMptBalances();
+      loadCredentials();
+      loadLendingPositions();
+      loadPermissionedDomains();
+      loadTxHistory();
+    }
 
     state.pendingRequest = null;
-    refreshBalance();
-    loadIouBalances();
-    loadMptBalances();
-    loadCredentials();
-    loadLendingPositions();
-    loadPermissionedDomains();
-    loadTxHistory();
   } catch (err) {
     console.error('[approveTransaction]', err);
     setTxStatus('error', err.message || 'Transaction failed.');
@@ -5334,6 +5348,12 @@ $('toggle-raw-btn').addEventListener('click', () => {
   const btn = $('toggle-raw-btn');
   const hidden = pre.classList.toggle('hidden');
   btn.textContent = hidden ? '▶ View raw JSON' : '▼ Hide raw JSON';
+});
+
+$('copy-raw-json-btn').addEventListener('click', () => {
+  const text = $('tx-raw-json').textContent;
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => showCopyToast());
 });
 
 // Transaction status

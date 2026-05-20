@@ -1152,6 +1152,12 @@ div.vault-balance-item:hover {
 }
 .btn-link:hover { color: var(--text-2); }
 
+.raw-json-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .tx-raw {
   background: var(--surface);
   border: 1px solid var(--border);
