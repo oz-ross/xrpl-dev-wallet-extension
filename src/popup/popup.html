@@ -1294,6 +1294,61 @@
     <div id="cred-accept-success" class="alert alert-success hidden" style="margin-top:12px">Credential accepted.</div>
   </div>
 
+  <!-- ===== LOAN PAY ===== -->
+  <div id="view-loan-pay" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-loan-pay-btn" class="btn-back">‹</button>
+      <h2>Loan Repayment</h2>
+    </div>
+
+    <div id="loan-pay-details" class="detail-card"></div>
+
+    <div class="form-group" style="margin-top:14px">
+      <label for="loan-pay-amount" id="loan-pay-amount-label">Amount</label>
+      <input type="text" id="loan-pay-amount" placeholder="0.00" inputmode="decimal" />
+      <input type="hidden" id="loan-pay-amount-exact" value="" />
+      <div class="form-hint" id="loan-pay-periodic-hint"></div>
+    </div>
+
+    <div class="settings-section-header" style="margin-top:14px">Flags</div>
+    <div class="settings-list">
+      <div class="settings-item settings-toggle-item">
+        <div>
+          <span class="settings-item-label">tfLoanOverpayment</span>
+          <div class="form-hint">Remaining payment amount treated as an overpayment</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="loan-pay-flag-overpayment" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="settings-item settings-toggle-item">
+        <div>
+          <span class="settings-item-label">tfLoanFullPayment</span>
+          <div class="form-hint">Borrower is making a full early repayment</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="loan-pay-flag-full-payment" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="settings-item settings-toggle-item">
+        <div>
+          <span class="settings-item-label">tfLoanLatePayment</span>
+          <div class="form-hint">Borrower is making a late loan payment</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="loan-pay-flag-late-payment" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <div id="loan-pay-error" class="alert alert-error hidden"></div>
+
+    <button id="loan-pay-review-btn" class="btn btn-primary btn-full" style="margin-top:8px">Review Payment</button>
+  </div>
+
   <!-- ===== MAINNET WARNING ===== -->
   <div id="view-mainnet-warning" class="view hidden">
     <div class="mainnet-warning-icon">⚠️</div>

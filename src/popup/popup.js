@@ -162,6 +162,9 @@ const state = {
   // { txJson, backView, successMsg }
   pendingTxReview: null,
 
+  // Loan repayment flow; set before navigating to loan-pay view.
+  pendingLoanPay: null,
+
   // Developer settings persisted to chrome.storage.local
   devSettings: { printTxJson: false, lockTimeoutSecs: 10, wideMode: false },
 
@@ -475,16 +478,20 @@ function deriveSimpleWallet(seed) {
 
 /** Return the active Wallet object, or null if none. */
 function getActiveWallet() {
-  if (!state.activeAccount) return null;
+  return getWalletForAddress(state.activeAccount);
+}
+
+function getWalletForAddress(address) {
+  if (!address) return null;
   for (const kr of state.keyrings) {
     if (kr.type === 'HD') {
-      const acct = kr.accounts.find(a => a.address === state.activeAccount);
+      const acct = kr.accounts.find(a => a.address === address);
       if (acct) return deriveHDWallet(kr.mnemonic, acct.accountIndex);
-    } else if (kr.type === 'simple' && kr.address === state.activeAccount) {
+    } else if (kr.type === 'simple' && kr.address === address) {
       return deriveSimpleWallet(kr.seed);
-    } else if (kr.type === 'ledger' && kr.address === state.activeAccount) {
+    } else if (kr.type === 'ledger' && kr.address === address) {
       return null; // no local private key for hardware wallets
-    } else if (kr.type === 'watch' && kr.address === state.activeAccount) {
+    } else if (kr.type === 'watch' && kr.address === address) {
       return null; // watch-only, no key
     }
   }
@@ -707,7 +714,16 @@ function computeTxHash(txBlobHex) {
  * Uses the Ledger device if the active account is a hardware wallet,
  * otherwise uses the local software wallet.
  */
-async function signPreparedTx(prepared) {
+async function signPreparedTx(prepared, signatureTarget = null) {
+  const multisign = signatureTarget !== null;
+
+  if (multisign) {
+    // Sign on behalf of signature_target using that account's local key.
+    const signerWallet = getWalletForAddress(signatureTarget);
+    if (!signerWallet) throw new Error(`No signing key available for ${signatureTarget}`);
+    return signerWallet.sign(prepared, { multisign: signatureTarget });
+  }
+
   if (isActiveAccountReadOnly()) {
     throw new Error('This is a watch-only account. Transactions cannot be signed.');
   }
@@ -2225,13 +2241,54 @@ function formatTenthBps(n) {
   return `${(v / 1000).toFixed(3).replace(/\.?0+$/, '')}%`;
 }
 
+// Extract the plain value string from an XRPL Amount, which may be:
+//   - a primitive string (XRP drops, or raw decimal/integer from XLS-66d)
+//   - a JS number (large integer parsed from JSON — already float-truncated)
+//   - an Amount object { currency, issuer, value } or { mpt_issuance_id, value }
+function extractAmountValue(amount) {
+  if (amount == null) return '';
+  if (typeof amount === 'object') return String(amount.value ?? '');
+  return String(amount);
+}
+
 // Render a Loan's NUMBER amount in the underlying Vault asset.
+// ripple-binary-codec rejects IOU values with BigNumber.precision() > 16.
+// Only needed for IOU amounts — strip to 16 sig digits (XRPL IOU maximum).
+function normalizeIouAmount(s) {
+  if (!s) return s;
+  const src = String(s);
+  const n = parseFloat(src);
+  if (!Number.isFinite(n) || n === 0) return src;
+  return n.toPrecision(16)
+    .replace(/(\.\d*[1-9])0+$/, '$1')
+    .replace(/\.0*$/, '');
+}
+
+// Convert a decimal string to an MPT integer string using pure string arithmetic
+// so no float precision is lost for large values like "5001.36986301369913".
+function decimalToMptInteger(decStr, assetScale) {
+  const s = String(decStr).trim();
+  const dot = s.indexOf('.');
+  const intPart  = dot === -1 ? s : s.slice(0, dot);
+  const fracPart = dot === -1 ? '' : s.slice(dot + 1);
+  const diff = assetScale - fracPart.length;
+  const combined = diff >= 0
+    ? intPart + fracPart + '0'.repeat(diff)          // pad with zeros
+    : intPart + fracPart.slice(0, assetScale);        // truncate excess decimals
+  return combined.replace(/^0+/, '') || '0';
+}
+
 function formatLoanAmount(numStr, asset) {
   if (numStr == null) return '—';
-  const n = parseFloat(numStr);
-  const pretty = Number.isFinite(n)
-    ? n.toLocaleString(undefined, { maximumFractionDigits: 6 })
-    : String(numStr);
+  const src = extractAmountValue(numStr);
+  const n = parseFloat(src);
+  if (!Number.isFinite(n)) return src;
+  // Format integer part with locale thousands separators; preserve decimal
+  // digits verbatim from the source string to avoid any precision loss.
+  const dot = src.indexOf('.');
+  const intPart = parseInt(dot === -1 ? src : src.slice(0, dot), 10);
+  const decPart = dot === -1 ? '' : src.slice(dot); // e.g. ".050000"
+  const pretty = intPart.toLocaleString(undefined, { maximumFractionDigits: 0 }) + decPart;
   const suffix = asset ? ` ${formatPoolAsset(asset)}` : '';
   return `${pretty}${suffix}`;
 }
@@ -2344,7 +2401,12 @@ async function loadLendingPositions() {
         } catch { info = { vaultID: null, owner: null }; }
       }
       const asset = info.vaultID ? await fetchVaultAsset(info.vaultID, vaultAssetCache) : null;
-      return { loan: l, asset, lender: info.owner, brokerID: l.LoanBrokerID };
+      let assetScale = 0;
+      if (asset?.mpt_issuance_id) {
+        const mptInfo = await fetchMptIssuanceInfo(asset.mpt_issuance_id);
+        assetScale = mptInfo?.assetScale ?? 0;
+      }
+      return { loan: l, asset, assetScale, lender: info.owner, brokerID: l.LoanBrokerID };
     }));
 
     // Guard against stale responses after account switch.
@@ -2434,6 +2496,9 @@ function renderLendingPositions(brokerDetails, borrowerLoanDetails) {
           showBorrower: false,
           lender: d.lender,
           brokerID: d.brokerID,
+          showLoanPay: true,
+          lenderBrokerID: d.brokerID,
+          assetScale: d.assetScale ?? 0,
         })).join(''),
         borrowerLoanDetails.length,
         'loan',
@@ -2540,7 +2605,7 @@ function renderBrokerItem({ broker, asset, loans, vaultName = null }) {
 }
 
 function renderLoanItem(loan, asset, opts = {}) {
-  const { showBorrower = false, lender = null, brokerID = null } = opts;
+  const { showBorrower = false, lender = null, brokerID = null, showLoanPay = false, lenderBrokerID = null, lenderVaultName = null, assetScale = 0 } = opts;
   const loanID    = loan.index ?? '';
   const borrower  = loan.Borrower ?? '';
   const flags     = loan.Flags ?? 0;
@@ -2605,8 +2670,22 @@ function renderLoanItem(loan, asset, opts = {}) {
     ? `<a class="token-explorer-link" href="${esc(loanExplorerHref)}" target="_blank" rel="noreferrer" title="View last tx on explorer">↗</a>`
     : '';
 
+  const lenderAttrs = showLoanPay ? `
+    data-loan-pay="1"
+    data-loan-id="${esc(loanID)}"
+    data-borrower="${esc(loan.Borrower ?? '')}"
+    data-periodic-payment="${esc(extractAmountValue(loan.PeriodicPayment))}"
+    data-total-outstanding="${esc(extractAmountValue(loan.TotalValueOutstanding))}"
+    data-principal-outstanding="${esc(extractAmountValue(loan.PrincipalOutstanding))}"
+    data-payment-remaining="${esc(String(loan.PaymentRemaining ?? ''))}"
+    data-next-payment-due="${esc(String(loan.NextPaymentDueDate ?? ''))}"
+    data-broker-id="${esc(lenderBrokerID ?? loan.LoanBrokerID ?? '')}"
+    data-broker-name="${esc(lenderVaultName ?? '')}"
+    data-asset="${encodeURIComponent(JSON.stringify(asset ?? null))}"
+    data-asset-scale="${assetScale}"` : '';
+
   return `
-    <div class="vault-balance-item loan-item">
+    <div class="vault-balance-item loan-item${showLoanPay ? ' loan-item-lender' : ''}"${lenderAttrs}>
       <div class="amm-summary-row">
         <div class="amm-token-info">
           <span class="vault-name">Loan</span>
@@ -2614,7 +2693,7 @@ function renderLoanItem(loan, asset, opts = {}) {
           ${badgesHtml}
         </div>
         <div class="amm-balance-amount">${esc(formatLoanAmount(loan.TotalValueOutstanding, asset))}</div>
-        ${loanExplorerLink}
+        ${loanExplorerLink}${showLoanPay ? '<span class="loan-pay-hint">›</span>' : ''}
       </div>
       <div class="amm-assets-row">${statsHtml}</div>
     </div>`;
@@ -2706,7 +2785,7 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
 
     const raw         = obj.MPTAmount ? parseInt(obj.MPTAmount, 10) : 0;
     const scaled      = assetScale > 0 ? raw / Math.pow(10, assetScale) : raw;
-    const totalShares = parseInt(outstandingAmount, 10) / Math.pow(10, assetScale || 1);
+    const totalShares = parseInt(outstandingAmount, 10) / Math.pow(10, assetScale);
     const holderShare = totalShares > 0 ? scaled / totalShares : 0;
     const shares      = scaled.toLocaleString(undefined, { maximumFractionDigits: assetScale });
     const isOwner     = vaultInfo?.Owner === activeAccount;
@@ -3965,6 +4044,135 @@ function reviewNewVaultDeposit() {
 }
 
 // ─────────────────────────────────────────────
+// LOAN PAY
+// ─────────────────────────────────────────────
+
+function openLoanPay(item) {
+  const loanId               = item.dataset.loanId;
+  const borrower             = item.dataset.borrower;
+  const periodicPayment      = item.dataset.periodicPayment;
+  const totalOutstanding     = item.dataset.totalOutstanding;
+  const principalOutstanding = item.dataset.principalOutstanding;
+  const paymentRemaining     = parseInt(item.dataset.paymentRemaining, 10) || 0;
+  const nextPaymentDueXrpl   = item.dataset.nextPaymentDue ? parseInt(item.dataset.nextPaymentDue, 10) : null;
+  const brokerID             = item.dataset.brokerId;
+  const brokerName           = item.dataset.brokerName;
+  const asset                = JSON.parse(decodeURIComponent(item.dataset.asset || 'null'));
+  const assetScale           = parseInt(item.dataset.assetScale, 10) || 0;
+  const assetLabel           = asset ? formatPoolAsset(asset) : 'XRP';
+
+  state.pendingLoanPay = { loanId, asset, assetScale, assetLabel, periodicPayment };
+
+  const nextDue    = xrplDateToLocal(nextPaymentDueXrpl);
+  const nextDueStr = nextDue ? nextDue.toLocaleString() : '—';
+  const overdue    = nextDue && nextDue.getTime() < Date.now() && paymentRemaining > 0;
+
+  const row = (label, value) =>
+    `<div class="detail-row"><span class="detail-label">${label}</span><span class="detail-value">${value}</span></div>`;
+
+  $('loan-pay-details').innerHTML = [
+    brokerName || brokerID
+      ? row('Loan Broker', `<span title="${esc(brokerID)}">${esc(brokerName || shortHash(brokerID))}</span>`)
+      : null,
+    row('Loan ID',              `<span title="${esc(loanId)}">${esc(shortHash(loanId))}</span>`),
+    row('Borrower',             `<span title="${esc(borrower)}">${esc(resolveAddrDisplay(borrower))}</span>`),
+    row('Total Outstanding',    esc(formatLoanAmount(totalOutstanding, asset))),
+    row('Principal Outstanding',esc(formatLoanAmount(principalOutstanding, asset))),
+    row('Periodic Payment',     esc(formatLoanAmount(periodicPayment, asset))),
+    row('Payments Remaining',   esc(String(paymentRemaining))),
+    row('Next Payment Due',     `<span class="${overdue ? 'loan-due-overdue' : ''}">${esc(nextDueStr)}</span>`),
+  ].filter(Boolean).join('');
+
+  $('loan-pay-amount-label').textContent = `Amount (${assetLabel})`;
+  $('loan-pay-amount').value = periodicPayment ?? '';
+  $('loan-pay-amount-exact').value = periodicPayment ?? '';
+  $('loan-pay-periodic-hint').textContent = periodicPayment
+    ? `Periodic payment: ${formatLoanAmount(periodicPayment, asset)}`
+    : '';
+
+  $('loan-pay-flag-overpayment').checked  = false;
+  $('loan-pay-flag-full-payment').checked = false;
+  $('loan-pay-flag-late-payment').checked = false;
+  $('loan-pay-error').classList.add('hidden');
+  showView('loan-pay');
+}
+
+// LoanPay transaction flags
+const TF_LOAN_OVERPAYMENT = 0x00010000; // remaining amount treated as overpayment
+const TF_LOAN_FULL_PAYMENT = 0x00020000; // full early repayment
+const TF_LOAN_LATE_PAYMENT = 0x00040000; // late loan payment
+
+function reviewLoanPay() {
+  $('loan-pay-error').classList.add('hidden');
+  const { loanId, asset, assetScale = 0, assetLabel } = state.pendingLoanPay ?? {};
+  if (!loanId) return;
+
+  // Prefer the exact string stored at open-time; falls back to the number input
+  // value when the user has manually edited the field.
+  const amountStr = ($('loan-pay-amount-exact').value.trim() || $('loan-pay-amount').value).trim();
+  const amountNum = parseFloat(amountStr);
+  if (!amountStr || isNaN(amountNum) || amountNum <= 0) {
+    showAlert('loan-pay-error', 'Enter a valid amount greater than zero.');
+    return;
+  }
+
+  let txAmount;
+  if (!asset || typeof asset === 'string') {
+    txAmount = xrpToDrops(amountStr);
+  } else if (asset.currency) {
+    // normalizeIouAmount strips float artifacts so ripple-binary-codec accepts it
+    txAmount = { currency: asset.currency, issuer: asset.issuer, value: normalizeIouAmount(amountStr) };
+  } else if (asset.mpt_issuance_id) {
+    // Only convert decimal → integer when the amount has a decimal point.
+    // If the input is already the raw MPT integer (no dot), use it directly —
+    // calling decimalToMptInteger on an integer string would pad 14 zeros.
+    const intValue = (assetScale > 0 && amountStr.includes('.'))
+      ? decimalToMptInteger(amountStr, assetScale)
+      : amountStr;
+    txAmount = { mpt_issuance_id: asset.mpt_issuance_id, value: intValue };
+  } else {
+    txAmount = xrpToDrops(amountStr);
+  }
+
+  let flags = 0;
+  if ($('loan-pay-flag-overpayment').checked)  flags |= TF_LOAN_OVERPAYMENT;
+  if ($('loan-pay-flag-full-payment').checked) flags |= TF_LOAN_FULL_PAYMENT;
+  if ($('loan-pay-flag-late-payment').checked) flags |= TF_LOAN_LATE_PAYMENT;
+
+  const txJson = {
+    TransactionType: 'LoanPay',
+    Account: state.activeAccount,
+    LoanID: loanId,
+    Amount: txAmount,
+    ...(flags ? { Flags: flags } : {}),
+  };
+
+  const row = (label, value, cls = '') =>
+    `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+  const flagLabels = [
+    flags & TF_LOAN_OVERPAYMENT  ? 'Overpayment'  : null,
+    flags & TF_LOAN_FULL_PAYMENT ? 'Full Payment'  : null,
+    flags & TF_LOAN_LATE_PAYMENT ? 'Late Payment'  : null,
+  ].filter(Boolean);
+
+  $('send-review-details').innerHTML = [
+    row('Type',   'Loan Repayment', 'tx-type'),
+    row('Loan',   esc(shortHash(loanId))),
+    row('Amount', esc(`${amountStr} ${assetLabel}`), 'tx-amount'),
+    flagLabels.length ? row('Flags', esc(flagLabels.join(', '))) : null,
+  ].filter(Boolean).join('');
+  $('review-title').textContent = 'Review Repayment';
+
+  state.pendingTxReview = {
+    txJson,
+    backView: 'loan-pay',
+    successMsg: 'Loan repayment submitted!',
+  };
+  showView('send-review');
+}
+
+// ─────────────────────────────────────────────
 // GENERIC TX REVIEW EXECUTION
 // ─────────────────────────────────────────────
 
@@ -4288,15 +4496,17 @@ async function rejectSession() {
  */
 async function showWcRequest(pending) {
   // Auto-switch to the account this session was approved for.
-  if (pending.address && pending.address !== state.activeAccount) {
+  // The signing account is signature_target if present, otherwise the session account.
+  const signingAddress = pending.params?.request?.params?.signature_target ?? pending.address;
+
+  if (signingAddress && signingAddress !== state.activeAccount) {
     const accounts = getAllAccounts();
-    const acct = accounts.find(a => a.address === pending.address);
+    const acct = accounts.find(a => a.address === signingAddress);
     if (acct) {
-      await activateAccount(pending.address);
+      await activateAccount(signingAddress);
     } else {
-      // The required account is not in this wallet — show an error.
       showView('wallet');
-      showAlert('wc-error', `Incoming request requires account ${truncAddr(pending.address)} which is not in this wallet.`);
+      showAlert('wc-error', `Incoming request requires account ${truncAddr(signingAddress)} which is not in this wallet.`);
       await sendToBackground({ type: 'WC_CLEAR_PENDING' });
       return;
     }
@@ -4313,16 +4523,21 @@ async function showWcRequest(pending) {
 }
 
 function renderTransactionView(pending) {
-  const reqParams = pending.params.request.params;
-  const txJson    = reqParams.tx_json;
-  const appName   = pending.appName ?? 'Unknown App';
-  const signOnly  = reqParams.submit === false;
+  const reqParams       = pending.params.request.params;
+  const txJson          = reqParams.tx_json;
+  const appName         = pending.appName ?? 'Unknown App';
+  const signOnly        = reqParams.submit === false;
+  const signatureTarget = reqParams.signature_target ?? null;
 
   $('tx-from-app').innerHTML = `Request from <strong>${esc(appName)}</strong>`;
   $('tx-details').innerHTML  = buildTxRows(txJson);
 
-  if (signOnly) {
-    showAlert('tx-warning', 'Sign only — this transaction will not be submitted to the ledger.');
+  const warnings = [];
+  if (signOnly) warnings.push('Sign only — this transaction will not be submitted to the ledger.');
+  if (signatureTarget) warnings.push(`Signing as: ${esc(resolveAddrDisplay(signatureTarget))} (${esc(truncAddr(signatureTarget))})`);
+
+  if (warnings.length) {
+    showAlert('tx-warning', warnings.join('<br>'));
   } else {
     hideAlert('tx-warning');
   }
@@ -4378,9 +4593,10 @@ async function approveTransaction() {
   $('reject-tx-btn').disabled  = true;
 
   const { topic, id, params } = state.pendingRequest;
-  const reqParams = params.request.params;
-  const txJson    = reqParams.tx_json;
-  const signOnly  = reqParams.submit === false;
+  const reqParams       = params.request.params;
+  const txJson          = reqParams.tx_json;
+  const signOnly        = reqParams.submit === false;
+  const signatureTarget = reqParams.signature_target ?? null;
 
   showView('tx-status');
   setTxStatus('pending', 'Preparing transaction…');
@@ -4393,9 +4609,9 @@ async function approveTransaction() {
 
     setTxStatus('pending', 'Signing…');
     if (state.devSettings.printTxJson) console.log('[tx json]', prepared);
-    const { tx_blob, hash } = await signPreparedTx(prepared);
+    const { tx_blob, hash } = await signPreparedTx(prepared, signatureTarget);
 
-    if (signOnly) {
+    if (signOnly || signatureTarget) {
       setTxStatus('success', 'Transaction signed!', hash);
       await respondWc(topic, id, { tx_blob, hash });
     } else {
@@ -5532,6 +5748,22 @@ $('mpt-review-btn').addEventListener('click', reviewMptAuthorize);
 // ─────────────────────────────────────────────
 
 $('add-vault-btn').addEventListener('click', openVaultDeposit);
+
+// ─────────────────────────────────────────────
+// EVENT LISTENERS — Loan Pay
+// ─────────────────────────────────────────────
+
+$('lending-card').addEventListener('click', e => {
+  if (e.target.closest('.token-explorer-link') || e.target.closest('.copy-address-btn')) return;
+  const item = e.target.closest('[data-loan-pay]');
+  if (!item) return;
+  openLoanPay(item);
+});
+
+$('back-from-loan-pay-btn').addEventListener('click', () => showView('wallet'));
+$('loan-pay-review-btn').addEventListener('click', reviewLoanPay);
+// When user edits the amount, clear the exact-value store so the edited value is used
+$('loan-pay-amount').addEventListener('input', () => { $('loan-pay-amount-exact').value = ''; });
 
 // Copy-to-clipboard for lending card (delegated — list re-renders on refresh)
 $('lending-card').addEventListener('click', async e => {

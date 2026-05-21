@@ -38,7 +38,6 @@ body {
   min-height: 300px;
   max-height: 600px;
   overflow-y: auto;
-  padding-bottom: 59px; /* space for fixed warning bar + 5 mm clearance */
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
@@ -52,6 +51,7 @@ body {
   bottom: 0;
   left: 0;
   width: 100%;
+  box-sizing: border-box;
   background: #7f1d1d;
   color: #fecaca;
   font-size: 11px;
@@ -60,14 +60,13 @@ body {
   padding: 6px 10px;
   text-align: center;
   border-top: 1px solid #991b1b;
-  z-index: 999;
 }
 
 /* ===== UTILITY ===== */
 .hidden { display: none !important; }
 
 /* ===== VIEWS ===== */
-.view { padding: 20px; position: relative; }
+.view { padding: 20px 20px 52px; position: relative; }
 
 .view-header {
   display: flex;
@@ -2439,6 +2438,19 @@ input[type="number"]:focus { border-color: var(--accent); }
 .loan-badge-overpayment {
   background: rgba(59, 130, 246, 0.15);
   color: #60a5fa;
+}
+
+.loan-item-lender {
+  cursor: pointer;
+}
+.loan-item-lender:hover {
+  background: var(--surface-hover, rgba(255,255,255,0.04));
+}
+.loan-pay-hint {
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: 16px;
+  padding-left: 6px;
 }
 
 .loan-item .amm-asset-value.loan-due-overdue {
