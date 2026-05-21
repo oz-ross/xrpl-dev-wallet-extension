@@ -256,7 +256,7 @@ function resolveAddrDisplay(addr) {
 
 function formatAmount(amount) {
   if (typeof amount === 'string') return `${dropsToXrp(amount)} XRP`;
-  if (amount && typeof amount === 'object') return `${amount.value} ${amount.currency}`;
+  if (amount && typeof amount === 'object') return `${amount.value} ${formatCurrencyCode(amount.currency)}`;
   return String(amount);
 }
 
