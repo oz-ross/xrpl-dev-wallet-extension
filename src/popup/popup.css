@@ -47,11 +47,6 @@ body {
 
 /* ===== DEV WARNING BAR ===== */
 .dev-warning {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  width: 100%;
-  box-sizing: border-box;
   background: #7f1d1d;
   color: #fecaca;
   font-size: 11px;
@@ -66,7 +61,7 @@ body {
 .hidden { display: none !important; }
 
 /* ===== VIEWS ===== */
-.view { padding: 20px 20px 52px; position: relative; }
+.view { padding: 20px; position: relative; }
 
 .view-header {
   display: flex;
@@ -1952,6 +1947,10 @@ input[type="number"]:focus { border-color: var(--accent); }
 }
 
 .settings-item:hover { background: var(--surface-2); }
+
+.settings-item-danger { color: var(--danger); }
+.settings-item-danger .settings-item-chevron { color: var(--danger); }
+.settings-item-danger:hover { background: var(--danger-dim); }
 
 .settings-item-label { font-weight: 500; }
 

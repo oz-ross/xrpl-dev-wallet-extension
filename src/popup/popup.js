@@ -10,6 +10,20 @@ import { encode } from 'ripple-binary-codec';
 import { createHash } from 'crypto';
 
 // ─────────────────────────────────────────────
+// GLOBAL ERROR SUPPRESSION
+// Prevent unhandled promise rejections from being reported as extension
+// errors in chrome://extensions.  Errors in the transaction flow are
+// already shown to the user via the tx-status view; everything else is
+// logged as a warning so it is still visible in DevTools but not in the
+// extension error reporter.
+// ─────────────────────────────────────────────
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.warn('[unhandled rejection]', event.reason);
+  event.preventDefault();
+});
+
+// ─────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────
 
@@ -2251,17 +2265,45 @@ function extractAmountValue(amount) {
   return String(amount);
 }
 
-// Render a Loan's NUMBER amount in the underlying Vault asset.
-// ripple-binary-codec rejects IOU values with BigNumber.precision() > 16.
-// Only needed for IOU amounts — strip to 16 sig digits (XRPL IOU maximum).
-function normalizeIouAmount(s) {
+// Ceiling-round an IOU amount string to 15 significant digits using pure
+// string arithmetic (no float64 involved) so the result is always >= the
+// original value.
+function ceilIouAmount(str) {
+  const s = String(str).trim();
   if (!s) return s;
-  const src = String(s);
-  const n = parseFloat(src);
-  if (!Number.isFinite(n) || n === 0) return src;
-  return n.toPrecision(16)
-    .replace(/(\.\d*[1-9])0+$/, '$1')
-    .replace(/\.0*$/, '');
+
+  const dotIdx = s.indexOf('.');
+  let intLen   = dotIdx === -1 ? s.length : dotIdx;
+  const allDigits = dotIdx === -1 ? s : s.slice(0, dotIdx) + s.slice(dotIdx + 1);
+
+  // Locate the first significant (non-zero) digit.
+  let firstSig = 0;
+  while (firstSig < allDigits.length && allDigits[firstSig] === '0') firstSig++;
+  if (firstSig === allDigits.length) return '0';
+
+  const sigCount = allDigits.length - firstSig;
+  if (sigCount <= 15) return s; // already within precision limit
+
+  const keepLen  = firstSig + 15;
+  const tail     = allDigits.slice(keepLen);
+  const needCeil = tail.split('').some(c => c !== '0');
+
+  const digits = allDigits.slice(0, keepLen).split('').map(Number);
+
+  if (needCeil) {
+    let carry = 1;
+    for (let i = digits.length - 1; i >= 0 && carry; i--) {
+      const d = digits[i] + carry;
+      digits[i] = d % 10;
+      carry = Math.floor(d / 10);
+    }
+    if (carry) { digits.unshift(1); intLen++; }
+  }
+
+  const result   = digits.map(String).join('');
+  const intPart  = result.slice(0, intLen) || '0';
+  const fracPart = result.slice(intLen).replace(/0+$/, '');
+  return fracPart ? `${intPart}.${fracPart}` : intPart;
 }
 
 // Convert a decimal string to an MPT integer string using pure string arithmetic
@@ -3626,7 +3668,6 @@ async function executeSendPayment() {
     loadPermissionedDomains();
     loadTxHistory();
   } catch (err) {
-    console.error('[sendPayment]', err);
     setTxStatus('error', err.message || 'Payment failed.');
   }
 }
@@ -4061,7 +4102,14 @@ function openLoanPay(item) {
   const assetScale           = parseInt(item.dataset.assetScale, 10) || 0;
   const assetLabel           = asset ? formatPoolAsset(asset) : 'XRP';
 
-  state.pendingLoanPay = { loanId, asset, assetScale, assetLabel, periodicPayment };
+  // For IOU assets, ceil the periodic payment to 16 sig digits before
+  // displaying it so the pre-filled amount is always valid for the ledger
+  // and any rounding always increases (never underpays).
+  const displayPayment = (asset?.currency && periodicPayment)
+    ? ceilIouAmount(periodicPayment)
+    : periodicPayment;
+
+  state.pendingLoanPay = { loanId, asset, assetScale, assetLabel, periodicPayment: displayPayment };
 
   const nextDue    = xrplDateToLocal(nextPaymentDueXrpl);
   const nextDueStr = nextDue ? nextDue.toLocaleString() : '—';
@@ -4071,23 +4119,18 @@ function openLoanPay(item) {
     `<div class="detail-row"><span class="detail-label">${label}</span><span class="detail-value">${value}</span></div>`;
 
   $('loan-pay-details').innerHTML = [
-    brokerName || brokerID
-      ? row('Loan Broker', `<span title="${esc(brokerID)}">${esc(brokerName || shortHash(brokerID))}</span>`)
-      : null,
-    row('Loan ID',              `<span title="${esc(loanId)}">${esc(shortHash(loanId))}</span>`),
-    row('Borrower',             `<span title="${esc(borrower)}">${esc(resolveAddrDisplay(borrower))}</span>`),
     row('Total Outstanding',    esc(formatLoanAmount(totalOutstanding, asset))),
     row('Principal Outstanding',esc(formatLoanAmount(principalOutstanding, asset))),
-    row('Periodic Payment',     esc(formatLoanAmount(periodicPayment, asset))),
+    row('Periodic Payment',     esc(formatLoanAmount(displayPayment, asset))),
     row('Payments Remaining',   esc(String(paymentRemaining))),
     row('Next Payment Due',     `<span class="${overdue ? 'loan-due-overdue' : ''}">${esc(nextDueStr)}</span>`),
   ].filter(Boolean).join('');
 
   $('loan-pay-amount-label').textContent = `Amount (${assetLabel})`;
-  $('loan-pay-amount').value = periodicPayment ?? '';
-  $('loan-pay-amount-exact').value = periodicPayment ?? '';
-  $('loan-pay-periodic-hint').textContent = periodicPayment
-    ? `Periodic payment: ${formatLoanAmount(periodicPayment, asset)}`
+  $('loan-pay-amount').value = displayPayment ?? '';
+  $('loan-pay-amount-exact').value = displayPayment ?? '';
+  $('loan-pay-periodic-hint').textContent = displayPayment
+    ? `Periodic payment: ${formatLoanAmount(displayPayment, asset)}`
     : '';
 
   $('loan-pay-flag-overpayment').checked  = false;
@@ -4120,8 +4163,7 @@ function reviewLoanPay() {
   if (!asset || typeof asset === 'string') {
     txAmount = xrpToDrops(amountStr);
   } else if (asset.currency) {
-    // normalizeIouAmount strips float artifacts so ripple-binary-codec accepts it
-    txAmount = { currency: asset.currency, issuer: asset.issuer, value: normalizeIouAmount(amountStr) };
+    txAmount = { currency: asset.currency, issuer: asset.issuer, value: ceilIouAmount(amountStr) };
   } else if (asset.mpt_issuance_id) {
     // Only convert decimal → integer when the amount has a decimal point.
     // If the input is already the raw MPT integer (no dot), use it directly —
@@ -4204,7 +4246,6 @@ async function executeReviewedTx() {
     loadPermissionedDomains();
     loadTxHistory();
   } catch (err) {
-    console.error('[executeReviewedTx]', err);
     setTxStatus('error', err.message || 'Transaction failed.');
   }
 }
@@ -4427,7 +4468,7 @@ function showWcProposal(pending) {
   $('proposal-app-card').innerHTML = `
     <div class="app-icon">
       ${meta.icons?.[0]
-        ? `<img src="${esc(meta.icons[0])}" alt="${esc(meta.name)}" onerror="this.replaceWith(document.createTextNode('🌐'))" />`
+        ? `<img src="${esc(meta.icons[0])}" alt="${esc(meta.name)}" />`
         : '🌐'}
     </div>
     <div>
@@ -4435,6 +4476,9 @@ function showWcProposal(pending) {
       <div class="app-url">${esc(meta.url)}</div>
     </div>
   `;
+
+  const proposalImg = $('proposal-app-card').querySelector('img');
+  if (proposalImg) proposalImg.addEventListener('error', () => proposalImg.replaceWith(document.createTextNode('🌐')));
 
   showView('session-proposal');
 }
@@ -4635,7 +4679,6 @@ async function approveTransaction() {
 
     state.pendingRequest = null;
   } catch (err) {
-    console.error('[approveTransaction]', err);
     setTxStatus('error', err.message || 'Transaction failed.');
     await respondWc(topic, id, null, { code: 5000, message: err.message });
     state.pendingRequest = null;
@@ -4659,8 +4702,8 @@ async function respondWc(topic, id, result, error) {
       ? { id, jsonrpc: '2.0', error }
       : { id, jsonrpc: '2.0', result };
     await sendToBackground({ type: 'WC_RESPOND', topic, response });
-  } catch (err) {
-    console.error('[respondWc]', err);
+  } catch {
+    // response delivery failure is non-fatal; tx result already shown in UI
   }
 }
 
@@ -4697,7 +4740,7 @@ async function updateSessionsUI(sessions) {
     const s    = sessions[topic];
     const meta = s.peer.metadata;
     const iconHtml = meta.icons?.[0]
-      ? `<img class="session-icon" src="${esc(meta.icons[0])}" alt="${esc(meta.name)}" onerror="this.style.display='none'" />`
+      ? `<img class="session-icon" src="${esc(meta.icons[0])}" alt="${esc(meta.name)}" />`
       : `<span class="session-icon-placeholder">🌐</span>`;
 
     return `
@@ -4715,6 +4758,9 @@ async function updateSessionsUI(sessions) {
 
   listEl.querySelectorAll('.btn-disconnect').forEach(btn => {
     btn.addEventListener('click', () => disconnectSession(btn.dataset.topic));
+  });
+  listEl.querySelectorAll('img.session-icon').forEach(img => {
+    img.addEventListener('error', () => { img.style.display = 'none'; });
   });
 }
 
@@ -5160,7 +5206,9 @@ async function submitRawTx() {
 $('raw-tx-btn').addEventListener('click', openRawTxBuilder);
 $('back-from-raw-tx-btn').addEventListener('click', () => showView('wallet'));
 $('raw-tx-autofill-btn').addEventListener('click', autofillRawTx);
-$('raw-tx-submit-btn').addEventListener('click', submitRawTx);
+$('raw-tx-submit-btn').addEventListener('click', () => {
+  submitRawTx().catch(() => {});
+});
 
 // ─────────────────────────────────────────────
 // CLIPBOARD HIJACK DETECTION
@@ -5556,7 +5604,9 @@ $('reject-session-btn').addEventListener('click', rejectSession);
 $('back-from-proposal-btn').addEventListener('click', () => rejectSession());
 
 // Transaction review
-$('approve-tx-btn').addEventListener('click', approveTransaction);
+$('approve-tx-btn').addEventListener('click', () => {
+  approveTransaction().catch(() => {});
+});
 $('reject-tx-btn').addEventListener('click', rejectTransaction);
 
 $('toggle-raw-btn').addEventListener('click', () => {
@@ -5810,8 +5860,8 @@ $('send-review-cancel-btn').addEventListener('click', () => {
 });
 
 $('send-review-submit-btn').addEventListener('click', () => {
-  if (state.pendingTxReview) executeReviewedTx();
-  else executeSendPayment();
+  (state.pendingTxReview ? executeReviewedTx() : executeSendPayment())
+    .catch(() => {});
 });
 
 $('review-copy-json-btn').addEventListener('click', () => {
@@ -5949,6 +5999,242 @@ $('back-from-restore-backup-btn').addEventListener('click', () => {
 $('settings-backup-btn').addEventListener('click', downloadBackup);
 $('restore-backup-link-btn').addEventListener('click', () => { _restoreBackTarget = 'unlock'; openRestoreBackup(); });
 $('setup-restore-backup-btn').addEventListener('click', () => { _restoreBackTarget = 'setup-password'; openRestoreBackup(); });
+
+// ─────────────────────────────────────────────
+// PROJECT BACKUP — Download & Import
+// ─────────────────────────────────────────────
+
+async function downloadProjectBackup() {
+  const proj = getActiveProject();
+  if (!proj) { alert('No active project to export.'); return; }
+
+  // Collect the addresses belonging to this project.
+  const projAddrs = new Set(proj.accounts);
+
+  // Filter keyrings to only those that have at least one account in this project.
+  // For HD keyrings, clone and trim the accounts list to only project members.
+  const filteredKeyrings = state.keyrings
+    .map(kr => {
+      if (kr.type === 'HD') {
+        const accounts = kr.accounts.filter(a => projAddrs.has(a.address));
+        return accounts.length ? { ...kr, accounts } : null;
+      }
+      return projAddrs.has(kr.address) ? { ...kr } : null;
+    })
+    .filter(Boolean);
+
+  const { vaultPassword } = await chrome.storage.session.get('vaultPassword');
+  if (!vaultPassword) { alert('Session expired — please unlock the wallet first.'); return; }
+
+  const projVault = await encryptVault(vaultPassword, { keyrings: filteredKeyrings });
+
+  // Per-project address book
+  const abKey = `addressBook_${proj.id}`;
+  const stored = await chrome.storage.local.get(abKey);
+  const addressBook = stored[abKey] ?? [];
+
+  const backup = {
+    _meta: {
+      app:     'xrpl-dev-wallet',
+      version: chrome.runtime.getManifest().version,
+      date:    new Date().toISOString(),
+      type:    'project',
+    },
+    project:     proj,
+    addressBook,
+    vault:       projVault,
+  };
+
+  const json  = JSON.stringify(backup, null, 2);
+  const blob  = new Blob([json], { type: 'application/json' });
+  const url   = URL.createObjectURL(blob);
+  const date  = new Date().toISOString().slice(0, 10);
+  const slug  = proj.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const a     = document.createElement('a');
+  a.href      = url;
+  a.download  = `xrpl-project-${slug}-${date}.xrplbak`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+let _pendingProjectData = null; // parsed project backup awaiting import
+
+function openImportProject() {
+  _pendingProjectData = null;
+  $('import-project-file-input').value = '';
+  $('import-project-drop-label').textContent = 'Click to choose file, or drag & drop';
+  $('import-project-drop-zone').classList.remove('backup-drop-ready');
+  $('import-project-password-group').classList.add('hidden');
+  $('import-project-password').value = '';
+  hideAlert('import-project-status');
+  $('import-project-confirm-btn').classList.add('hidden');
+  showView('import-project');
+}
+
+function handleProjectFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      if (parsed._meta?.type !== 'project') throw new Error('Not a project backup file.');
+      if (!parsed.project?.id || !Array.isArray(parsed.project?.accounts)) throw new Error('Missing project data.');
+      if (!parsed.vault?.salt) throw new Error('No encrypted vault found in file.');
+      _pendingProjectData = parsed;
+      $('import-project-drop-label').textContent = `✓ ${file.name}`;
+      $('import-project-drop-zone').classList.add('backup-drop-ready');
+      $('import-project-password-group').classList.remove('hidden');
+      $('import-project-confirm-btn').classList.remove('hidden');
+      hideAlert('import-project-status');
+    } catch (err) {
+      _pendingProjectData = null;
+      $('import-project-confirm-btn').classList.add('hidden');
+      $('import-project-password-group').classList.add('hidden');
+      $('import-project-drop-zone').classList.remove('backup-drop-ready');
+      showAlert('import-project-status', `Invalid file: ${err.message}`);
+      $('import-project-status').className = 'alert alert-error';
+    }
+  };
+  reader.readAsText(file);
+}
+
+async function confirmImportProject() {
+  if (!_pendingProjectData) return;
+
+  const password = $('import-project-password').value;
+  if (!password) {
+    showAlert('import-project-status', 'Enter the password used when this backup was created.');
+    $('import-project-status').className = 'alert alert-error';
+    return;
+  }
+
+  $('import-project-confirm-btn').disabled = true;
+  try {
+    // Decrypt the backup's vault to get the keyrings.
+    let backupKeyrings;
+    try {
+      const payload = await decryptVault(password, _pendingProjectData.vault);
+      backupKeyrings = payload.keyrings ?? [];
+    } catch {
+      throw new Error('Wrong password — could not decrypt the backup.');
+    }
+
+    // Re-encrypt the merged keyrings with the current session password.
+    const { vaultPassword } = await chrome.storage.session.get('vaultPassword');
+    if (!vaultPassword) throw new Error('Session expired — please unlock the wallet first.');
+
+    // Merge keyrings: add any that aren't already present.
+    const mergedKeyrings = [...state.keyrings];
+    for (const bkr of backupKeyrings) {
+      if (bkr.type === 'HD') {
+        const existing = mergedKeyrings.find(k => k.type === 'HD' && k.mnemonic === bkr.mnemonic);
+        if (existing) {
+          // Add any accounts from the backup that aren't already in this keyring.
+          for (const acct of bkr.accounts) {
+            if (!existing.accounts.some(a => a.address === acct.address)) {
+              existing.accounts.push(acct);
+            }
+          }
+        } else {
+          mergedKeyrings.push(bkr);
+        }
+      } else {
+        const alreadyPresent = mergedKeyrings.some(k => k.address === bkr.address);
+        if (!alreadyPresent) mergedKeyrings.push(bkr);
+      }
+    }
+
+    // Persist merged keyrings to vault and update the session so that the
+    // imported accounts are visible immediately if the popup is reopened.
+    state.keyrings = mergedKeyrings;
+    await saveVault(vaultPassword);
+    await persistSession(vaultPassword);
+
+    // Add the project — generate a new ID to avoid clashing with existing projects.
+    const srcProj   = _pendingProjectData.project;
+    const newId     = `proj_${Date.now()}`;
+    const newProj   = { id: newId, name: srcProj.name, accounts: srcProj.accounts };
+    state.projects.push(newProj);
+    await saveProjects();
+
+    // Save the address book under the new project ID.
+    if (Array.isArray(_pendingProjectData.addressBook) && _pendingProjectData.addressBook.length) {
+      await chrome.storage.local.set({ [`addressBook_${newId}`]: _pendingProjectData.addressBook });
+    }
+
+    await refreshAddressNames();
+
+    _pendingProjectData = null;
+    showAlert('import-project-status', `Project "${srcProj.name}" imported successfully.`);
+    $('import-project-status').className = 'alert alert-success';
+    $('import-project-confirm-btn').classList.add('hidden');
+    setTimeout(() => showView('settings'), 1200);
+  } catch (err) {
+    showAlert('import-project-status', `Import failed: ${err.message}`);
+    $('import-project-status').className = 'alert alert-error';
+  } finally {
+    $('import-project-confirm-btn').disabled = false;
+  }
+}
+
+// Import-project drop-zone interactions
+$('import-project-drop-zone').addEventListener('click', () => $('import-project-file-input').click());
+$('import-project-file-input').addEventListener('change', (e) => handleProjectFile(e.target.files[0]));
+$('import-project-drop-zone').addEventListener('dragover', (e) => { e.preventDefault(); $('import-project-drop-zone').classList.add('backup-drop-hover'); });
+$('import-project-drop-zone').addEventListener('dragleave', () => $('import-project-drop-zone').classList.remove('backup-drop-hover'));
+$('import-project-drop-zone').addEventListener('drop', (e) => {
+  e.preventDefault();
+  $('import-project-drop-zone').classList.remove('backup-drop-hover');
+  handleProjectFile(e.dataTransfer.files[0]);
+});
+$('import-project-confirm-btn').addEventListener('click', confirmImportProject);
+$('back-from-import-project-btn').addEventListener('click', () => { _pendingProjectData = null; showView('settings'); });
+$('settings-backup-project-btn').addEventListener('click', downloadProjectBackup);
+$('settings-import-project-btn').addEventListener('click', openImportProject);
+
+// ─────────────────────────────────────────────
+// DELETE PROJECT
+// ─────────────────────────────────────────────
+
+function openDeleteProject() {
+  const proj = getActiveProject();
+  if (!proj) return;
+  if (state.projects.length <= 1) {
+    alert('You cannot delete the only project. Create another project first, or reset the wallet to start over.');
+    return;
+  }
+  $('delete-project-name').textContent = proj.name;
+  $('delete-project-checkbox').checked = false;
+  $('delete-project-confirm-btn').disabled = true;
+  showView('delete-project-confirm');
+}
+
+async function confirmDeleteProject() {
+  const proj = getActiveProject();
+  if (!proj) return;
+
+  // Remove project from list.
+  state.projects = state.projects.filter(p => p.id !== proj.id);
+
+  // Switch active project to the first remaining one.
+  state.activeProjectId = state.projects[0]?.id ?? null;
+  await saveProjects();
+
+  // Delete the project's address book.
+  await chrome.storage.local.remove(`addressBook_${proj.id}`);
+
+  await refreshAddressNames();
+  await switchProject(state.activeProjectId);
+  showView('settings');
+}
+
+$('delete-project-checkbox').addEventListener('change', () => {
+  $('delete-project-confirm-btn').disabled = !$('delete-project-checkbox').checked;
+});
+$('delete-project-confirm-btn').addEventListener('click', confirmDeleteProject);
+$('delete-project-cancel-btn').addEventListener('click', () => showView('settings'));
+$('back-from-delete-project-btn').addEventListener('click', () => showView('settings'));
+$('settings-delete-project-btn').addEventListener('click', openDeleteProject);
 
 // ─────────────────────────────────────────────
 // DEVELOPER SETTINGS

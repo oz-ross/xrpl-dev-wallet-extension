@@ -423,6 +423,31 @@
     <button id="restore-backup-confirm-btn" class="btn btn-primary btn-full hidden" style="margin-top:12px">Restore &amp; Unlock</button>
   </div>
 
+  <!-- ===== IMPORT PROJECT ===== -->
+  <div id="view-import-project" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-import-project-btn" class="btn-back">‹</button>
+      <h2>Import Project</h2>
+    </div>
+
+    <p class="type-hint">Select a project backup file (<code>.xrplbak</code>). The project and its accounts will be added to this wallet.</p>
+
+    <div class="backup-drop-zone" id="import-project-drop-zone">
+      <div class="backup-drop-icon">📂</div>
+      <div class="backup-drop-label" id="import-project-drop-label">Click to choose file, or drag &amp; drop</div>
+      <input type="file" id="import-project-file-input" accept=".xrplbak,.json" style="display:none" />
+    </div>
+
+    <div class="form-group hidden" id="import-project-password-group" style="margin-top:14px">
+      <label for="import-project-password">Backup password</label>
+      <input type="password" id="import-project-password" placeholder="Password used when this backup was created" />
+    </div>
+
+    <div id="import-project-status" class="alert hidden" style="margin-top:12px"></div>
+
+    <button id="import-project-confirm-btn" class="btn btn-primary btn-full hidden" style="margin-top:12px">Import Project</button>
+  </div>
+
   <!-- ===== UNLOCK ===== -->
   <div id="view-unlock" class="view hidden">
     <div class="brand">
@@ -749,6 +774,14 @@
         <span class="settings-item-label">Download Wallet Backup</span>
         <span class="settings-item-chevron">↓</span>
       </button>
+      <button id="settings-backup-project-btn" class="settings-item">
+        <span class="settings-item-label">Download Project Backup</span>
+        <span class="settings-item-chevron">↓</span>
+      </button>
+      <button id="settings-import-project-btn" class="settings-item">
+        <span class="settings-item-label">Import Project Backup</span>
+        <span class="settings-item-chevron">›</span>
+      </button>
     </div>
 
     <div class="settings-section-header">Security</div>
@@ -760,6 +793,14 @@
           <span class="settings-item-unit">seconds (0 = never)</span>
         </div>
       </div>
+    </div>
+
+    <div class="settings-section-header">Danger Zone</div>
+    <div class="settings-list">
+      <button id="settings-delete-project-btn" class="settings-item settings-item-danger">
+        <span class="settings-item-label">Delete Current Project</span>
+        <span class="settings-item-chevron">›</span>
+      </button>
     </div>
 
     <div class="settings-section-header">Developer Mode</div>
@@ -843,6 +884,32 @@
     <div class="action-row" style="margin-top:20px">
       <button id="remove-acct-cancel-btn" class="btn btn-ghost">Cancel</button>
       <button id="remove-acct-confirm-btn" class="btn btn-danger">Remove</button>
+    </div>
+  </div>
+
+  <!-- ===== DELETE PROJECT CONFIRM ===== -->
+  <div id="view-delete-project-confirm" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-delete-project-btn" class="btn-back">‹</button>
+      <h2>Delete Project</h2>
+    </div>
+
+    <div class="remove-acct-card">
+      <div class="remove-acct-name" id="delete-project-name"></div>
+    </div>
+
+    <div class="alert alert-warn" style="margin-top:14px">
+      This will permanently delete the project and its address book. Accounts that belong only to this project will remain in the wallet but will not be in any project — you can add them to another project or remove them via Manage Accounts. <strong>This cannot be undone.</strong>
+    </div>
+
+    <label class="checkbox-row" style="margin-top:14px">
+      <input type="checkbox" id="delete-project-checkbox" />
+      I understand this cannot be undone
+    </label>
+
+    <div class="action-row" style="margin-top:20px">
+      <button id="delete-project-cancel-btn" class="btn btn-ghost">Cancel</button>
+      <button id="delete-project-confirm-btn" class="btn btn-danger" disabled>Delete Project</button>
     </div>
   </div>
 
