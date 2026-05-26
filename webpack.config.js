@@ -1,7 +1,17 @@
 const path = require('path');
+const fs = require('fs');
 const webpack = require('webpack');
 const CopyPlugin = require('copy-webpack-plugin');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+
+// Load .env if present (not committed — see .env.example).
+const envFile = path.resolve(__dirname, '.env');
+if (fs.existsSync(envFile)) {
+  for (const line of fs.readFileSync(envFile, 'utf8').split('\n')) {
+    const [key, ...rest] = line.split('=');
+    if (key && rest.length) process.env[key.trim()] = rest.join('=').trim();
+  }
+}
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 
 // Polyfill fallbacks shared by both entries.
@@ -38,6 +48,10 @@ const provide = new webpack.ProvidePlugin({
   process: 'process/browser',
 });
 
+const define = new webpack.DefinePlugin({
+  'process.env.WC_PROJECT_ID': JSON.stringify(process.env.WC_PROJECT_ID ?? ''),
+});
+
 module.exports = (env, argv) => {
   const isDev = argv.mode === 'development';
 
@@ -60,6 +74,7 @@ module.exports = (env, argv) => {
     },
     plugins: [
       provide,
+      define,
       new HtmlWebpackPlugin({
         template: './src/popup/popup.html',
         filename: 'popup.html',
@@ -91,6 +106,7 @@ module.exports = (env, argv) => {
     },
     plugins: [
       provide,
+      define,
       new CopyPlugin({
         patterns: [
           { from: 'manifest.json', to: 'manifest.json' },

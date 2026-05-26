@@ -18,7 +18,7 @@ import { getSdkError } from '@walletconnect/utils';
 // CONFIG
 // ─────────────────────────────────────────────
 
-const WC_PROJECT_ID = '545f3b40384efe9b93401c1dd8d0ceb0';
+const WC_PROJECT_ID = process.env.WC_PROJECT_ID || '545f3b40384efe9b93401c1dd8d0ceb0';
 
 const WC_METADATA = {
   name: 'XRPL Dev Wallet',
@@ -124,6 +124,7 @@ async function onSessionRequest(event) {
     appName: session?.peer?.metadata?.name ?? 'Unknown App',
   };
 
+  console.log('[bg] WC request received:', method, 'id:', event.id, 'topic:', event.topic);
   await chrome.storage.session.set({ wcPending: pending });
   setBadge(1);
   chrome.runtime.sendMessage({ type: 'WC_REQUEST', data: pending }).catch(() => {});
@@ -155,6 +156,32 @@ function extractAddressFromSession(session) {
   return parts.length >= 3 ? parts[2] : null;
 }
 
+/**
+ * Returns true when a WalletConnect error means the proposal is no longer
+ * in the SDK's store (expired or already handled) rather than a real failure.
+ */
+function isProposalGone(e) {
+  const msg = e?.message ?? '';
+  return msg.includes('No matching key')
+      || msg.includes('proposal id doesn\'t exist')
+      || msg.includes('Record was recently deleted')
+      || msg.includes('Missing or invalid')
+      || msg.includes('Expired');
+}
+
+// Intercept console.error from the WalletConnect SDK's pino logger.
+// Pino calls console.error(obj, message) — the message lands as a string arg.
+// Downgrade known "proposal already gone" noise to warnings.
+const _consoleError = console.error.bind(console);
+console.error = function (...args) {
+  const text = args.map(a => typeof a === 'string' ? a : '').join(' ');
+  if (isProposalGone({ message: text })) {
+    console.warn('[wc]', ...args);
+    return;
+  }
+  _consoleError(...args);
+};
+
 function setBadge(count) {
   chrome.action.setBadgeText({ text: count > 0 ? count.toString() : '' });
   if (count > 0) chrome.action.setBadgeBackgroundColor({ color: '#6366f1' });
@@ -182,7 +209,11 @@ async function tryOpenPopup() {
 // MESSAGE API  (popup → background)
 // ─────────────────────────────────────────────
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id) {
+    sendResponse({ ok: false, error: 'Unauthorized sender' });
+    return false;
+  }
   handleMessage(message)
     .then(sendResponse)
     .catch(err => {
@@ -217,9 +248,21 @@ async function handleMessage(msg) {
       return { ok: true, sessions };
     }
 
+    case 'WC_GET_PENDING_PROPOSALS': {
+      const proposals = web3wallet?.getPendingSessionProposals() ?? {};
+      return { ok: true, proposals };
+    }
+
     case 'WC_APPROVE_SESSION': {
       const wc = await initWalletConnect();
-      await wc.approveSession({ id: msg.id, namespaces: msg.namespaces });
+      try {
+        await wc.approveSession({ id: msg.id, namespaces: msg.namespaces });
+      } catch (e) {
+        await chrome.storage.session.set({ wcPending: null });
+        setBadge(0);
+        const expired = isProposalGone(e);
+        throw new Error(expired ? 'Session proposal expired — please reconnect from the dApp.' : e.message);
+      }
       await chrome.storage.session.set({ wcPending: null });
       setBadge(0);
       return { ok: true, sessions: wc.getActiveSessions() };
@@ -227,7 +270,12 @@ async function handleMessage(msg) {
 
     case 'WC_REJECT_SESSION': {
       const wc = await initWalletConnect();
-      await wc.rejectSession({ id: msg.id, reason: msg.reason });
+      try {
+        await wc.rejectSession({ id: msg.id, reason: msg.reason });
+      } catch (e) {
+        if (!isProposalGone(e)) throw e;
+        // Proposal already expired/deleted — already effectively rejected.
+      }
       await chrome.storage.session.set({ wcPending: null });
       setBadge(0);
       return { ok: true };
@@ -241,7 +289,9 @@ async function handleMessage(msg) {
 
     case 'WC_RESPOND': {
       const wc = await initWalletConnect();
+      console.log('[bg] WC responding to id:', msg.response?.id, 'topic:', msg.topic, 'result:', msg.response?.result ? 'success' : 'error', msg.response?.error ?? '');
       await wc.respondSessionRequest({ topic: msg.topic, response: msg.response });
+      console.log('[bg] WC response delivered id:', msg.response?.id);
       await chrome.storage.session.set({ wcPending: null });
       setBadge(0);
       return { ok: true };

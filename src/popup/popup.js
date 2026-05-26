@@ -6,7 +6,8 @@ import { getSdkError } from '@walletconnect/utils';
 import { generateMnemonic, validateMnemonic } from 'bip39';
 import TransportWebHID from '@ledgerhq/hw-transport-webhid';
 import Xrp from '@ledgerhq/hw-app-xrp';
-import { encode } from 'ripple-binary-codec';
+import { encode, encodeForSigning } from 'ripple-binary-codec';
+import { sign as keypairsSign } from 'ripple-keypairs';
 import { createHash } from 'crypto';
 
 // ─────────────────────────────────────────────
@@ -26,8 +27,6 @@ window.addEventListener('unhandledrejection', (event) => {
 // ─────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────
-
-const WC_PROJECT_ID = '545f3b40384efe9b93401c1dd8d0ceb0';
 
 const NETWORK_SERVERS = {
   // ── Devnet ──────────────────────────────────
@@ -119,9 +118,27 @@ const AUTO_REFRESH_INTERVAL = 30_000;
 
 // PBKDF2 parameters — matching MetaMask's browser-passworder
 const PBKDF2_ITERATIONS = 600_000;
-const LOCK_TIMEOUT_MS   = 10_000; // default; overridden by devSettings.lockTimeoutSecs
+const LOCK_TIMEOUT_MS   = 300_000; // default; overridden by devSettings.lockTimeoutSecs
 const PBKDF2_HASH      = 'SHA-256';
 const KEY_LENGTH_BITS  = 256;
+
+// Brute-force protection: exponential backoff tiers on failed unlock attempts.
+// Failure counts and lockout timestamps are persisted in chrome.storage.session
+// so closing and reopening the popup does not reset the counter.
+const UNLOCK_BACKOFF = [
+  { minFailures: 20, delayMs: Number.MAX_SAFE_INTEGER }, // permanent until browser close
+  { minFailures: 10, delayMs: 60_000 },
+  { minFailures:  5, delayMs: 10_000 },
+];
+
+// In-memory password — held only when the user unlocked via explicit password entry.
+// Null after a key-restore session (popup re-opened without re-entering password).
+let _sessionPassword = null;
+
+// Derived AES-256-GCM CryptoKey — set whenever the vault is unlocked (via password entry
+// or session key-restore).  Used for all vault saves so the raw password is never needed
+// for routine re-encryption and never has to touch persistent storage.
+let _vaultKey = null;
 
 // ─────────────────────────────────────────────
 // STATE
@@ -180,7 +197,7 @@ const state = {
   pendingLoanPay: null,
 
   // Developer settings persisted to chrome.storage.local
-  devSettings: { printTxJson: false, lockTimeoutSecs: 10, wideMode: false },
+  devSettings: { printTxJson: false, printWC: false, lockTimeoutSecs: 0, wideMode: false, iouDecimalPrecision: 6 },
 
   // Vaults fetched on the vault-deposit screen, keyed by VaultID
   fetchedVaults: new Map(),
@@ -195,9 +212,26 @@ const state = {
 
 function $(id) { return document.getElementById(id); }
 
+function safeSetHref(el, href) {
+  try { new URL(href); el.href = href; }
+  catch { el.removeAttribute('href'); }
+}
+
+function scrollToTop() {
+  document.body.scrollTop = 0;
+  document.documentElement.scrollTop = 0;
+  window.scrollTo(0, 0);
+}
+
 function showView(name) {
   for (const el of document.querySelectorAll('.view')) el.classList.add('hidden');
-  $(`view-${name}`).classList.remove('hidden');
+  const view = $(`view-${name}`);
+  view.classList.remove('hidden');
+  scrollToTop();
+  requestAnimationFrame(() => {
+    scrollToTop();
+    setTimeout(scrollToTop, 0);
+  });
   // Close any open account dropdown
   $('account-dropdown')?.classList.add('hidden');
   // Populate raw JSON panel on review screen
@@ -280,6 +314,20 @@ function showAlert(id, msg) {
   el.classList.remove('hidden');
 }
 
+/**
+ * Show an alert whose content is a trusted HTML string.
+ * ALL values interpolated into `html` MUST be escaped via esc() or be hardcoded
+ * literals. Never pass raw user input, ledger data, or WalletConnect metadata
+ * directly — use showAlert() (textContent) for those cases.
+ * @param {string} id - Element ID
+ * @param {string} html - Trusted HTML built from esc()-escaped or hardcoded values only
+ */
+function _showAlertTrustedHtml(id, html) {
+  const el = $(id);
+  el.innerHTML = html;
+  el.classList.remove('hidden');
+}
+
 function hideAlert(id) { $(id).classList.add('hidden'); }
 
 function xrplDateToLocal(xrplDate) {
@@ -317,7 +365,7 @@ async function sendToBackground(msg, timeoutMs = 60000) {
  * @param {Uint8Array} salt
  * @returns {Promise<CryptoKey>}
  */
-async function deriveKey(password, salt) {
+async function deriveKey(password, salt, extractable = false) {
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
@@ -330,7 +378,7 @@ async function deriveKey(password, salt) {
     { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: PBKDF2_HASH },
     keyMaterial,
     { name: 'AES-GCM', length: KEY_LENGTH_BITS },
-    false,
+    extractable,
     ['encrypt', 'decrypt'],
   );
 }
@@ -378,6 +426,31 @@ async function decryptVault(password, vault) {
   return JSON.parse(dec.decode(plaintext));
 }
 
+/**
+ * Encrypt using a pre-derived key, keeping the existing salt and generating a new IV.
+ * Used for routine saves after the vault is already unlocked (avoids PBKDF2 and the
+ * need to have the raw password available).
+ */
+async function encryptVaultWithKey(key, salt, plainObj) {
+  const iv  = crypto.getRandomValues(new Uint8Array(12));
+  const enc = new TextEncoder();
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    enc.encode(JSON.stringify(plainObj)),
+  );
+  return { salt: bufToB64(salt), iv: bufToB64(iv), data: bufToB64(ciphertext) };
+}
+
+/** Decrypt using a pre-derived key (skips PBKDF2). */
+async function decryptVaultWithKey(key, vault) {
+  const iv   = b64ToBuf(vault.iv);
+  const data = b64ToBuf(vault.data);
+  const dec  = new TextDecoder();
+  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
+  return JSON.parse(dec.decode(plaintext));
+}
+
 // ─────────────────────────────────────────────
 // VAULT — Persist encrypted keyrings to local storage
 // ─────────────────────────────────────────────
@@ -389,56 +462,97 @@ async function hasVault() {
 
 /**
  * Encrypt state.keyrings + state.activeAccount and persist to local storage.
- * @param {string} [passwordOverride] - if provided, use this password; otherwise
- *   fall back to the vaultPassword stored in chrome.storage.session (active session).
+ *
+ * When passwordOverride is supplied (initial creation or password change) the vault
+ * is re-encrypted with a fresh salt and the new derived key is cached in _vaultKey.
+ *
+ * For all routine saves (add/remove account, activate account, etc.) no password is
+ * needed: _vaultKey is used directly with the existing salt so PBKDF2 is skipped and
+ * the raw password never has to be available.
  */
 async function saveVault(passwordOverride) {
-  let password = passwordOverride;
-  if (!password) {
-    const { vaultPassword } = await chrome.storage.session.get('vaultPassword');
-    password = vaultPassword;
-  }
-  if (!password) throw new Error('No vault password available — cannot save vault.');
   const payload = { keyrings: state.keyrings, activeAccount: state.activeAccount };
-  const vault   = await encryptVault(password, payload);
-  await chrome.storage.local.set({ vault });
-  return password; // caller may need it for persistSession
+
+  if (passwordOverride) {
+    // Password change or initial vault creation: generate a new salt and derive a
+    // fresh extractable key from the new password.
+    const vault = await encryptVault(passwordOverride, payload);
+    await chrome.storage.local.set({ vault });
+    _vaultKey = await deriveKey(passwordOverride, b64ToBuf(vault.salt), true);
+    _sessionPassword = passwordOverride;
+    return;
+  }
+
+  if (_vaultKey) {
+    // Routine re-save: keep the existing salt, rotate the IV only.
+    const { vault: existing } = await chrome.storage.local.get('vault');
+    if (!existing) throw new Error('No existing vault found for re-encryption.');
+    const vault = await encryptVaultWithKey(_vaultKey, b64ToBuf(existing.salt), payload);
+    await chrome.storage.local.set({ vault });
+    return;
+  }
+
+  throw new Error('No vault key available — cannot save vault. Is the wallet unlocked?');
 }
 
 /**
- * Decrypt vault with the given password, load keyrings into state, persist session.
+ * Decrypt vault with the given password, cache the derived key, load keyrings into state.
  */
 async function loadAndDecryptVault(password) {
   const { vault } = await chrome.storage.local.get('vault');
   if (!vault) throw new Error('No vault found.');
-  const payload = await decryptVault(password, vault); // throws on bad password
-  state.keyrings     = payload.keyrings ?? [];
+  // Derive an extractable key so we can store its bytes (not the password) in session.
+  const salt = b64ToBuf(vault.salt);
+  const key  = await deriveKey(password, salt, true);
+  const payload = await decryptVaultWithKey(key, vault); // throws DOMException on bad password
+  state.keyrings      = payload.keyrings ?? [];
   state.activeAccount = payload.activeAccount ?? null;
-  await persistSession(password);
+  _vaultKey        = key;
+  _sessionPassword = password;
+  await persistSession();
 }
 
 // ─────────────────────────────────────────────
 // SESSION — Keep decrypted state across popup reopens
 // ─────────────────────────────────────────────
 
-async function persistSession(password) {
-  await chrome.storage.session.set({
-    keyrings:      state.keyrings,
+/**
+ * Write lightweight session state to chrome.storage.session.
+ *
+ * When lockTimeoutSecs is non-zero the exported raw bytes of _vaultKey are stored
+ * (never the raw password).  On the next popup open restoreFromSession() imports
+ * those bytes back and decrypts the vault directly, so PBKDF2 is skipped and the
+ * user's password string is never persisted anywhere.
+ */
+async function persistSession() {
+  const sessionData = {
     activeAccount: state.activeAccount,
     network:       state.network,
-    vaultPassword: password,
-  });
+  };
+  if (state.devSettings.lockTimeoutSecs !== 0 && _vaultKey) {
+    const rawKey = await crypto.subtle.exportKey('raw', _vaultKey);
+    sessionData.vaultKey = bufToB64(rawKey);
+  }
+  await chrome.storage.session.set(sessionData);
 }
 
 async function restoreFromSession() {
-  const { keyrings, activeAccount, vaultPassword } =
-    await chrome.storage.session.get(['keyrings', 'activeAccount', 'vaultPassword']);
-  if (!keyrings || !activeAccount || !vaultPassword) return false;
-  state.keyrings      = keyrings;
+  const { vaultKey, activeAccount } =
+    await chrome.storage.session.get(['vaultKey', 'activeAccount']);
+  if (!vaultKey || !activeAccount) return false;
+  const { vault } = await chrome.storage.local.get('vault');
+  if (!vault) return false;
+  // Import the stored key bytes — this is faster than PBKDF2 and never exposes
+  // the raw password to session storage.
+  const key = await crypto.subtle.importKey(
+    'raw', b64ToBuf(vaultKey), { name: 'AES-GCM', length: KEY_LENGTH_BITS }, true, ['encrypt', 'decrypt'],
+  );
+  const payload = await decryptVaultWithKey(key, vault);
+  state.keyrings      = payload.keyrings ?? [];
   state.activeAccount = activeAccount;
-  // Network is NOT restored from session — loadDevSettings() already loaded it
-  // from chrome.storage.local (the authoritative source).  The session copy can
-  // be stale because applyNetworkChange() only writes to local storage.
+  _vaultKey = key;
+  // _sessionPassword intentionally left null — the raw password is not available
+  // in a key-restore session.  saveVault() uses _vaultKey for routine re-saves.
   return true;
 }
 
@@ -729,13 +843,42 @@ function computeTxHash(txBlobHex) {
  * otherwise uses the local software wallet.
  */
 async function signPreparedTx(prepared, signatureTarget = null) {
-  const multisign = signatureTarget !== null;
+  if (signatureTarget !== null) {
+    // The field prepared[signatureTarget] holds the r-address of the signer.
+    // Sign with the active account's key and replace that field with
+    // { SigningPubKey, TxnSignature }.  All other fields (including any
+    // top-level SigningPubKey/TxnSignature from the main Account signer) are
+    // left exactly as they are.
+    if (isActiveAccountReadOnly()) throw new Error('This is a watch-only account. Transactions cannot be signed.');
 
-  if (multisign) {
-    // Sign on behalf of signature_target using that account's local key.
-    const signerWallet = getWalletForAddress(signatureTarget);
-    if (!signerWallet) throw new Error(`No signing key available for ${signatureTarget}`);
-    return signerWallet.sign(prepared, { multisign: signatureTarget });
+    let SigningPubKey, TxnSignature;
+
+    const ledgerKr = getActiveLedgerKeyring();
+    if (ledgerKr) {
+      setTxStatus('pending', 'Confirm on Ledger device…');
+      const txToSign = { ...prepared };
+      delete txToSign.TxnSignature;
+      delete txToSign[signatureTarget + 'Signature'];
+      let transport;
+      try {
+        transport = await TransportWebHID.create();
+        const xrpApp = new Xrp(transport);
+        const sig = await xrpApp.signTransaction(ledgerKr.derivationPath, encode(txToSign));
+        SigningPubKey = ledgerKr.publicKey;
+        TxnSignature  = sig.toUpperCase();
+      } finally {
+        if (transport) await transport.close().catch(() => {});
+      }
+    } else {
+      SigningPubKey = state.wallet.publicKey;
+      const txForSigning = { ...prepared };
+      delete txForSigning.TxnSignature;
+      delete txForSigning[signatureTarget + 'Signature'];
+      TxnSignature = keypairsSign(encodeForSigning(txForSigning), state.wallet.privateKey).toUpperCase();
+    }
+
+    const tx_json = { ...prepared, [signatureTarget + 'Signature']: { SigningPubKey, TxnSignature } };
+    return { tx_json };
   }
 
   if (isActiveAccountReadOnly()) {
@@ -852,8 +995,7 @@ async function executeRemoveAccount() {
   await saveProjects();
 
   await saveVault();
-  const { vaultPassword } = await chrome.storage.session.get('vaultPassword');
-  if (vaultPassword) await persistSession(vaultPassword);
+  if (_vaultKey) await persistSession();
 
   const remaining = getAllAccounts();
   if (remaining.length === 0) {
@@ -1009,8 +1151,7 @@ async function executeProjectRemove() {
   await saveProjects();
 
   await saveVault();
-  const { vaultPassword } = await chrome.storage.session.get('vaultPassword');
-  if (vaultPassword) await persistSession(vaultPassword);
+  if (_vaultKey) await persistSession();
 
   const remaining = getAllAccounts();
   if (remaining.length === 0) {
@@ -1044,8 +1185,7 @@ async function activateAccount(address) {
 }
 
 async function updateSessionActiveAccount() {
-  const { vaultPassword } = await chrome.storage.session.get('vaultPassword');
-  if (vaultPassword) {
+  if (_vaultKey) {
     await chrome.storage.session.set({ activeAccount: state.activeAccount });
   }
 }
@@ -1102,9 +1242,8 @@ function initGenSeedView() {
 
   const newWallet = Wallet.generate();
   $('generated-seed-text').textContent = newWallet.seed;
-  // Store temporarily on the element so we can read it on confirm
-  $('generated-seed-text').dataset.seed    = newWallet.seed;
-  $('generated-seed-text').dataset.address = newWallet.address;
+  _pendingGenSeed    = newWallet.seed;
+  _pendingGenAddress = newWallet.address;
   showView('account-gen-seed');
 }
 
@@ -1115,10 +1254,14 @@ async function confirmGenSeed() {
     return;
   }
 
-  const seed    = $('generated-seed-text').dataset.seed;
-  const address = $('generated-seed-text').dataset.address;
+  const seed    = _pendingGenSeed;
+  const address = _pendingGenAddress;
   const label   = $('gen-seed-label').value.trim() || nextAccountLabel();
 
+  if (!seed || !address) {
+    showAlert('gen-seed-error', 'Seed data missing — please go back and try again.');
+    return;
+  }
   if (getProjectAccounts().some(a => a.address === address)) {
     showAlert('gen-seed-error', 'This account is already in your wallet.');
     return;
@@ -1126,6 +1269,8 @@ async function confirmGenSeed() {
   if (!accountExists(address)) {
     state.keyrings.push({ type: 'simple', seed, address, label });
   }
+  _pendingGenSeed    = null;
+  _pendingGenAddress = null;
   state.activeAccount = address;
   await finalizeAccountCreation();
 }
@@ -1341,11 +1486,12 @@ async function confirmHdAdd() {
 
 async function finalizeAccountCreation() {
   try {
-    // For the initial setup flow, use the in-memory password.
-    // For add-account (vault already exists), fall back to the session password.
-    const usedPassword = await saveVault(state._setupFlowPassword || undefined);
+    // For the initial setup flow, pass the in-memory password so saveVault generates
+    // a new salt and caches _vaultKey.  For add-account the vault already exists and
+    // _vaultKey is already set, so no override is needed.
+    await saveVault(state._setupFlowPassword || undefined);
     state._setupFlowPassword = null; // clear immediately after use
-    await persistSession(usedPassword);
+    await persistSession();
 
     // Register the new account with the active project (init project first if needed)
     await ensureProjectsInitialized();
@@ -1379,6 +1525,55 @@ async function finalizeAccountCreation() {
 // UNLOCK
 // ─────────────────────────────────────────────
 
+function _unlockBackoffMs(failures) {
+  for (const { minFailures, delayMs } of UNLOCK_BACKOFF) {
+    if (failures >= minFailures) return delayMs;
+  }
+  return 0;
+}
+
+let _unlockCountdownTimer = null;
+
+function _applyUnlockLockout(lockedUntil) {
+  clearInterval(_unlockCountdownTimer);
+  const btn   = $('unlock-btn');
+  const input = $('unlock-password');
+  btn.disabled   = true;
+  input.disabled = true;
+
+  const permanent = lockedUntil >= Number.MAX_SAFE_INTEGER;
+  if (permanent) {
+    showAlert('unlock-error', 'Too many failed attempts. Close the browser to reset.');
+    btn.textContent = 'Locked';
+    return;
+  }
+
+  const tick = () => {
+    const remaining = Math.ceil((lockedUntil - Date.now()) / 1000);
+    if (remaining <= 0) {
+      clearInterval(_unlockCountdownTimer);
+      btn.disabled    = false;
+      input.disabled  = false;
+      btn.textContent = 'Unlock';
+      hideAlert('unlock-error');
+      return;
+    }
+    showAlert('unlock-error', `Too many failed attempts — try again in ${remaining}s.`);
+    btn.textContent = `Wait ${remaining}s…`;
+  };
+  tick();
+  _unlockCountdownTimer = setInterval(tick, 1000);
+}
+
+async function checkUnlockLockout() {
+  const { unlockFailures = 0, unlockLockedUntil = 0 } =
+    await chrome.storage.session.get(['unlockFailures', 'unlockLockedUntil']);
+  if (!unlockLockedUntil) return;
+  if (unlockLockedUntil >= Number.MAX_SAFE_INTEGER || unlockLockedUntil > Date.now()) {
+    _applyUnlockLockout(unlockLockedUntil);
+  }
+}
+
 async function unlock() {
   hideAlert('unlock-error');
   const password = $('unlock-password').value;
@@ -1387,12 +1582,25 @@ async function unlock() {
     return;
   }
 
+  // Guard: re-check lockout in case the user bypasses the disabled state.
+  const { unlockFailures = 0, unlockLockedUntil = 0 } =
+    await chrome.storage.session.get(['unlockFailures', 'unlockLockedUntil']);
+  if (unlockLockedUntil >= Number.MAX_SAFE_INTEGER || unlockLockedUntil > Date.now()) {
+    _applyUnlockLockout(unlockLockedUntil);
+    return;
+  }
+
   const btn = $('unlock-btn');
-  btn.disabled  = true;
+  btn.disabled    = true;
   btn.textContent = 'Unlocking…';
 
   try {
     await loadAndDecryptVault(password);
+
+    // Success — clear the failure counter.
+    await chrome.storage.session.remove(['unlockFailures', 'unlockLockedUntil']);
+    clearInterval(_unlockCountdownTimer);
+
     state.wallet  = getActiveWallet();
     state.network = state.network || 'devnet';
     await ensureProjectsInitialized();
@@ -1415,16 +1623,28 @@ async function unlock() {
 
     $('unlock-password').value = '';
   } catch (err) {
-    // AES-GCM auth failure → wrong password
     if (err.name === 'OperationError' || err.message?.includes('decrypt')) {
-      showAlert('unlock-error', 'Incorrect password.');
+      // Wrong password — increment counter and apply backoff.
+      const newFailures   = unlockFailures + 1;
+      const delayMs       = _unlockBackoffMs(newFailures);
+      const lockedUntil   = delayMs > 0 ? Date.now() + delayMs : 0;
+      await chrome.storage.session.set({
+        unlockFailures:   newFailures,
+        ...(lockedUntil ? { unlockLockedUntil: lockedUntil } : {}),
+      });
+      if (lockedUntil) {
+        _applyUnlockLockout(lockedUntil);
+      } else {
+        showAlert('unlock-error', 'Incorrect password.');
+        btn.disabled    = false;
+        btn.textContent = 'Unlock';
+      }
     } else {
       showAlert('unlock-error', `Unlock failed: ${err.message}`);
+      btn.disabled    = false;
+      btn.textContent = 'Unlock';
     }
     console.error('[unlock]', err);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Unlock';
   }
 }
 
@@ -1454,11 +1674,10 @@ async function changePassword() {
     if (!vault) throw new Error('No vault found.');
     await decryptVault(current, vault); // throws OperationError if wrong
 
-    // Re-encrypt the vault with the new password and persist.
+    // Re-encrypt with new password — saveVault(override) generates a new salt,
+    // derives a new _vaultKey, and sets _sessionPassword = next internally.
     await saveVault(next);
-
-    // Update the session so the new password is used from now on.
-    await chrome.storage.session.set({ vaultPassword: next });
+    await persistSession();
 
     $('cp-current').value = '';
     $('cp-new').value     = '';
@@ -1607,7 +1826,7 @@ function updateWalletUI() {
   $('account-address').title = addr;
 
   const net = getNetworkConfig();
-  $('account-explorer-link').href = `${net.explorerAccount}${addr}`;
+  safeSetHref($('account-explorer-link'), `${net.explorerAccount}${addr}`);
 
   const badge = $('network-badge');
   badge.textContent = net.name;
@@ -1839,7 +2058,7 @@ function renderIouBalances(lines) {
   const explorerToken = getNetworkConfig().explorerToken;
   listEl.innerHTML = lines.map(line => {
     const code    = formatCurrencyCode(line.currency);
-    const balance = parseFloat(line.balance).toLocaleString(undefined, { maximumFractionDigits: 6 });
+    const balance = parseFloat(line.balance).toLocaleString(undefined, { maximumFractionDigits: state.devSettings.iouDecimalPrecision });
     const href    = `${explorerToken}${encodeURIComponent(line.currency)}.${line.account}`;
     return `
       <div class="iou-balance-item"
@@ -1884,8 +2103,9 @@ function renderAmmBalances(lines) {
     const lpTotal = parseFloat(ammInfo.lp_token?.value ?? '0');
     const share1  = poolAssetShare(ammInfo.amount,  lpHeld, lpTotal);
     const share2  = poolAssetShare(ammInfo.amount2, lpHeld, lpTotal);
-    const fmt     = (n, dp = 6) => n.toLocaleString(undefined, { maximumFractionDigits: dp });
-    const lpBal   = lpHeld.toLocaleString(undefined, { maximumFractionDigits: 6 });
+    const dp      = state.devSettings.iouDecimalPrecision;
+    const fmt     = (n) => n.toLocaleString(undefined, { maximumFractionDigits: dp });
+    const lpBal   = lpHeld.toLocaleString(undefined, { maximumFractionDigits: dp });
     const href    = `${explorerAccount}${line.account}`;
     return `
       <div class="amm-balance-item"
@@ -2320,19 +2540,20 @@ function decimalToMptInteger(decStr, assetScale) {
   return combined.replace(/^0+/, '') || '0';
 }
 
-function formatLoanAmount(numStr, asset) {
+function formatLoanAmount(numStr, asset, maxDecimals = null) {
   if (numStr == null) return '—';
   const src = extractAmountValue(numStr);
   const n = parseFloat(src);
   if (!Number.isFinite(n)) return src;
-  // Format integer part with locale thousands separators; preserve decimal
-  // digits verbatim from the source string to avoid any precision loss.
+  const suffix = asset ? ` ${formatPoolAsset(asset)}` : '';
+  if (maxDecimals !== null) {
+    return n.toLocaleString(undefined, { maximumFractionDigits: maxDecimals }) + suffix;
+  }
+  // Default: preserve decimal digits verbatim from source string.
   const dot = src.indexOf('.');
   const intPart = parseInt(dot === -1 ? src : src.slice(0, dot), 10);
   const decPart = dot === -1 ? '' : src.slice(dot); // e.g. ".050000"
-  const pretty = intPart.toLocaleString(undefined, { maximumFractionDigits: 0 }) + decPart;
-  const suffix = asset ? ` ${formatPoolAsset(asset)}` : '';
-  return `${pretty}${suffix}`;
+  return intPart.toLocaleString(undefined, { maximumFractionDigits: 0 }) + decPart + suffix;
 }
 
 function shortHash(h) {
@@ -2567,10 +2788,12 @@ function renderBrokerItem({ broker, asset, loans, vaultName = null }) {
   const pseudoAcct  = broker.Account ?? '';
   const debtTotalF  = parseFloat(broker.DebtTotal ?? '0');
   const debtMaxF    = parseFloat(broker.DebtMaximum ?? '0');
-  const debtMaxStr  = debtMaxF > 0 ? formatLoanAmount(broker.DebtMaximum, asset) : '∞';
+  const dp          = state.devSettings.iouDecimalPrecision;
+  const fmtLoan     = (v) => formatLoanAmount(v, asset, dp);
+  const debtMaxStr  = debtMaxF > 0 ? fmtLoan(broker.DebtMaximum) : '∞';
   const poolMgr     = broker.Owner ?? '';
   const activeCount = broker.OwnerCount ?? 0;
-  const headline    = formatLoanAmount(broker.CoverAvailable, asset);
+  const headline    = fmtLoan(broker.CoverAvailable);
 
   // Asset cell: "AAA (rBUx…y8KM)" so users can distinguish same-code issuers
   const assetCell = asset
@@ -2582,15 +2805,15 @@ function renderBrokerItem({ broker, asset, loans, vaultName = null }) {
   // "Available to lend" — only meaningful when DebtMaximum is capped.
   const availableF = debtMaxF > 0 ? Math.max(0, debtMaxF - debtTotalF) : null;
   const availableRow = availableF != null
-    ? [['Available to Lend', esc(formatLoanAmount(availableF.toString(), asset))]]
+    ? [['Available to Lend', esc(fmtLoan(availableF.toString()))]]
     : [];
 
   const stats = [
     ['Asset',            assetCell],
     ['Vault',            `<span title="${esc(vaultID)}">${esc(vaultName || shortHash(vaultID))}</span>`],
-    ['Debt',             `${esc(formatLoanAmount(broker.DebtTotal, asset))} / ${esc(debtMaxStr)}`],
+    ['Debt',             `${esc(fmtLoan(broker.DebtTotal))} / ${esc(debtMaxStr)}`],
     ...availableRow,
-    ['Cover Available',  esc(formatLoanAmount(broker.CoverAvailable, asset))],
+    ['Cover Available',  esc(fmtLoan(broker.CoverAvailable))],
     ['Management Fee',   esc(formatTenthBps(broker.ManagementFeeRate))],
     ['Cover Min / Liq',  `${esc(formatTenthBps(broker.CoverRateMinimum))} / ${esc(formatTenthBps(broker.CoverRateLiquidation))}`],
     ['Owner',            `<span title="${esc(poolMgr)}">${esc(resolveAddrDisplay(poolMgr))}</span>`],
@@ -2692,8 +2915,8 @@ function renderLoanItem(loan, asset, opts = {}) {
     brokerID
       ? ['LoanBroker', `<span title="${esc(brokerID)}">${esc(shortHash(brokerID))}</span>`]
       : null,
-    ['Principal Outstanding', esc(formatLoanAmount(loan.PrincipalOutstanding, asset))],
-    ['Periodic Payment',      esc(formatLoanAmount(loan.PeriodicPayment, asset))],
+    ['Principal Outstanding', esc(formatLoanAmount(loan.PrincipalOutstanding, asset, state.devSettings.iouDecimalPrecision))],
+    ['Periodic Payment',      esc(formatLoanAmount(loan.PeriodicPayment, asset, state.devSettings.iouDecimalPrecision))],
     ['Payments',              esc(elapsedStr)],
     ['Interest Rate',         esc(formatTenthBps(loan.InterestRate))],
     ['Started',               esc(startStr)],
@@ -2734,7 +2957,7 @@ function renderLoanItem(loan, asset, opts = {}) {
           <span class="amm-issuer" title="${esc(loanID)}">${esc(shortHash(loanID))}</span>
           ${badgesHtml}
         </div>
-        <div class="amm-balance-amount">${esc(formatLoanAmount(loan.TotalValueOutstanding, asset))}</div>
+        <div class="amm-balance-amount">${esc(formatLoanAmount(loan.TotalValueOutstanding, asset, state.devSettings.iouDecimalPrecision))}</div>
         ${loanExplorerLink}${showLoanPay ? '<span class="loan-pay-hint">›</span>' : ''}
       </div>
       <div class="amm-assets-row">${statsHtml}</div>
@@ -3590,9 +3813,8 @@ function reviewSendPayment() {
   $('send-review-details').innerHTML = rows.join('');
   $('review-title').textContent = 'Review Payment';
 
-  // Clipboard hijack warning: show when destination was pasted
-  const destIsPasted = _pastedDestination !== null && _pastedDestination === destAddress;
-  $('send-review-paste-warn').classList.toggle('hidden', !destIsPasted);
+  // Always prompt the user to verify the destination address, regardless of how it was entered.
+  $('send-review-paste-warn').classList.toggle('hidden', !destAddress);
 
   // Build partial txJson for the Raw JSON panel
   const partialTx = {
@@ -3652,8 +3874,9 @@ async function executeSendPayment() {
     setTxStatus('pending', 'Autofilling network fields…');
     const prepared = await state.client.autofill(txJson);
     setTxStatus('pending', 'Signing…');
-    if (state.devSettings.printTxJson) console.log('[tx json]', prepared);
+    if (state.devSettings.printTxJson) console.log('[tx json before signing]', prepared);
     const { tx_blob, hash } = await signPreparedTx(prepared);
+    if (state.devSettings.printTxJson) console.log('[tx json after signing]', { tx_blob: '[redacted]', hash });
     setTxStatus('pending', 'Submitting to XRPL…');
     const response = await state.client.submitAndWait(tx_blob);
     const txResult = response.result?.meta?.TransactionResult;
@@ -4088,7 +4311,7 @@ function reviewNewVaultDeposit() {
 // LOAN PAY
 // ─────────────────────────────────────────────
 
-function openLoanPay(item) {
+async function openLoanPay(item) {
   const loanId               = item.dataset.loanId;
   const borrower             = item.dataset.borrower;
   const periodicPayment      = item.dataset.periodicPayment;
@@ -4137,7 +4360,25 @@ function openLoanPay(item) {
   $('loan-pay-flag-full-payment').checked = false;
   $('loan-pay-flag-late-payment').checked = false;
   $('loan-pay-error').classList.add('hidden');
+
+  const balRow = (label, value) =>
+    `<div class="detail-row"><span class="detail-label">${label}</span><span class="detail-value">${value}</span></div>`;
+  $('loan-pay-asset-balance').innerHTML = balRow(`${assetLabel} Balance`, '…');
   showView('loan-pay');
+
+  try {
+    let balStr;
+    if (!asset) {
+      const xrp = await state.client.getXrpBalance(state.activeAccount);
+      balStr = `${parseFloat(xrp).toLocaleString(undefined, { maximumFractionDigits: 6 })} XRP`;
+    } else {
+      balStr = `${await fetchAmmAssetBalance(asset)} ${assetLabel}`;
+    }
+    $('loan-pay-asset-balance').innerHTML = balRow(`${assetLabel} Balance`, esc(balStr));
+  } catch {
+    $('loan-pay-asset-balance').innerHTML = balRow(`${assetLabel} Balance`, '—');
+  }
+  scrollToTop();
 }
 
 // LoanPay transaction flags
@@ -4231,8 +4472,9 @@ async function executeReviewedTx() {
     setTxStatus('pending', 'Autofilling network fields…');
     const prepared = await state.client.autofill(review.txJson);
     setTxStatus('pending', 'Signing…');
-    if (state.devSettings.printTxJson) console.log('[tx json]', prepared);
+    if (state.devSettings.printTxJson) console.log('[tx json before signing]', prepared);
     const { tx_blob, hash } = await signPreparedTx(prepared);
+    if (state.devSettings.printTxJson) console.log('[tx json after signing]', { tx_blob, hash });
     setTxStatus('pending', 'Submitting to XRPL…');
     const response = await state.client.submitAndWait(tx_blob);
     const txResult = response.result?.meta?.TransactionResult;
@@ -4448,6 +4690,19 @@ async function checkPendingWcEvent() {
   if (!wcPending) return;
 
   if (wcPending.type === 'proposal') {
+    // Verify the proposal is still live in the SDK before showing it.
+    // The SDK validates at approveSession() time too, but showing an expired
+    // proposal confuses users — better to silently discard it here.
+    try {
+      const { proposals } = await sendToBackground({ type: 'WC_GET_PENDING_PROPOSALS' }, 5000);
+      if (!proposals[wcPending.id]) {
+        await sendToBackground({ type: 'WC_CLEAR_PENDING' });
+        return;
+      }
+    } catch {
+      // If the background check fails (e.g. WC not yet initialised), show the
+      // proposal anyway — the SDK will reject it at approval time if expired.
+    }
     showWcProposal(wcPending);
   } else if (wcPending.type === 'request') {
     await showWcRequest(wcPending);
@@ -4458,27 +4713,96 @@ async function checkPendingWcEvent() {
 // WALLETCONNECT — SESSION PROPOSAL
 // ─────────────────────────────────────────────
 
+function isSafeIconUrl(url) {
+  if (!url) return false;
+  try {
+    if (new URL(url).protocol === 'https:') return true;
+  } catch { return false; }
+  // Allow inline data URIs for common image types (safe in <img> — scripts don't execute)
+  return /^data:image\/(png|jpeg|gif|webp|svg\+xml|x-icon|vnd\.microsoft\.icon)[;,]/i.test(url);
+}
+
 /**
  * @param {object} pending  Serialised proposal stored by background.
  */
+const WC_METHOD_LABELS = {
+  xrpl_signTransaction:    'Sign transactions',
+  xrpl_signTransactionFor: 'Sign transactions on behalf of another account (multi-signing)',
+};
+
+function sanitizeWcMeta(meta) {
+  const MAX_NAME = 60;
+  const name = String(meta.name ?? '').slice(0, MAX_NAME) +
+    (String(meta.name ?? '').length > MAX_NAME ? '…' : '');
+
+  let displayUrl = '';
+  let urlWarning = '';
+  try {
+    const parsed = new URL(String(meta.url ?? ''));
+    if (parsed.protocol === 'https:') {
+      displayUrl = parsed.toString();
+      if (parsed.hostname === 'localhost' || parsed.hostname.endsWith('.local')) {
+        urlWarning = 'localhost';
+      }
+    } else {
+      urlWarning = 'invalid';
+    }
+  } catch {
+    urlWarning = 'invalid';
+  }
+
+  return { name, displayUrl, urlWarning };
+}
+
 function showWcProposal(pending) {
   state.pendingProposal = pending;
   const meta = pending.params.proposer.metadata;
+  const iconUrl = meta.icons?.[0];
+  const safeIcon = iconUrl && isSafeIconUrl(iconUrl) ? iconUrl : null;
+  const { name, displayUrl, urlWarning } = sanitizeWcMeta(meta);
 
   $('proposal-app-card').innerHTML = `
-    <div class="app-icon">
-      ${meta.icons?.[0]
-        ? `<img src="${esc(meta.icons[0])}" alt="${esc(meta.name)}" />`
-        : '🌐'}
-    </div>
+    <div class="app-icon"></div>
     <div>
-      <div class="app-name">${esc(meta.name)}</div>
-      <div class="app-url">${esc(meta.url)}</div>
+      <div class="app-name">${esc(name)}</div>
+      <div class="app-url">${displayUrl ? esc(displayUrl) : '<em class="wc-url-invalid">URL unavailable</em>'}${urlWarning === 'localhost' ? ' <span class="wc-url-warn">(localhost)</span>' : ''}</div>
     </div>
   `;
 
-  const proposalImg = $('proposal-app-card').querySelector('img');
-  if (proposalImg) proposalImg.addEventListener('error', () => proposalImg.replaceWith(document.createTextNode('🌐')));
+  const iconDiv = $('proposal-app-card').querySelector('.app-icon');
+  if (safeIcon) {
+    const img = document.createElement('img');
+    img.setAttribute('src', safeIcon);
+    img.setAttribute('alt', meta.name);
+    img.addEventListener('error', () => img.replaceWith(document.createTextNode('🌐')));
+    iconDiv.appendChild(img);
+  } else {
+    iconDiv.textContent = '🌐';
+  }
+
+  // Build the permissions list from what the dApp actually requested.
+  const reqNs  = pending.params.requiredNamespaces?.xrpl  ?? {};
+  const optNs  = pending.params.optionalNamespaces?.xrpl  ?? {};
+  const reqMethods = new Set(reqNs.methods ?? []);
+  const optMethods = new Set((optNs.methods ?? []).filter(m => !reqMethods.has(m)));
+  const reqChains  = reqNs.chains ?? [];
+
+  const listEl = $('proposal-permissions-list');
+  // xrpl_signTransaction is always granted — always show it.
+  const items = [
+    '<li>View your account address</li>',
+    '<li>Request transaction signatures</li>',
+  ];
+  // Only surface multi-signing if the dApp explicitly requested it.
+  if (reqMethods.has('xrpl_signTransactionFor') || optMethods.has('xrpl_signTransactionFor')) {
+    const label = WC_METHOD_LABELS['xrpl_signTransactionFor'];
+    const suffix = optMethods.has('xrpl_signTransactionFor') ? ' <em>(optional)</em>' : '';
+    items.push(`<li>${esc(label)}${suffix}</li>`);
+  }
+  if (reqChains.length) {
+    items.push(`<li>Network: ${reqChains.map(c => esc(c)).join(', ')}</li>`);
+  }
+  listEl.innerHTML = items.join('');
 
   showView('session-proposal');
 }
@@ -4491,14 +4815,20 @@ async function approveSession() {
   btn.textContent = 'Approving…';
 
   try {
-    const chainId = getNetworkConfig().chainId;
+    const walletChainId = getNetworkConfig().chainId;
+    const reqNs = state.pendingProposal.params.requiredNamespaces?.xrpl ?? {};
+    // Approved chains must be a superset of requiredNamespaces chains — the SDK
+    // validates this and will throw if any required chain is missing.
+    const chains   = [...new Set([walletChainId, ...(reqNs.chains ?? [])])];
+    const accounts = chains.map(c => `${c}:${state.activeAccount}`);
+
     const resp = await sendToBackground({
       type: 'WC_APPROVE_SESSION',
       id:   state.pendingProposal.id,
       namespaces: {
         xrpl: {
-          chains:   [chainId],
-          accounts: [`${chainId}:${state.activeAccount}`],
+          chains,
+          accounts,
           methods:  ['xrpl_signTransaction', 'xrpl_signTransactionFor'],
           events:   [],
         },
@@ -4539,31 +4869,39 @@ async function rejectSession() {
  * @param {object} pending  Serialised request stored by background.
  */
 async function showWcRequest(pending) {
-  // Auto-switch to the account this session was approved for.
-  // The signing account is signature_target if present, otherwise the session account.
-  const signingAddress = pending.params?.request?.params?.signature_target ?? pending.address;
+  const { topic, id } = pending;
+  const reqParams       = pending.params?.request?.params ?? {};
+  const signatureTarget = reqParams.signature_target ?? null;
+  // When signature_target is set, the signing account is the r-address stored at
+  // tx_json[signatureTarget].  Otherwise fall back to the session account.
+  const signingAddress  = signatureTarget
+    ? (reqParams.tx_json?.[signatureTarget] ?? pending.address)
+    : pending.address;
 
-  if (signingAddress && signingAddress !== state.activeAccount) {
-    const accounts = getAllAccounts();
-    const acct = accounts.find(a => a.address === signingAddress);
-    if (acct) {
-      await activateAccount(signingAddress);
-    } else {
-      showView('wallet');
-      showAlert('wc-error', `Incoming request requires account ${truncAddr(signingAddress)} which is not in this wallet.`);
-      await sendToBackground({ type: 'WC_CLEAR_PENDING' });
-      return;
+  try {
+    if (signingAddress && signingAddress !== state.activeAccount) {
+      const accounts = getAllAccounts();
+      const acct = accounts.find(a => a.address === signingAddress);
+      if (acct) {
+        await activateAccount(signingAddress);
+      } else {
+        await respondWc(topic, id, null, { code: 5000, message: `Account ${signingAddress} is not in this wallet.` });
+        await sendToBackground({ type: 'WC_CLEAR_PENDING' });
+        showView('wallet');
+        showAlert('wc-error', `Incoming request requires account ${truncAddr(signingAddress)} which is not in this wallet.`);
+        return;
+      }
     }
+
+    const method = pending.params?.request?.method;
+    if (state.devSettings.printWC) console.log('[wc] request displayed to user — method:', method, 'id:', id, 'topic:', topic, 'signatureTarget:', signatureTarget ?? 'none');
+    state.pendingRequest = { topic, id, params: pending.params };
+    renderTransactionView(pending);
+    showView('transaction');
+  } catch (err) {
+    await respondWc(topic, id, null, { code: 5000, message: err.message ?? 'Failed to display request.' });
+    await sendToBackground({ type: 'WC_CLEAR_PENDING' });
   }
-
-  state.pendingRequest = {
-    topic:  pending.topic,
-    id:     pending.id,
-    params: pending.params,
-  };
-
-  renderTransactionView(pending);
-  showView('transaction');
 }
 
 function renderTransactionView(pending) {
@@ -4578,10 +4916,16 @@ function renderTransactionView(pending) {
 
   const warnings = [];
   if (signOnly) warnings.push('Sign only — this transaction will not be submitted to the ledger.');
-  if (signatureTarget) warnings.push(`Signing as: ${esc(resolveAddrDisplay(signatureTarget))} (${esc(truncAddr(signatureTarget))})`);
+  if (signatureTarget) {
+    const signerAddr = txJson[signatureTarget];
+    const label = signerAddr
+      ? `${esc(resolveAddrDisplay(signerAddr))} (${esc(truncAddr(signerAddr))})`
+      : esc(signatureTarget);
+    warnings.push(`Signing as: ${label} — result placed in <strong>${esc(signatureTarget+"Signature")}</strong>.`);
+  }
 
   if (warnings.length) {
-    showAlert('tx-warning', warnings.join('<br>'));
+    _showAlertTrustedHtml('tx-warning', warnings.join('<br>'));
   } else {
     hideAlert('tx-warning');
   }
@@ -4589,6 +4933,21 @@ function renderTransactionView(pending) {
   $('tx-raw-json').textContent = JSON.stringify(txJson, null, 2);
   $('tx-raw-json').classList.add('hidden');
   $('toggle-raw-btn').textContent = '▶ View raw JSON';
+}
+
+// Keys rendered explicitly by buildTxRows — excluded from the generic catch-all.
+// SigningPubKey and TxnSignature are omitted because they are blank pre-signing.
+const _TX_HANDLED_KEYS = new Set([
+  'TransactionType', 'Account', 'Destination', 'DestinationTag',
+  'Amount', 'SendMax', 'TakerGets', 'TakerPays',
+  'NFTokenID', 'Fee', 'Memos',
+  'SigningPubKey', 'TxnSignature',
+]);
+
+function _fmtGenericTxValue(value) {
+  if (value === null || value === undefined) return '—';
+  const str = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  return str.length > 120 ? str.slice(0, 120) + '…' : str;
 }
 
 function buildTxRows(txJson) {
@@ -4627,6 +4986,14 @@ function buildTxRows(txJson) {
     rows.push(row('Memo', esc(memoText)));
   }
 
+  // Catch-all: render every field the dApp sent that is not already shown above.
+  // This ensures fields like SignerEntries, LimitAmount, Paths, Flags, TransferFee,
+  // OfferSequence, etc. are always visible — a malicious dApp cannot hide them.
+  for (const [key, value] of Object.entries(txJson)) {
+    if (_TX_HANDLED_KEYS.has(key)) continue;
+    rows.push(row(esc(key), `<span title="${esc(JSON.stringify(value))}">${esc(_fmtGenericTxValue(value))}</span>`, 'tx-extra'));
+  }
+
   return rows.join('');
 }
 
@@ -4646,35 +5013,47 @@ async function approveTransaction() {
   setTxStatus('pending', 'Preparing transaction…');
 
   try {
-    await ensureConnected();
-
-    setTxStatus('pending', 'Autofilling network fields…');
-    const prepared = await state.client.autofill(txJson);
-
-    setTxStatus('pending', 'Signing…');
-    if (state.devSettings.printTxJson) console.log('[tx json]', prepared);
-    const { tx_blob, hash } = await signPreparedTx(prepared, signatureTarget);
-
-    if (signOnly || signatureTarget) {
-      setTxStatus('success', 'Transaction signed!', hash);
-      await respondWc(topic, id, { tx_blob, hash });
+    if (signatureTarget) {
+      // xrpl_signTransactionFor: tx is already fully prepared by the primary
+      // party — no network connection or autofill needed.
+      setTxStatus('pending', 'Signing…');
+      if (state.devSettings.printTxJson) console.log('[tx json before signing]', txJson);
+      const signResult = await signPreparedTx(txJson, signatureTarget);
+      if (state.devSettings.printTxJson) console.log('[tx json after signing]', { ...signResult.tx_json, TxnSignature: '[redacted]' });
+      setTxStatus('success', 'Transaction signed!');
+      await respondWc(topic, id, { tx_json: signResult.tx_json });
     } else {
-      setTxStatus('pending', 'Submitting to XRPL…');
-      const response = await state.client.submitAndWait(tx_blob);
+      await ensureConnected();
 
-      const txResult = response.result?.meta?.TransactionResult;
-      if (txResult !== 'tesSUCCESS') throw new Error(`Transaction failed on ledger: ${txResult}`);
+      setTxStatus('pending', 'Autofilling network fields…');
+      const prepared = await state.client.autofill(txJson);
 
-      setTxStatus('success', 'Transaction validated!', hash);
-      await respondWc(topic, id, { tx_json: response.result, tx_blob, hash });
+      setTxStatus('pending', 'Signing…');
+      if (state.devSettings.printTxJson) console.log('[tx json before signing]', prepared);
+      const { tx_blob, hash } = await signPreparedTx(prepared, null);
+      if (state.devSettings.printTxJson) console.log('[tx json after signing]', { tx_blob: '[redacted]', hash });
 
-      refreshBalance();
-      loadIouBalances();
-      loadMptBalances();
-      loadCredentials();
-      loadLendingPositions();
-      loadPermissionedDomains();
-      loadTxHistory();
+      if (signOnly) {
+        setTxStatus('success', 'Transaction signed!', hash);
+        await respondWc(topic, id, { tx_blob, hash });
+      } else {
+        setTxStatus('pending', 'Submitting to XRPL…');
+        const response = await state.client.submitAndWait(tx_blob);
+
+        const txResult = response.result?.meta?.TransactionResult;
+        if (txResult !== 'tesSUCCESS') throw new Error(`Transaction failed on ledger: ${txResult}`);
+
+        setTxStatus('success', 'Transaction validated!', hash);
+        await respondWc(topic, id, { tx_json: response.result, tx_blob, hash });
+
+        refreshBalance();
+        loadIouBalances();
+        loadMptBalances();
+        loadCredentials();
+        loadLendingPositions();
+        loadPermissionedDomains();
+        loadTxHistory();
+      }
     }
 
     state.pendingRequest = null;
@@ -4701,9 +5080,10 @@ async function respondWc(topic, id, result, error) {
     const response = error
       ? { id, jsonrpc: '2.0', error }
       : { id, jsonrpc: '2.0', result };
+    if (state.devSettings.printWC) console.log('[wc] sending response — id:', id, 'topic:', topic, error ? 'error:' : 'result:', error ?? result);
     await sendToBackground({ type: 'WC_RESPOND', topic, response });
-  } catch {
-    // response delivery failure is non-fatal; tx result already shown in UI
+  } catch (err) {
+    console.error('[respondWc] failed to deliver WC response:', err);
   }
 }
 
@@ -4736,32 +5116,50 @@ async function updateSessionsUI(sessions) {
   }
 
   dot.className = 'wc-status-dot wc-connected';
-  listEl.innerHTML = keys.map(topic => {
+  listEl.innerHTML = '';
+
+  for (const topic of keys) {
     const s    = sessions[topic];
     const meta = s.peer.metadata;
-    const iconHtml = meta.icons?.[0]
-      ? `<img class="session-icon" src="${esc(meta.icons[0])}" alt="${esc(meta.name)}" />`
-      : `<span class="session-icon-placeholder">🌐</span>`;
+    const rawIcon = meta.icons?.[0];
 
-    return `
-      <div class="session-item">
-        <div class="session-app">
-          ${iconHtml}
-          <div class="session-info">
-            <div class="session-name">${esc(meta.name)}</div>
-            <div class="session-url">${esc(meta.url)}</div>
-          </div>
-        </div>
-        <button class="btn-disconnect" data-topic="${esc(topic)}" title="Disconnect">✕</button>
-      </div>`;
-  }).join('');
+    const item = document.createElement('div');
+    item.className = 'session-item';
 
-  listEl.querySelectorAll('.btn-disconnect').forEach(btn => {
-    btn.addEventListener('click', () => disconnectSession(btn.dataset.topic));
-  });
-  listEl.querySelectorAll('img.session-icon').forEach(img => {
-    img.addEventListener('error', () => { img.style.display = 'none'; });
-  });
+    const appDiv = document.createElement('div');
+    appDiv.className = 'session-app';
+
+    if (rawIcon && isSafeIconUrl(rawIcon)) {
+      const img = document.createElement('img');
+      img.className = 'session-icon';
+      img.setAttribute('src', rawIcon);
+      img.setAttribute('alt', meta.name);
+      img.addEventListener('error', () => { img.style.display = 'none'; });
+      appDiv.appendChild(img);
+    } else {
+      const placeholder = document.createElement('span');
+      placeholder.className = 'session-icon-placeholder';
+      placeholder.textContent = '🌐';
+      appDiv.appendChild(placeholder);
+    }
+
+    const infoDiv = document.createElement('div');
+    infoDiv.className = 'session-info';
+    infoDiv.innerHTML = `
+      <div class="session-name">${esc(meta.name)}</div>
+      <div class="session-url">${esc(meta.url)}</div>`;
+    appDiv.appendChild(infoDiv);
+
+    const btn = document.createElement('button');
+    btn.className = 'btn-disconnect';
+    btn.title = 'Disconnect';
+    btn.textContent = '✕';
+    btn.addEventListener('click', () => disconnectSession(topic));
+
+    item.appendChild(appDiv);
+    item.appendChild(btn);
+    listEl.appendChild(item);
+  }
 }
 
 async function disconnectSession(topic) {
@@ -4802,7 +5200,7 @@ function setTxStatus(type, message, hash) {
     if (hash) {
       const explorer = getNetworkConfig().explorer;
       $('tx-hash-link').textContent = `${hash.slice(0, 10)}…${hash.slice(-10)}`;
-      $('tx-hash-link').href        = `${explorer}${hash}`;
+      safeSetHref($('tx-hash-link'), `${explorer}${hash}`);
       hashContainer.classList.remove('hidden');
     }
   } else if (type === 'error') {
@@ -5194,7 +5592,7 @@ async function submitRawTx() {
     if (hash && net.explorer) {
       $('tx-hash-container').classList.remove('hidden');
       $('tx-hash-link').textContent = hash;
-      $('tx-hash-link').href = `${net.explorer}${hash}`;
+      safeSetHref($('tx-hash-link'), `${net.explorer}${hash}`);
     }
     $('tx-done-btn').classList.remove('hidden');
   } catch (e) {
@@ -5216,6 +5614,8 @@ $('raw-tx-submit-btn').addEventListener('click', () => {
 
 let _pastedDestination = null;
 let _dragSrcAddress    = null;
+let _pendingGenSeed    = null; // replaces dataset.seed — never written to the DOM
+let _pendingGenAddress = null;
 
 $('send-manual-address').addEventListener('paste', (e) => {
   // Capture what was actually pasted so we can flag it on the review screen.
@@ -5290,9 +5690,9 @@ async function connectLedgerDevice() {
     state.activeAccount = result.address;
     state.wallet        = null;
 
-    const usedPassword = await saveVault(state._setupFlowPassword ?? undefined);
+    await saveVault(state._setupFlowPassword ?? undefined);
     state._setupFlowPassword = null;
-    await persistSession(usedPassword);
+    await persistSession();
 
     // Register with active project
     await ensureProjectsInitialized();
@@ -5348,10 +5748,13 @@ $('ledger-cancel-btn').addEventListener('click', () => {
 // EVENT LISTENERS — Generated seed view
 // ─────────────────────────────────────────────
 
-$('back-from-gen-seed-btn').addEventListener('click', () => showView('account-type'));
+$('back-from-gen-seed-btn').addEventListener('click', () => {
+  _pendingGenSeed    = null;
+  _pendingGenAddress = null;
+  showView('account-type');
+});
 $('copy-gen-seed-btn').addEventListener('click', async () => {
-  const seed = $('generated-seed-text').dataset.seed;
-  if (seed) await navigator.clipboard.writeText(seed).catch(() => {});
+  if (_pendingGenSeed) await navigator.clipboard.writeText(_pendingGenSeed).catch(() => {});
 });
 $('gen-seed-confirm-btn').addEventListener('click', confirmGenSeed);
 
@@ -5432,6 +5835,9 @@ $('reset-wallet-btn').addEventListener('click', resetWallet);
 // ─────────────────────────────────────────────
 
 $('lock-btn').addEventListener('click', lockWallet);
+$('wc-shortcut-btn').addEventListener('click', () => {
+  $('wc-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
 $('settings-btn').addEventListener('click', () => showView('settings'));
 $('back-from-settings-btn').addEventListener('click', () => showView('wallet'));
 $('settings-about-btn').addEventListener('click', () => {
@@ -5963,8 +6369,12 @@ function handleBackupFile(file) {
 async function confirmRestoreBackup() {
   if (!_pendingRestoreData) return;
   try {
+    const RESTORE_KEYS = new Set(['vault', 'projects', 'activeProjectId', 'devSettings', 'networkSettings']);
+    const filtered = Object.fromEntries(
+      Object.entries(_pendingRestoreData).filter(([k]) => RESTORE_KEYS.has(k) || k.startsWith('addressBook_'))
+    );
     await chrome.storage.local.clear();
-    await chrome.storage.local.set(_pendingRestoreData);
+    await chrome.storage.local.set(filtered);
     await chrome.storage.session.clear();
     _pendingRestoreData = null;
     // Reload dev settings and projects from the restored data.
@@ -6023,10 +6433,12 @@ async function downloadProjectBackup() {
     })
     .filter(Boolean);
 
-  const { vaultPassword } = await chrome.storage.session.get('vaultPassword');
-  if (!vaultPassword) { alert('Session expired — please unlock the wallet first.'); return; }
-
-  const projVault = await encryptVault(vaultPassword, { keyrings: filteredKeyrings });
+  if (!_vaultKey) { alert('Session expired — please unlock the wallet first.'); return; }
+  const { vault: mainVault } = await chrome.storage.local.get('vault');
+  if (!mainVault) { alert('No vault found.'); return; }
+  // Encrypt using the current session key + main vault salt so the backup is
+  // decryptable with the same wallet password that can decrypt the main vault.
+  const projVault = await encryptVaultWithKey(_vaultKey, b64ToBuf(mainVault.salt), { keyrings: filteredKeyrings });
 
   // Per-project address book
   const abKey = `addressBook_${proj.id}`;
@@ -6119,9 +6531,7 @@ async function confirmImportProject() {
       throw new Error('Wrong password — could not decrypt the backup.');
     }
 
-    // Re-encrypt the merged keyrings with the current session password.
-    const { vaultPassword } = await chrome.storage.session.get('vaultPassword');
-    if (!vaultPassword) throw new Error('Session expired — please unlock the wallet first.');
+    if (!_vaultKey) throw new Error('Session expired — please unlock the wallet first.');
 
     // Merge keyrings: add any that aren't already present.
     const mergedKeyrings = [...state.keyrings];
@@ -6147,8 +6557,8 @@ async function confirmImportProject() {
     // Persist merged keyrings to vault and update the session so that the
     // imported accounts are visible immediately if the popup is reopened.
     state.keyrings = mergedKeyrings;
-    await saveVault(vaultPassword);
-    await persistSession(vaultPassword);
+    await saveVault();
+    await persistSession();
 
     // Add the project — generate a new ID to avoid clashing with existing projects.
     const srcProj   = _pendingProjectData.project;
@@ -6254,8 +6664,10 @@ async function loadDevSettings() {
     state.network       = networkSettings.network       ?? state.network;
     state.manualNetwork = networkSettings.manualNetwork ?? state.manualNetwork;
   }
-  $('dev-print-tx-json').checked = state.devSettings.printTxJson;
-  $('lock-timeout-secs').value   = state.devSettings.lockTimeoutSecs;
+  $('dev-print-tx-json').checked    = state.devSettings.printTxJson;
+  $('dev-print-wc').checked         = state.devSettings.printWC;
+  $('iou-decimal-precision').value  = state.devSettings.iouDecimalPrecision;
+  $('lock-timeout-secs').value      = state.devSettings.lockTimeoutSecs;
   applyWideMode();
   populateNetworkSelector();
 }
@@ -6304,10 +6716,43 @@ $('dev-print-tx-json').addEventListener('change', async (e) => {
   await saveDevSettings();
 });
 
+$('dev-print-wc').addEventListener('change', async (e) => {
+  state.devSettings.printWC = e.target.checked;
+  await saveDevSettings();
+});
+
+$('iou-decimal-precision').addEventListener('change', async (e) => {
+  const val = parseInt(e.target.value, 10);
+  state.devSettings.iouDecimalPrecision = isNaN(val) || val < 0 ? 6 : Math.min(val, 20);
+  e.target.value = state.devSettings.iouDecimalPrecision;
+  await saveDevSettings();
+  loadIouBalances();
+  loadMptBalances();
+  loadLendingPositions();
+});
+
 $('lock-timeout-secs').addEventListener('change', async (e) => {
   const val = parseInt(e.target.value, 10);
-  state.devSettings.lockTimeoutSecs = isNaN(val) || val < 0 ? 10 : val;
-  e.target.value = state.devSettings.lockTimeoutSecs;
+  const resolved = isNaN(val) || val < 0 ? 0 : val;
+
+  if (resolved !== 0 && state.devSettings.lockTimeoutSecs === 0) {
+    const confirmed = confirm(
+      'Security warning\n\n' +
+      'Setting a non-zero lock timeout stores your vault password in browser session storage so the ' +
+      'wallet can auto-restore across popup opens.\n\n' +
+      'Session storage is cleared when the browser is closed, but it is readable by any code running ' +
+      'in this extension — including a compromised extension update.\n\n' +
+      'For any wallet holding real value, keep this set to 0 (password never stored).\n\n' +
+      'Continue with non-zero timeout?',
+    );
+    if (!confirmed) {
+      e.target.value = state.devSettings.lockTimeoutSecs;
+      return;
+    }
+  }
+
+  state.devSettings.lockTimeoutSecs = resolved;
+  e.target.value = resolved;
   await saveDevSettings();
 });
 
@@ -6341,6 +6786,13 @@ $('network-select').addEventListener('change', async (e) => {
 $('network-manual-apply-btn').addEventListener('click', async () => {
   const ws = $('network-manual-ws').value.trim();
   if (!ws) { alert('Please enter a WebSocket URL.'); return; }
+  try {
+    const parsed = new URL(ws);
+    if (parsed.protocol !== 'wss:' && parsed.protocol !== 'ws:') throw new Error();
+  } catch {
+    alert('Invalid URL — must start with wss:// or ws://');
+    return;
+  }
   maybeApplyNetworkChange('manual', { wsUrl: ws });
 });
 
@@ -6441,6 +6893,7 @@ $('mainnet-warning-reject-btn').addEventListener('click', () => {
 
     // Vault exists but session expired → ask for password
     showView('unlock');
+    checkUnlockLockout().catch(() => {});
 
   } catch (err) {
     // Last-resort fallback: something went very wrong — show unlock if vault
@@ -6450,6 +6903,7 @@ $('mainnet-warning-reject-btn').addEventListener('click', () => {
       const vaultExists = await hasVault();
       if (vaultExists) {
         showView('unlock');
+        checkUnlockLockout().catch(() => {});
       } else {
         showView('setup-password');
       }

@@ -3,7 +3,7 @@
   "name": "XRPL Dev Wallet",
   "version": "1.0.0",
   "description": "XRPL wallet with WalletConnect support — sign, submit, and monitor transactions",
-  "permissions": ["storage", "notifications", "clipboardWrite"],
+  "permissions": ["storage", "notifications", "clipboardWrite", "tabs"],
   "host_permissions": [
     "wss://s.devnet.rippletest.net/*",
     "wss://s.altnet.rippletest.net/*",
@@ -35,6 +35,6 @@
     "128": "icons/icon128.png"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'"
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' https: data:;"
   }
 }

@@ -390,7 +390,7 @@
   <div id="view-raw-tx" class="view hidden">
     <div class="view-header">
       <button id="back-from-raw-tx-btn" class="btn-back">‹</button>
-      <h2>Raw Transaction</h2>
+      <h2>Raw Transaction Builder</h2>
     </div>
     <div class="form-group">
       <label for="raw-tx-input">Transaction JSON</label>
@@ -485,6 +485,12 @@
       </div>
       <div class="header-actions">
         <button id="refresh-balance-btn" class="btn-icon" title="Refresh balance">↻</button>
+        <button id="wc-shortcut-btn" class="btn-icon" title="WalletConnect">
+          <svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle cx="16" cy="16" r="16" fill="#3396FF"/>
+            <path d="M9.58 12.36c3.54-3.47 9.28-3.47 12.82 0l.43.42a.44.44 0 0 1 0 .63l-1.47 1.44a.23.23 0 0 1-.32 0l-.59-.57a6.48 6.48 0 0 0-9.04 0l-.63.62a.23.23 0 0 1-.32 0l-1.47-1.44a.44.44 0 0 1 0-.63l.59-.47zm15.84 2.95 1.31 1.28a.44.44 0 0 1 0 .63l-5.9 5.78a.46.46 0 0 1-.64 0l-4.18-4.1a.12.12 0 0 0-.16 0l-4.18 4.1a.46.46 0 0 1-.64 0l-5.9-5.78a.44.44 0 0 1 0-.63l1.31-1.28a.46.46 0 0 1 .64 0l4.18 4.1c.04.04.12.04.16 0l4.18-4.1a.46.46 0 0 1 .64 0l4.18 4.1c.04.04.12.04.16 0l4.18-4.1a.46.46 0 0 1 .64 0z" fill="white"/>
+          </svg>
+        </button>
         <button id="raw-tx-btn" class="btn-icon" title="Raw transaction builder">{ }</button>
         <button id="wide-mode-btn" class="btn-icon" title="Toggle wide mode">⤢</button>
         <button id="settings-btn" class="btn-icon" title="Settings">⚙</button>
@@ -607,7 +613,7 @@
     </div>
 
     <!-- WalletConnect section -->
-    <div class="section">
+    <div class="section" id="wc-section">
       <div class="section-header">
         <span class="section-title">WalletConnect</span>
         <span id="wc-status" class="wc-status-dot wc-disconnected"></span>
@@ -651,7 +657,7 @@
 
     <div class="permissions-box">
       <div class="permissions-title">This app is requesting permission to:</div>
-      <ul class="permissions-list">
+      <ul class="permissions-list" id="proposal-permissions-list">
         <li>View your account address</li>
         <li>Request transaction signatures</li>
       </ul>
@@ -768,6 +774,16 @@
       </div>
     </div>
 
+    <div class="settings-section-header">Display</div>
+    <div class="settings-list">
+      <div class="settings-item settings-input-item">
+        <span class="settings-item-label">IOU Display Decimal Precision</span>
+        <div class="settings-item-input-wrap">
+          <input type="number" id="iou-decimal-precision" min="0" max="20" step="1" />
+        </div>
+      </div>
+    </div>
+
     <div class="settings-section-header">Backup &amp; Recovery</div>
     <div class="settings-list">
       <button id="settings-backup-btn" class="settings-item">
@@ -790,9 +806,13 @@
         <span class="settings-item-label">Lock timeout</span>
         <div class="settings-item-input-wrap">
           <input type="number" id="lock-timeout-secs" min="0" max="86400" step="1" />
-          <span class="settings-item-unit">seconds (0 = never)</span>
+          <span class="settings-item-unit">seconds</span>
         </div>
       </div>
+      <p class="form-hint" style="padding: 0 14px 10px; margin: 0;">
+        0 is the safest option — the password is never stored in session storage and must be re-entered each time the popup opens.
+        Any non-zero value stores the password in session storage to allow auto-restore, which is a potential vulnerability.
+      </p>
     </div>
 
     <div class="settings-section-header">Danger Zone</div>
@@ -812,6 +832,17 @@
           <span class="toggle-slider"></span>
         </label>
       </div>
+      <div class="settings-item settings-toggle-item">
+        <span class="settings-item-label">Print WalletConnect logs</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="dev-print-wc" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <p class="form-hint" style="padding: 0 14px 10px; margin: 0;">
+        Printing to the browser console exposes signed transaction data to any other extension that can read DevTools output.
+        Not recommended for mainnet or any wallet holding real value.
+      </p>
     </div>
   </div>
 
@@ -1208,7 +1239,7 @@
       </div>
     </div>
     <div id="send-review-paste-warn" class="alert alert-warn hidden" style="margin-top:10px">
-      ⚠ Destination was pasted from clipboard — verify this address is correct before sending.
+      ⚠ Always verify the destination address is correct before sending.
     </div>
 
     <details id="review-json-details" class="review-json-panel">
@@ -1367,6 +1398,8 @@
       <button id="back-from-loan-pay-btn" class="btn-back">‹</button>
       <h2>Loan Repayment</h2>
     </div>
+
+    <div id="loan-pay-asset-balance" class="detail-card" style="margin-bottom:10px"></div>
 
     <div id="loan-pay-details" class="detail-card"></div>
 
