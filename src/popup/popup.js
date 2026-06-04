@@ -5547,8 +5547,114 @@ $('account-info-refresh-btn').addEventListener('click', () => {
 // MULTISIGN
 // ─────────────────────────────────────────────
 
+let msSignerList        = null;   // fetched SignerList object, or null if none
+let msMasterKeyDisabled = false;
+let msFormState         = { quorum: '', signers: [{ address: '', weight: 1 }] };
+let msFormVisible       = false;  // setup form open in no-setup state
+let msUpdateMode        = false;  // true when editing existing signer list
+let msPickerTargetIdx   = -1;     // signer row index the picker is filling
+
 function openMultisignView() {
+  msSignerList        = null;
+  msMasterKeyDisabled = false;
+  msFormState         = { quorum: '', signers: [{ address: '', weight: 1 }] };
+  msFormVisible       = false;
+  msUpdateMode        = false;
   showView('multisign');
+  loadMultisignData();
+}
+
+async function loadMultisignData() {
+  $('ms-loading').classList.remove('hidden');
+  $('ms-load-error').classList.add('hidden');
+  $('ms-no-setup-card').classList.add('hidden');
+  $('ms-configured-card').classList.add('hidden');
+  $('ms-form-card').classList.add('hidden');
+  $('ms-master-key-card').classList.add('hidden');
+
+  try {
+    await ensureConnected();
+    const [objResp, infoResp] = await Promise.all([
+      state.client.request({
+        command: 'account_objects',
+        account: state.activeAccount,
+        ledger_index: 'validated',
+      }),
+      state.client.request({
+        command: 'account_info',
+        account: state.activeAccount,
+        ledger_index: 'validated',
+      }),
+    ]);
+
+    const objects = objResp.result.account_objects ?? [];
+    msSignerList = objects.find(o => o.LedgerEntryType === 'SignerList') ?? null;
+
+    const flags = infoResp.result.account_data?.Flags ?? 0;
+    msMasterKeyDisabled = !!(flags & 0x00100000);
+
+    await refreshAddressNames();
+    $('ms-loading').classList.add('hidden');
+    renderMultisignScreen();
+  } catch (err) {
+    $('ms-loading').classList.add('hidden');
+    showAlert('ms-load-error', `Failed to load: ${err.message}`);
+  }
+}
+
+function renderMultisignScreen() {
+  // ── SignerList card ──
+  if (msUpdateMode) {
+    $('ms-no-setup-card').classList.add('hidden');
+    $('ms-configured-card').classList.add('hidden');
+    $('ms-form-title').textContent = 'Update Signers';
+    $('ms-form-cancel-btn').classList.remove('hidden');
+    $('ms-form-card').classList.remove('hidden');
+  } else if (msSignerList) {
+    $('ms-no-setup-card').classList.add('hidden');
+    $('ms-form-cancel-btn').classList.add('hidden');
+    $('ms-form-card').classList.add('hidden');
+    renderSignerListSummary();
+    $('ms-configured-card').classList.remove('hidden');
+  } else {
+    $('ms-configured-card').classList.add('hidden');
+    $('ms-form-title').textContent = 'Configure Signers';
+    $('ms-form-cancel-btn').classList.add('hidden');
+    $('ms-setup-toggle-btn').textContent = msFormVisible ? '▲ Hide Setup' : 'Setup Multisig';
+    $('ms-form-card').classList.toggle('hidden', !msFormVisible);
+    $('ms-no-setup-card').classList.remove('hidden');
+  }
+  renderMsSignerRows();
+
+  // ── Master Key card ──
+  const dot  = $('ms-master-status-dot');
+  const text = $('ms-master-status-text');
+  const btn  = $('ms-master-key-btn');
+  dot.className   = `ms-status-dot ${msMasterKeyDisabled ? 'disabled' : 'active'}`;
+  text.textContent = msMasterKeyDisabled
+    ? 'Master key is disabled'
+    : 'Master key is active';
+  btn.textContent = msMasterKeyDisabled ? 'Re-enable Master Key' : 'Disable Master Key';
+  btn.className   = `btn btn-full ms-master-key-btn ${msMasterKeyDisabled ? 'reenable' : 'danger'}`;
+  $('ms-master-key-card').classList.remove('hidden');
+}
+
+function renderSignerListSummary() {
+  $('ms-quorum-display').textContent = msSignerList.SignerQuorum ?? '—';
+  const entries = msSignerList.SignerEntries ?? [];
+  $('ms-signer-list-display').innerHTML = entries.map(e => {
+    const addr    = e.SignerEntry.Account;
+    const weight  = e.SignerEntry.SignerWeight;
+    const display = esc(resolveAddrDisplay(addr));
+    const addrEsc = esc(addr);
+    return `<div class="ms-signer-item">
+      <div>
+        <div class="ms-signer-name">${display}</div>
+        <div class="ms-signer-addr">${addrEsc}</div>
+      </div>
+      <div class="ms-signer-weight-badge">w: ${weight}</div>
+    </div>`;
+  }).join('');
 }
 
 // ─────────────────────────────────────────────
@@ -6835,6 +6941,39 @@ $('mainnet-warning-reject-btn').addEventListener('click', () => {
 
 $('multisign-nav-card').addEventListener('click', openMultisignView);
 $('multisign-back-btn').addEventListener('click', () => showView('wallet'));
+
+$('ms-update-btn').addEventListener('click', () => {
+  const entries = msSignerList?.SignerEntries ?? [];
+  msFormState = {
+    quorum: String(msSignerList?.SignerQuorum ?? ''),
+    signers: entries.map(e => ({
+      address: e.SignerEntry.Account,
+      weight:  e.SignerEntry.SignerWeight,
+    })),
+  };
+  if (msFormState.signers.length === 0) {
+    msFormState.signers = [{ address: '', weight: 1 }];
+  }
+  msUpdateMode = true;
+  $('ms-quorum-input').value = msFormState.quorum;
+  renderMultisignScreen();
+});
+
+$('ms-setup-toggle-btn').addEventListener('click', () => {
+  msFormVisible = !msFormVisible;
+  renderMultisignScreen();
+});
+
+$('ms-form-cancel-btn').addEventListener('click', () => {
+  msUpdateMode = false;
+  msFormState  = { quorum: '', signers: [{ address: '', weight: 1 }] };
+  renderMultisignScreen();
+});
+
+$('ms-quorum-input').addEventListener('input', e => {
+  msFormState.quorum = e.target.value;
+  updateMsQuorumWarning();
+});
 
 // ─────────────────────────────────────────────
 // BOOT
