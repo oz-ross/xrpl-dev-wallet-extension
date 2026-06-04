@@ -1489,6 +1489,77 @@
     <button id="multisign-back-btn" class="btn-back">‹</button>
     <h2>Multisign</h2>
   </div>
+
+  <div id="ms-loading" class="ms-loading hidden">Loading…</div>
+  <div id="ms-load-error" class="alert alert-error hidden"></div>
+
+  <!-- ── Signer List card ── -->
+  <!-- No-setup state -->
+  <div id="ms-no-setup-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">Signer List</div>
+    <p id="ms-no-setup-msg" class="ms-empty-msg">No Multisig Setup</p>
+    <button id="ms-setup-toggle-btn" class="btn btn-outline btn-full" style="margin-top:10px">
+      Setup Multisig
+    </button>
+  </div>
+
+  <!-- Configured state summary -->
+  <div id="ms-configured-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">
+      <span>Signer List</span>
+      <button id="ms-update-btn" class="btn btn-ghost btn-sm">Update</button>
+    </div>
+    <div class="ms-quorum-row">
+      <span class="ms-quorum-label">Quorum Threshold</span>
+      <span id="ms-quorum-display" class="ms-quorum-value">—</span>
+    </div>
+    <div id="ms-signer-list-display"></div>
+  </div>
+
+  <!-- Configure / Update form -->
+  <div id="ms-form-card" class="iou-balance-card ms-form-card hidden">
+    <div class="iou-balance-header">
+      <span id="ms-form-title">Configure Signers</span>
+      <button id="ms-form-cancel-btn" class="btn btn-ghost btn-sm hidden">Cancel</button>
+    </div>
+
+    <div class="ms-field-row">
+      <label class="ms-field-label" for="ms-quorum-input">Quorum Threshold</label>
+      <input id="ms-quorum-input" class="ms-quorum-input input-field" type="number" min="1" step="1" placeholder="e.g. 2" />
+    </div>
+
+    <div class="ms-field-label" style="margin-bottom:6px">Signers</div>
+    <div id="ms-signer-rows"></div>
+
+    <button id="ms-add-signer-btn" class="ms-add-signer-btn">+ Add Signer</button>
+    <div id="ms-form-error" class="alert alert-error hidden" style="margin-bottom:8px"></div>
+    <div id="ms-quorum-warn" class="alert alert-warn hidden" style="margin-bottom:8px">
+      ⚠ Sum of signer weights is less than quorum threshold.
+    </div>
+    <button id="ms-submit-btn" class="btn btn-primary btn-full">Submit</button>
+  </div>
+
+  <!-- ── Master Key card ── -->
+  <div id="ms-master-key-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">Master Key</div>
+    <div class="ms-master-status-row">
+      <span id="ms-master-status-dot" class="ms-status-dot"></span>
+      <span id="ms-master-status-text" class="ms-status-text"></span>
+    </div>
+    <button id="ms-master-key-btn" class="btn btn-full ms-master-key-btn">…</button>
+  </div>
+</div>
+
+<!-- ===== MULTISIGN PICKER MODAL ===== -->
+<div id="ms-picker-modal" class="ms-picker-modal hidden">
+  <div class="ms-picker-card">
+    <div class="ms-picker-header">
+      <span class="ms-picker-title">Select Address</span>
+      <button id="ms-picker-close-btn" class="btn-icon">✕</button>
+    </div>
+    <input id="ms-picker-filter" class="input-field ms-picker-filter" type="text" placeholder="Filter by name or address…" />
+    <div id="ms-picker-list" class="ms-picker-list"></div>
+  </div>
 </div>
 
 </body>
