@@ -1847,6 +1847,7 @@ function updateWalletUI() {
   $('switcher-addr').textContent  = truncAddr(addr);
 
   renderAccountDropdown(accounts, addr);
+  $('multisign-nav-card').classList.toggle('hidden', !state.devSettings.multisignEnabled);
 }
 
 function renderAccountDropdown(accounts, activeAddr) {
@@ -5543,6 +5544,14 @@ $('account-info-refresh-btn').addEventListener('click', () => {
 });
 
 // ─────────────────────────────────────────────
+// MULTISIGN
+// ─────────────────────────────────────────────
+
+function openMultisignView() {
+  showView('multisign');
+}
+
+// ─────────────────────────────────────────────
 // RAW TRANSACTION BUILDER
 // ─────────────────────────────────────────────
 
@@ -6823,6 +6832,9 @@ $('mainnet-warning-reject-btn').addEventListener('click', () => {
   populateNetworkSelector();
   showView('settings');
 });
+
+$('multisign-nav-card').addEventListener('click', openMultisignView);
+$('multisign-back-btn').addEventListener('click', () => showView('wallet'));
 
 // ─────────────────────────────────────────────
 // BOOT

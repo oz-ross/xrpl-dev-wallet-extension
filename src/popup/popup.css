@@ -2672,3 +2672,8 @@ details[open] .review-json-summary::before {
   max-width: 200px;
   width: 100%;
 }
+
+/* ===== MULTISIGN ===== */
+.multisign-nav-card { cursor: pointer; user-select: none; }
+.multisign-nav-card:hover { border-color: var(--accent); }
+.multisign-nav-chevron { font-size: 16px; color: var(--text-3); }
