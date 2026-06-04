@@ -5657,6 +5657,118 @@ function renderSignerListSummary() {
   }).join('');
 }
 
+async function openMsPickerModal(signerIdx) {
+  msPickerTargetIdx = signerIdx;
+  $('ms-picker-filter').value = '';
+
+  const accounts = getProjectAccounts();
+  const contacts = await loadAddressBook();
+
+  // Combine, deduplicate by address
+  const seen  = new Set();
+  const items = [];
+  for (const a of accounts) {
+    if (!seen.has(a.address)) {
+      seen.add(a.address);
+      items.push({ name: a.label, address: a.address });
+    }
+  }
+  for (const c of contacts) {
+    if (!seen.has(c.address)) {
+      seen.add(c.address);
+      items.push({ name: c.name, address: c.address });
+    }
+  }
+
+  const renderPickerList = (filter) => {
+    const lower    = filter.toLowerCase();
+    const filtered = items.filter(i =>
+      i.name.toLowerCase().includes(lower) || i.address.toLowerCase().includes(lower)
+    );
+    $('ms-picker-list').innerHTML = filtered.map(i => `
+      <div class="ms-picker-item" data-address="${esc(i.address)}">
+        <div class="ms-picker-item-name">${esc(i.name)}</div>
+        <div class="ms-picker-item-addr">${esc(i.address)}</div>
+      </div>`).join('') || '<div style="padding:10px;color:var(--text-3);font-size:12px">No matches</div>';
+
+    $('ms-picker-list').querySelectorAll('.ms-picker-item').forEach(el => {
+      el.addEventListener('click', () => {
+        msFormState.signers[msPickerTargetIdx].address = el.dataset.address;
+        closeMsPickerModal();
+        renderMsSignerRows();
+      });
+    });
+  };
+
+  renderPickerList('');
+  $('ms-picker-filter').oninput = e => renderPickerList(e.target.value);
+  $('ms-picker-modal').classList.remove('hidden');
+  $('ms-picker-filter').focus();
+}
+
+function closeMsPickerModal() {
+  $('ms-picker-modal').classList.add('hidden');
+  msPickerTargetIdx = -1;
+}
+
+function renderMsSignerRows() {
+  const container = $('ms-signer-rows');
+  container.innerHTML = msFormState.signers.map((s, i) => `
+    <div class="ms-signer-row" data-idx="${i}">
+      <div class="ms-signer-addr-wrap">
+        <input class="input-field ms-addr-input"
+               type="text"
+               placeholder="r… address"
+               value="${esc(s.address)}"
+               data-idx="${i}" />
+        <button class="ms-picker-btn" data-idx="${i}" title="Pick from accounts / address book">⊞</button>
+      </div>
+      <div class="ms-signer-weight-wrap">
+        <input class="input-field ms-weight-input"
+               type="number" min="1" step="1"
+               value="${s.weight}"
+               data-idx="${i}" />
+      </div>
+      <button class="ms-remove-btn" data-idx="${i}"
+              ${msFormState.signers.length <= 1 ? 'disabled' : ''}>✕</button>
+    </div>`).join('');
+
+  // Address input
+  container.querySelectorAll('.ms-addr-input').forEach(el => {
+    el.addEventListener('input', e => {
+      msFormState.signers[+e.target.dataset.idx].address = e.target.value.trim();
+    });
+  });
+  // Weight input
+  container.querySelectorAll('.ms-weight-input').forEach(el => {
+    el.addEventListener('input', e => {
+      const v = parseInt(e.target.value, 10);
+      msFormState.signers[+e.target.dataset.idx].weight = isNaN(v) || v < 1 ? 1 : v;
+      updateMsQuorumWarning();
+    });
+  });
+  // Picker button
+  container.querySelectorAll('.ms-picker-btn').forEach(el => {
+    el.addEventListener('click', () => openMsPickerModal(+el.dataset.idx));
+  });
+  // Remove button
+  container.querySelectorAll('.ms-remove-btn').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = +el.dataset.idx;
+      msFormState.signers.splice(idx, 1);
+      renderMsSignerRows();
+      updateMsQuorumWarning();
+    });
+  });
+}
+
+function updateMsQuorumWarning() {
+  const quorum    = parseInt($('ms-quorum-input').value, 10);
+  const weightSum = msFormState.signers.reduce((s, r) => s + (parseInt(r.weight, 10) || 0), 0);
+  const warn      = !isNaN(quorum) && quorum > 0 && weightSum < quorum;
+  $('ms-quorum-warn').classList.toggle('hidden', !warn);
+}
+
 // ─────────────────────────────────────────────
 // RAW TRANSACTION BUILDER
 // ─────────────────────────────────────────────
@@ -6973,6 +7085,16 @@ $('ms-form-cancel-btn').addEventListener('click', () => {
 $('ms-quorum-input').addEventListener('input', e => {
   msFormState.quorum = e.target.value;
   updateMsQuorumWarning();
+});
+
+$('ms-picker-close-btn').addEventListener('click', closeMsPickerModal);
+$('ms-picker-modal').addEventListener('click', e => {
+  if (e.target === $('ms-picker-modal')) closeMsPickerModal();
+});
+
+$('ms-add-signer-btn').addEventListener('click', () => {
+  msFormState.signers.push({ address: '', weight: 1 });
+  renderMsSignerRows();
 });
 
 // ─────────────────────────────────────────────
