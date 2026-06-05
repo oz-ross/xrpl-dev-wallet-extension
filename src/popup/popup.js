@@ -5827,6 +5827,16 @@ function submitSignerListSet() {
   reviewMultisignTx(txJson, 'Signer list updated!');
 }
 
+function submitMasterKeyToggle() {
+  const txJson = {
+    TransactionType: 'AccountSet',
+    Account: state.activeAccount,
+    ...(msMasterKeyDisabled ? { ClearFlag: 4 } : { SetFlag: 4 }),
+  };
+  const msg = msMasterKeyDisabled ? 'Master key re-enabled.' : 'Master key disabled.';
+  reviewMultisignTx(txJson, msg);
+}
+
 // ─────────────────────────────────────────────
 // RAW TRANSACTION BUILDER
 // ─────────────────────────────────────────────
@@ -7156,6 +7166,7 @@ $('ms-add-signer-btn').addEventListener('click', () => {
 });
 
 $('ms-submit-btn').addEventListener('click', submitSignerListSet);
+$('ms-master-key-btn').addEventListener('click', submitMasterKeyToggle);
 
 // ─────────────────────────────────────────────
 // BOOT
