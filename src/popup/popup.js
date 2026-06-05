@@ -240,7 +240,9 @@ function showView(name) {
     $('review-json-details').removeAttribute('open');
   }
   if (name === 'send-review') {
-    $('review-title').textContent = state.pendingTxReview?.title ?? 'Review Payment';
+    if (state.pendingTxReview?.title) {
+      $('review-title').textContent = state.pendingTxReview.title;
+    }
     $('review-fee-value').textContent = '…';
     fetchReviewFee().catch(() => { $('review-fee-value').textContent = '—'; });
   }
@@ -5561,6 +5563,7 @@ function openMultisignView() {
   msFormState         = { quorum: '', signers: [{ address: '', weight: 1 }] };
   msFormVisible       = false;
   msUpdateMode        = false;
+  $('ms-quorum-input').value = '';
   showView('multisign');
   loadMultisignData();
 }
@@ -5580,6 +5583,7 @@ async function loadMultisignData() {
         command: 'account_objects',
         account: state.activeAccount,
         ledger_index: 'validated',
+        type: 'signer_list',
       }),
       state.client.request({
         command: 'account_info',
@@ -5804,8 +5808,7 @@ function validateMsForm() {
 
 function reviewMultisignTx(txJson, successMsg) {
   $('send-review-paste-warn').classList.add('hidden');
-  const rows = buildTxRows(txJson);
-  $('send-review-details').innerHTML = rows.join('');
+  $('send-review-details').innerHTML = buildTxRows(txJson);
   state.pendingTxReview = { txJson, backView: 'multisign', successMsg, title: 'Review Transaction' };
   showView('send-review');
 }
@@ -7147,6 +7150,7 @@ $('ms-setup-toggle-btn').addEventListener('click', () => {
 $('ms-form-cancel-btn').addEventListener('click', () => {
   msUpdateMode = false;
   msFormState  = { quorum: '', signers: [{ address: '', weight: 1 }] };
+  $('ms-quorum-input').value = '';
   renderMultisignScreen();
 });
 
