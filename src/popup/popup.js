@@ -5683,7 +5683,7 @@ async function openMsPickerModal(signerIdx) {
   const renderPickerList = (filter) => {
     const lower    = filter.toLowerCase();
     const filtered = items.filter(i =>
-      i.name.toLowerCase().includes(lower) || i.address.toLowerCase().includes(lower)
+      (i.name ?? '').toLowerCase().includes(lower) || (i.address ?? '').toLowerCase().includes(lower)
     );
     $('ms-picker-list').innerHTML = filtered.map(i => `
       <div class="ms-picker-item" data-address="${esc(i.address)}">
@@ -5693,7 +5693,9 @@ async function openMsPickerModal(signerIdx) {
 
     $('ms-picker-list').querySelectorAll('.ms-picker-item').forEach(el => {
       el.addEventListener('click', () => {
-        msFormState.signers[msPickerTargetIdx].address = el.dataset.address;
+        if (msPickerTargetIdx >= 0 && msFormState.signers[msPickerTargetIdx]) {
+          msFormState.signers[msPickerTargetIdx].address = el.dataset.address;
+        }
         closeMsPickerModal();
         renderMsSignerRows();
       });
@@ -5701,6 +5703,7 @@ async function openMsPickerModal(signerIdx) {
   };
 
   renderPickerList('');
+  // Property assignment replaces the previous handler on each open (avoids stale-closure accumulation)
   $('ms-picker-filter').oninput = e => renderPickerList(e.target.value);
   $('ms-picker-modal').classList.remove('hidden');
   $('ms-picker-filter').focus();
