@@ -240,6 +240,7 @@ function showView(name) {
     $('review-json-details').removeAttribute('open');
   }
   if (name === 'send-review') {
+    $('review-title').textContent = state.pendingTxReview?.title ?? 'Review Payment';
     $('review-fee-value').textContent = '…';
     fetchReviewFee().catch(() => { $('review-fee-value').textContent = '—'; });
   }
@@ -5772,6 +5773,60 @@ function updateMsQuorumWarning() {
   $('ms-quorum-warn').classList.toggle('hidden', !warn);
 }
 
+function validateMsForm() {
+  const quorum = parseInt($('ms-quorum-input').value, 10);
+  if (isNaN(quorum) || quorum < 1) {
+    showAlert('ms-form-error', 'Quorum must be a positive integer.');
+    return false;
+  }
+  if (msFormState.signers.length === 0) {
+    showAlert('ms-form-error', 'Add at least one signer.');
+    return false;
+  }
+  for (const s of msFormState.signers) {
+    if (!s.address || !isValidClassicAddress(s.address)) {
+      showAlert('ms-form-error', `Invalid XRPL address: "${s.address || '(empty)'}"`);
+      return false;
+    }
+    if (!Number.isInteger(s.weight) || s.weight < 1) {
+      showAlert('ms-form-error', 'All signer weights must be positive integers.');
+      return false;
+    }
+  }
+  const addresses = msFormState.signers.map(s => s.address);
+  if (new Set(addresses).size !== addresses.length) {
+    showAlert('ms-form-error', 'Duplicate signer addresses are not allowed.');
+    return false;
+  }
+  $('ms-form-error').classList.add('hidden');
+  return true;
+}
+
+function reviewMultisignTx(txJson, successMsg) {
+  $('send-review-paste-warn').classList.add('hidden');
+  const rows = buildTxRows(txJson);
+  $('send-review-details').innerHTML = rows.join('');
+  state.pendingTxReview = { txJson, backView: 'multisign', successMsg, title: 'Review Transaction' };
+  showView('send-review');
+}
+
+function submitSignerListSet() {
+  if (!validateMsForm()) return;
+  const quorum = parseInt($('ms-quorum-input').value, 10);
+  const txJson = {
+    TransactionType: 'SignerListSet',
+    Account: state.activeAccount,
+    SignerQuorum: quorum,
+    SignerEntries: msFormState.signers.map(s => ({
+      SignerEntry: {
+        Account: s.address,
+        SignerWeight: Number(s.weight),
+      },
+    })),
+  };
+  reviewMultisignTx(txJson, 'Signer list updated!');
+}
+
 // ─────────────────────────────────────────────
 // RAW TRANSACTION BUILDER
 // ─────────────────────────────────────────────
@@ -7099,6 +7154,8 @@ $('ms-add-signer-btn').addEventListener('click', () => {
   msFormState.signers.push({ address: '', weight: 1 });
   renderMsSignerRows();
 });
+
+$('ms-submit-btn').addEventListener('click', submitSignerListSet);
 
 // ─────────────────────────────────────────────
 // BOOT
