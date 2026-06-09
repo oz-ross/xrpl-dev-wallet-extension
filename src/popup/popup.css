@@ -2753,6 +2753,18 @@ details[open] .review-json-summary::before {
 .ms-messenger-current { font-size: 11px; color: var(--text-2); margin-bottom: 8px; }
 .ms-info-icon { font-size: 11px; color: var(--text-3); margin-left: 4px; cursor: default; }
 
+/* Multisig dispatch view */
+.ms-dispatch-section-label { font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin: 10px 0 6px; }
+.ms-dispatch-signer-list { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 4px; }
+.ms-dispatch-signer-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.ms-dispatch-signer-row:last-child { border-bottom: none; }
+.ms-dispatch-signer-name { font-size: 12px; font-weight: 500; }
+.ms-dispatch-signer-addr { font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-3); margin-top: 1px; }
+.ms-dispatch-signer-status { font-size: 12px; min-width: 90px; text-align: right; color: var(--text-3); }
+.ms-dispatch-signer-status.success { color: var(--success); }
+.ms-dispatch-signer-status.error { color: #ef4444; font-size: 11px; }
+.ms-dispatch-summary { font-size: 12px; color: var(--text-2); text-align: center; padding: 10px 0 4px; }
+
 /* Picker modal */
 .ms-picker-modal {
   position: fixed; inset: 0; z-index: 200;
