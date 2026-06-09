@@ -6792,6 +6792,15 @@ $('review-copy-json-btn').addEventListener('click', () => {
   });
 });
 
+$('send-multisig-btn').addEventListener('click', () => openMultisigSendView().catch(() => {}));
+$('ms-dispatch-cancel-btn').addEventListener('click', () => showView('send-review'));
+$('ms-dispatch-confirm-btn').addEventListener('click', () => executeMultisigDispatch().catch(() => {}));
+$('ms-dispatch-close-btn').addEventListener('click', () => {
+  const back = state.pendingTxReview?.backView ?? 'wallet';
+  state.pendingTxReview = null;
+  showView(back);
+});
+
 // ─────────────────────────────────────────────
 // BACKGROUND → POPUP  push messages
 // (handles events that arrive while the popup is already open)
