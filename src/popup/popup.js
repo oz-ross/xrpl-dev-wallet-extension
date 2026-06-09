@@ -5552,6 +5552,7 @@ $('account-info-refresh-btn').addEventListener('click', () => {
 
 let msSignerList        = null;   // fetched SignerList object, or null if none
 let msMasterKeyDisabled = false;
+let msMessengerAddress  = null;   // locally stored messenger account for active account
 let msFormState         = { quorum: '', signers: [{ address: '', weight: 1 }] };
 let msFormVisible       = false;  // setup form open in no-setup state
 let msUpdateMode        = false;  // true when editing existing signer list
