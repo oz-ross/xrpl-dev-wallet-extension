@@ -2750,6 +2750,7 @@ details[open] .review-json-summary::before {
 .ms-master-key-btn.danger:hover { background: rgba(239,68,68,0.08); }
 .ms-master-key-btn.reenable { border: 1px solid rgba(16,185,129,0.35); color: var(--success); background: transparent; }
 .ms-master-key-btn.reenable:hover { background: var(--success-dim); }
+.ms-messenger-current { font-size: 11px; color: var(--text-2); margin-bottom: 8px; }
 
 /* Picker modal */
 .ms-picker-modal {
