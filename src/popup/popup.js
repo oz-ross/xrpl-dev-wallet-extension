@@ -4575,6 +4575,83 @@ async function openMultisigSendView() {
   }
 }
 
+async function executeMultisigDispatch() {
+  if (!msDispatchTxHex || !msDispatchSigners.length) return;
+
+  $('ms-dispatch-confirm-btn').disabled = true;
+  $('ms-dispatch-confirm-btn').textContent = 'Sending…';
+  $('ms-dispatch-cancel-btn').classList.add('hidden');
+  hideAlert('ms-dispatch-error');
+
+  try {
+    await ensureConnected();
+  } catch (err) {
+    showAlert('ms-dispatch-error', `Connection failed: ${err.message || 'Unknown error'}`);
+    $('ms-dispatch-confirm-btn').disabled = false;
+    $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
+    $('ms-dispatch-cancel-btn').classList.remove('hidden');
+    return;
+  }
+
+  let successCount = 0;
+  let connectionLost = false;
+
+  for (let i = 0; i < msDispatchSigners.length; i++) {
+    if (connectionLost) break;
+    const signer = msDispatchSigners[i];
+    const statusEl = $(`ms-dispatch-status-${i}`);
+    statusEl.textContent = '…';
+    statusEl.className = 'ms-dispatch-signer-status';
+
+    const credTx = {
+      TransactionType: 'CredentialCreate',
+      Account: state.activeAccount,
+      Subject: signer.address,
+      CredentialType: '4D554C5449534947',
+      Memos: [{ Memo: { MemoType: '5458', MemoData: msDispatchTxHex } }],
+    };
+
+    try {
+      const prepared = await state.client.autofill(credTx);
+      const { tx_blob } = await signPreparedTx(prepared);
+      const response = await state.client.submitAndWait(tx_blob);
+      const result = response.result?.meta?.TransactionResult;
+      if (result === 'tesSUCCESS') {
+        statusEl.textContent = '✓ Sent';
+        statusEl.className = 'ms-dispatch-signer-status success';
+        successCount++;
+      } else {
+        statusEl.textContent = `✗ ${result}`;
+        statusEl.className = 'ms-dispatch-signer-status error';
+      }
+    } catch (err) {
+      const msg = err.message || 'Error';
+      const isConnectionError = msg.toLowerCase().includes('connect') ||
+        msg.toLowerCase().includes('websocket') ||
+        msg.toLowerCase().includes('network');
+      if (isConnectionError) {
+        connectionLost = true;
+        for (let j = i; j < msDispatchSigners.length; j++) {
+          const el = $(`ms-dispatch-status-${j}`);
+          el.textContent = '✗ Connection lost';
+          el.className = 'ms-dispatch-signer-status error';
+        }
+        break;
+      }
+      statusEl.textContent = `✗ ${msg.slice(0, 28)}`;
+      statusEl.className = 'ms-dispatch-signer-status error';
+    }
+  }
+
+  const total = msDispatchSigners.length;
+  $('ms-dispatch-summary').textContent =
+    `${successCount} of ${total} credential${total === 1 ? '' : 's'} sent.`;
+  $('ms-dispatch-summary').classList.remove('hidden');
+  $('ms-dispatch-confirm-btn').classList.add('hidden');
+  $('ms-dispatch-close-btn').classList.remove('hidden');
+  refreshBalance();
+}
+
 // ─────────────────────────────────────────────
 // AUTO-REFRESH
 // ─────────────────────────────────────────────
