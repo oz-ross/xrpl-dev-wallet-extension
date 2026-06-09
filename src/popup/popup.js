@@ -245,6 +245,9 @@ function showView(name) {
     }
     $('review-fee-value').textContent = '…';
     fetchReviewFee().catch(() => { $('review-fee-value').textContent = '—'; });
+    reviewSignerList = null;
+    $('send-multisig-btn').classList.add('hidden');
+    if (state.devSettings.multisignEnabled) probeSignerListForReview().catch(() => {});
   }
 }
 
@@ -272,6 +275,25 @@ async function fetchReviewFee() {
     } catch {
       $('review-fee-value').textContent = '—';
     }
+  }
+}
+
+async function probeSignerListForReview() {
+  try {
+    await ensureConnected();
+    const resp = await state.client.request({
+      command: 'account_objects',
+      account: state.activeAccount,
+      ledger_index: 'validated',
+      type: 'signer_list',
+    });
+    const sl = (resp.result.account_objects ?? []).find(o => o.LedgerEntryType === 'SignerList');
+    reviewSignerList = sl?.SignerEntries ?? [];
+    if (reviewSignerList.length > 0) {
+      $('send-multisig-btn').classList.remove('hidden');
+    }
+  } catch {
+    reviewSignerList = [];
   }
 }
 
@@ -5553,6 +5575,9 @@ $('account-info-refresh-btn').addEventListener('click', () => {
 let msSignerList        = null;   // fetched SignerList object, or null if none
 let msMasterKeyDisabled = false;
 let msMessengerAddress  = null;   // locally stored messenger account for active account
+let reviewSignerList    = null;   // null=unknown, []=none, [entries]=has signers — for send-review probe
+let msDispatchTxHex     = '';     // autofilled+encoded unsigned tx blob for dispatch
+let msDispatchSigners   = [];     // [{ address, name }] for current dispatch
 let msFormState         = { quorum: '', signers: [{ address: '', weight: 1 }] };
 let msFormVisible       = false;  // setup form open in no-setup state
 let msUpdateMode        = false;  // true when editing existing signer list
