@@ -5561,10 +5561,12 @@ let msPickerTargetIdx   = -1;     // signer row index the picker is filling
 function openMultisignView() {
   msSignerList        = null;
   msMasterKeyDisabled = false;
+  msMessengerAddress  = null;
   msFormState         = { quorum: '', signers: [{ address: '', weight: 1 }] };
   msFormVisible       = false;
   msUpdateMode        = false;
   $('ms-quorum-input').value = '';
+  $('ms-messenger-card').classList.add('hidden');
   showView('multisign');
   loadMultisignData();
 }
@@ -5576,6 +5578,7 @@ async function loadMultisignData() {
   $('ms-configured-card').classList.add('hidden');
   $('ms-form-card').classList.add('hidden');
   $('ms-master-key-card').classList.add('hidden');
+  $('ms-messenger-card').classList.add('hidden');
 
   try {
     await ensureConnected();
@@ -5600,6 +5603,7 @@ async function loadMultisignData() {
     msMasterKeyDisabled = !!(flags & 0x00100000);
 
     await refreshAddressNames();
+    msMessengerAddress = await loadMessengerLink(state.activeAccount);
     $('ms-loading').classList.add('hidden');
     renderMultisignScreen();
   } catch (err) {
@@ -5643,6 +5647,18 @@ function renderMultisignScreen() {
   btn.textContent = msMasterKeyDisabled ? 'Re-enable Master Key' : 'Disable Master Key';
   btn.className   = `btn btn-full ms-master-key-btn ${msMasterKeyDisabled ? 'reenable' : 'danger'}`;
   $('ms-master-key-card').classList.remove('hidden');
+
+  // ── Messenger Account card ──
+  const messengerAccounts = getProjectAccounts().filter(a => !a.isWatch);
+  const messengerSelect   = $('ms-messenger-select');
+  messengerSelect.innerHTML = '<option value="">— select account —</option>' +
+    messengerAccounts.map(a =>
+      `<option value="${esc(a.address)}">${esc(a.label)} (${esc(truncAddr(a.address))})</option>`
+    ).join('');
+  $('ms-messenger-current').textContent = msMessengerAddress
+    ? `Current: ${resolveAddrDisplay(msMessengerAddress)} (${truncAddr(msMessengerAddress)})`
+    : 'No messenger account set.';
+  $('ms-messenger-card').classList.remove('hidden');
 }
 
 function renderSignerListSummary() {
