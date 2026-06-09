@@ -4542,6 +4542,14 @@ async function openMultisigSendView() {
   showView('multisig-send');
 
   try {
+    // Load messenger link if not already set (e.g. arriving from a non-multisign flow)
+    if (!msMessengerAddress) {
+      msMessengerAddress = await loadMessengerLink(state.activeAccount);
+    }
+    if (!msMessengerAddress) {
+      throw new Error('No messenger account configured. Set one on the Multisig screen first.');
+    }
+
     await ensureConnected();
     const filled = await state.client.autofill({ ...txJson });
     filled.SigningPubKey = '';
@@ -4578,6 +4586,31 @@ async function openMultisigSendView() {
   }
 }
 
+async function signWithAddress(prepared, address) {
+  const wallet = getWalletForAddress(address);
+  if (wallet) {
+    const { tx_blob } = wallet.sign(prepared);
+    return tx_blob;
+  }
+  const ledgerKr = state.keyrings.find(k => k.type === 'ledger' && k.address === address);
+  if (ledgerKr) {
+    const txToSign = { ...prepared, SigningPubKey: ledgerKr.publicKey };
+    delete txToSign.TxnSignature;
+    const txBlob = encode(txToSign);
+    let transport;
+    try {
+      transport = await TransportWebHID.create();
+      const xrpApp = new Xrp(transport);
+      const sig = await xrpApp.signTransaction(ledgerKr.derivationPath, txBlob);
+      txToSign.TxnSignature = sig.toUpperCase();
+      return encode(txToSign);
+    } finally {
+      if (transport) await transport.close().catch(() => {});
+    }
+  }
+  throw new Error(`No signing key available for ${truncAddr(address)}.`);
+}
+
 async function executeMultisigDispatch() {
   if (!msDispatchTxHex || !msDispatchSigners.length) return;
 
@@ -4608,7 +4641,7 @@ async function executeMultisigDispatch() {
 
     const credTx = {
       TransactionType: 'CredentialCreate',
-      Account: state.activeAccount,
+      Account: msMessengerAddress,
       Subject: signer.address,
       CredentialType: '4D554C5449534947',
       Memos: [{ Memo: { MemoType: '5458', MemoData: msDispatchTxHex } }],
@@ -4616,7 +4649,7 @@ async function executeMultisigDispatch() {
 
     try {
       const prepared = await state.client.autofill(credTx);
-      const { tx_blob } = await signPreparedTx(prepared);
+      const tx_blob = await signWithAddress(prepared, msMessengerAddress);
       const response = await state.client.submitAndWait(tx_blob);
       const result = response.result?.meta?.TransactionResult;
       if (result === 'tesSUCCESS') {
