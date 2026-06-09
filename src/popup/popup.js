@@ -4519,6 +4519,63 @@ async function executeReviewedTx() {
 }
 
 // ─────────────────────────────────────────────
+// MULTISIG DISPATCH
+// ─────────────────────────────────────────────
+
+async function openMultisigSendView() {
+  const txJson = state.pendingTxReview?.txJson;
+  if (!txJson || !reviewSignerList?.length) return;
+
+  // Navigate first so error messages are visible in the dispatch view
+  hideAlert('ms-dispatch-error');
+  $('ms-dispatch-confirm-btn').textContent = 'Preparing…';
+  $('ms-dispatch-confirm-btn').disabled = true;
+  $('ms-dispatch-confirm-btn').classList.remove('hidden');
+  $('ms-dispatch-cancel-btn').classList.remove('hidden');
+  $('ms-dispatch-close-btn').classList.add('hidden');
+  $('ms-dispatch-summary').classList.add('hidden');
+  $('ms-dispatch-tx-summary').innerHTML = '';
+  $('ms-dispatch-signer-rows').innerHTML = '';
+  $('ms-dispatch-fee-estimate').textContent = '—';
+  showView('multisig-send');
+
+  try {
+    await ensureConnected();
+    const filled = await state.client.autofill({ ...txJson });
+    msDispatchTxHex = encode(filled);
+
+    await refreshAddressNames();
+    msDispatchSigners = reviewSignerList.map(e => ({
+      address: e.SignerEntry.Account,
+      name: resolveAddrDisplay(e.SignerEntry.Account),
+    }));
+
+    const feeDrops = parseInt(filled.Fee ?? '12', 10);
+    const totalDrops = feeDrops * msDispatchSigners.length;
+    const xrp = (totalDrops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+    $('ms-dispatch-fee-estimate').textContent = `~${xrp} XRP (~${totalDrops} drops)`;
+
+    $('ms-dispatch-tx-summary').innerHTML = buildTxRows(txJson);
+
+    $('ms-dispatch-signer-rows').innerHTML = msDispatchSigners.map((s, i) => `
+      <div class="ms-dispatch-signer-row">
+        <div class="ms-dispatch-signer-info">
+          <div class="ms-dispatch-signer-name">${esc(s.name)}</div>
+          <div class="ms-dispatch-signer-addr">${esc(truncAddr(s.address))}</div>
+        </div>
+        <div class="ms-dispatch-signer-status" id="ms-dispatch-status-${i}">⋯</div>
+      </div>`).join('');
+
+    $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
+    $('ms-dispatch-confirm-btn').disabled = false;
+  } catch (err) {
+    showAlert('ms-dispatch-error', `Failed to prepare: ${err.message || 'Unknown error'}`);
+    $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
+    $('ms-dispatch-confirm-btn').disabled = true;
+  }
+}
+
+// ─────────────────────────────────────────────
 // AUTO-REFRESH
 // ─────────────────────────────────────────────
 
