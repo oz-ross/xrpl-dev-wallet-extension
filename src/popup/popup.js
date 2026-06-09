@@ -5653,11 +5653,12 @@ function renderMultisignScreen() {
   const messengerSelect   = $('ms-messenger-select');
   messengerSelect.innerHTML = '<option value="">— select account —</option>' +
     messengerAccounts.map(a =>
-      `<option value="${esc(a.address)}">${esc(a.label)} (${esc(truncAddr(a.address))})</option>`
+      `<option value="${esc(a.address)}">${esc(a.label || 'Account')} (${esc(truncAddr(a.address))})</option>`
     ).join('');
   $('ms-messenger-current').textContent = msMessengerAddress
     ? `Current: ${resolveAddrDisplay(msMessengerAddress)} (${truncAddr(msMessengerAddress)})`
     : 'No messenger account set.';
+  hideAlert('ms-messenger-error');
   $('ms-messenger-card').classList.remove('hidden');
 }
 
@@ -5875,6 +5876,7 @@ function getPublicKeyForAddress(address) {
 }
 
 async function submitMessengerAccountSet() {
+  hideAlert('ms-messenger-error');
   const messengerAddress = $('ms-messenger-select').value;
   if (!messengerAddress) {
     showAlert('ms-messenger-error', 'Please select a messenger account.');
