@@ -4629,6 +4629,7 @@ async function executeMultisigDispatch() {
     return;
   }
 
+  const txHash = computeTxHash(msDispatchTxHex);
   let successCount = 0;
   let connectionLost = false;
 
@@ -4644,6 +4645,7 @@ async function executeMultisigDispatch() {
       Account: msMessengerAddress,
       Subject: signer.address,
       CredentialType: '4D554C5449534947',
+      URI: txHash,
       Memos: [{ Memo: { MemoType: '5458', MemoData: msDispatchTxHex } }],
     };
 
