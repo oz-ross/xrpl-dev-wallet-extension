@@ -279,21 +279,23 @@ async function fetchReviewFee() {
 }
 
 async function probeSignerListForReview() {
+  const probeAccount = state.activeAccount;
   try {
     await ensureConnected();
     const resp = await state.client.request({
       command: 'account_objects',
-      account: state.activeAccount,
+      account: probeAccount,
       ledger_index: 'validated',
       type: 'signer_list',
     });
+    if (state.activeAccount !== probeAccount) return;
     const sl = (resp.result.account_objects ?? []).find(o => o.LedgerEntryType === 'SignerList');
     reviewSignerList = sl?.SignerEntries ?? [];
     if (reviewSignerList.length > 0) {
       $('send-multisig-btn').classList.remove('hidden');
     }
   } catch {
-    reviewSignerList = [];
+    if (state.activeAccount === probeAccount) reviewSignerList = [];
   }
 }
 
@@ -4542,6 +4544,7 @@ async function openMultisigSendView() {
   try {
     await ensureConnected();
     const filled = await state.client.autofill({ ...txJson });
+    filled.SigningPubKey = '';
     msDispatchTxHex = encode(filled);
 
     await refreshAddressNames();
@@ -4621,7 +4624,7 @@ async function executeMultisigDispatch() {
         statusEl.className = 'ms-dispatch-signer-status success';
         successCount++;
       } else {
-        statusEl.textContent = `✗ ${result}`;
+        statusEl.textContent = `✗ ${result ?? 'Unknown'}`;
         statusEl.className = 'ms-dispatch-signer-status error';
       }
     } catch (err) {
