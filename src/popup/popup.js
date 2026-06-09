@@ -7226,6 +7226,7 @@ $('ms-add-signer-btn').addEventListener('click', () => {
 
 $('ms-submit-btn').addEventListener('click', submitSignerListSet);
 $('ms-master-key-btn').addEventListener('click', submitMasterKeyToggle);
+$('ms-messenger-btn').addEventListener('click', submitMessengerAccountSet);
 
 // ─────────────────────────────────────────────
 // BOOT
