@@ -7331,7 +7331,21 @@ function isMainnetNetwork(networkId) {
   return cfg.group === 'mainnet';
 }
 
-function maybeApplyNetworkChange(networkId, manualNetwork) {
+async function maybeApplyNetworkChange(networkId, manualNetwork) {
+  // Block network changes while WalletConnect sessions are active
+  try {
+    const resp = await sendToBackground({ type: 'WC_GET_SESSIONS' });
+    const sessionCount = Object.keys(resp.sessions ?? {}).length;
+    if (sessionCount > 0) {
+      $('network-wc-warn').classList.remove('hidden');
+      $('network-select').value = state.network;
+      return;
+    }
+  } catch {
+    // Background unreachable — allow the change
+  }
+  $('network-wc-warn').classList.add('hidden');
+
   if (isMainnetNetwork(networkId) && !state.mainnetAcknowledged) {
     state.pendingNetworkChange = { network: networkId, manualNetwork };
     $('mainnet-warning-checkbox').checked = false;
@@ -7348,7 +7362,7 @@ $('network-select').addEventListener('change', async (e) => {
   const selected = e.target.value;
   const isManual = selected === 'manual';
   $('network-manual-group').classList.toggle('hidden', !isManual);
-  if (!isManual) maybeApplyNetworkChange(selected, null);
+  if (!isManual) maybeApplyNetworkChange(selected, null).catch(() => {});
 });
 
 $('network-manual-apply-btn').addEventListener('click', async () => {
@@ -7361,7 +7375,7 @@ $('network-manual-apply-btn').addEventListener('click', async () => {
     alert('Invalid URL — must start with wss:// or ws://');
     return;
   }
-  maybeApplyNetworkChange('manual', { wsUrl: ws });
+  maybeApplyNetworkChange('manual', { wsUrl: ws }).catch(() => {});
 });
 
 $('mainnet-warning-checkbox').addEventListener('change', (e) => {
