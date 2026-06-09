@@ -5840,6 +5840,44 @@ function submitMasterKeyToggle() {
   reviewMultisignTx(txJson, msg);
 }
 
+async function loadMessengerLink(address) {
+  const key  = `messengerLink_${address}`;
+  const data = await chrome.storage.local.get(key);
+  return data[key] ?? null;
+}
+
+async function saveMessengerLink(address, messengerAddress) {
+  await chrome.storage.local.set({ [`messengerLink_${address}`]: messengerAddress });
+}
+
+function getPublicKeyForAddress(address) {
+  const wallet = getWalletForAddress(address);
+  if (wallet) return wallet.publicKey;
+  const kr = state.keyrings.find(k => k.type === 'ledger' && k.address === address);
+  return kr?.publicKey ?? null;
+}
+
+async function submitMessengerAccountSet() {
+  const messengerAddress = $('ms-messenger-select').value;
+  if (!messengerAddress) {
+    showAlert('ms-messenger-error', 'Please select a messenger account.');
+    return;
+  }
+  const publicKey = getPublicKeyForAddress(messengerAddress);
+  if (!publicKey) {
+    showAlert('ms-messenger-error', 'Could not derive public key for selected account.');
+    return;
+  }
+  await saveMessengerLink(state.activeAccount, messengerAddress);
+  msMessengerAddress = messengerAddress;
+  const txJson = {
+    TransactionType: 'AccountSet',
+    Account: state.activeAccount,
+    MessageKey: publicKey,
+  };
+  reviewMultisignTx(txJson, 'Messenger key set.');
+}
+
 // ─────────────────────────────────────────────
 // RAW TRANSACTION BUILDER
 // ─────────────────────────────────────────────
