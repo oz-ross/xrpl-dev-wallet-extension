@@ -1273,6 +1273,35 @@
       <button id="send-review-cancel-btn" class="btn btn-ghost">Cancel</button>
       <button id="send-review-submit-btn" class="btn btn-primary">Confirm &amp; Send</button>
     </div>
+    <button id="send-multisig-btn" class="btn btn-outline btn-full hidden" style="margin-top:8px">Send for Multisig</button>
+  </div>
+
+  <!-- ===== MULTISIG SEND / CREDENTIAL DISPATCH ===== -->
+  <div id="view-multisig-send" class="view hidden">
+    <div class="view-header">
+      <h2>Send for Multisig</h2>
+    </div>
+
+    <div id="ms-dispatch-tx-summary" class="tx-card"></div>
+
+    <div class="ms-dispatch-section-label">Credentials will be sent to:</div>
+    <div id="ms-dispatch-signer-rows" class="ms-dispatch-signer-list"></div>
+
+    <div class="tx-card review-fee-card" style="margin-top:6px">
+      <div class="tx-row">
+        <span class="tx-label">Est. Credential Fees</span>
+        <span id="ms-dispatch-fee-estimate" class="tx-value">—</span>
+      </div>
+    </div>
+
+    <div id="ms-dispatch-error" class="alert alert-error hidden" style="margin-top:8px"></div>
+    <div id="ms-dispatch-summary" class="ms-dispatch-summary hidden"></div>
+
+    <div class="action-row">
+      <button id="ms-dispatch-cancel-btn" class="btn btn-ghost">Cancel</button>
+      <button id="ms-dispatch-confirm-btn" class="btn btn-primary">Confirm &amp; Send for Multisig</button>
+    </div>
+    <button id="ms-dispatch-close-btn" class="btn btn-outline btn-full hidden" style="margin-top:8px">Close</button>
   </div>
 
   <!-- ===== ADD TRUST LINE (IOU) ===== -->
