@@ -2334,14 +2334,15 @@ function renderCredentials(creds) {
   const card   = $('credential-card');
   const listEl = $('credential-list');
 
-  if (!creds.length) {
+  const visibleCreds = creds.filter(c => hexToUtf8(c.CredentialType ?? '') !== 'MULTISIG');
+  if (!visibleCreds.length) {
     card.classList.add('hidden');
     listEl.innerHTML = '';
     return;
   }
 
   card.classList.remove('hidden');
-  listEl.innerHTML = creds.map((c, i) => {
+  listEl.innerHTML = visibleCreds.map((c, i) => {
     const typeHex    = c.CredentialType ?? '';
     const typeLabel  = hexToUtf8(typeHex) || typeHex.slice(0, 16);
     const issuer     = c.Issuer ?? '';
@@ -2359,7 +2360,7 @@ function renderCredentials(creds) {
   }).join('');
 
   // Store credentials on the element for click access
-  listEl._credentials = creds;
+  listEl._credentials = visibleCreds;
 }
 
 // ─────────────────────────────────────────────
