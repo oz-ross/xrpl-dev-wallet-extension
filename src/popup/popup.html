@@ -1655,6 +1655,21 @@
 
   <div id="ms-trxn-detail-rows" class="tx-card"></div>
 
+  <div id="ms-trxn-quorum-card" class="tx-card hidden" style="margin-top:6px">
+    <div class="tx-row">
+      <span class="tx-label">Quorum required</span>
+      <span id="ms-trxn-quorum-required" class="tx-value">—</span>
+    </div>
+    <div class="tx-row">
+      <span class="tx-label">Current weight</span>
+      <span id="ms-trxn-current-weight" class="tx-value">—</span>
+    </div>
+  </div>
+
+  <div id="ms-trxn-expired-warn" class="alert alert-warn hidden" style="margin-top:8px">
+    Transaction has expired and cannot be submitted.
+  </div>
+
   <details id="ms-trxn-json-details" class="review-json-panel">
     <summary class="review-json-summary">Raw JSON</summary>
     <div class="review-json-body">
@@ -1668,6 +1683,7 @@
   <div class="action-row" style="margin-top:12px">
     <button id="ms-trxn-close-btn" class="btn btn-ghost">Close</button>
     <button id="ms-trxn-cancel-btn" class="btn btn-primary">Cancel Transaction</button>
+    <button id="ms-trxn-submit-btn" class="btn btn-primary hidden">Submit</button>
   </div>
 </div>
 
