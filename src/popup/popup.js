@@ -4555,17 +4555,14 @@ async function openMultisigSendView() {
     }
 
     await ensureConnected();
-    const ledgerBuffer  = Math.max(1, parseInt($('ms-dispatch-ledger-buffer').value, 10) || 20);
-    const ledgerResp    = await state.client.request({ command: 'ledger_current' });
-    const currentSeq    = Number(ledgerResp.result.ledger_current_index);
-    const filled        = await state.client.autofill({ ...txJson });
-    filled.LastLedgerSequence = currentSeq + ledgerBuffer;
-    filled.SigningPubKey = '';
-    msDispatchTxHex  = encode(filled);
-    msDispatchTxType = txJson.TransactionType ?? '';
-
-    // Verify by decoding the encoded hex — this is what signers will actually receive
-    const verifiedTx = decode(msDispatchTxHex);
+    const ledgerResp       = await state.client.request({ command: 'ledger_current' });
+    msDispatchCurrentSeq   = Number(ledgerResp.result.ledger_current_index);
+    const filled           = await state.client.autofill({ ...txJson });
+    filled.SigningPubKey   = '';
+    // Store for encoding at confirm time — LLS is NOT set here
+    delete filled.LastLedgerSequence;
+    msDispatchFilledTx  = filled;
+    msDispatchTxType    = txJson.TransactionType ?? '';
 
     await refreshAddressNames();
     msDispatchSigners = reviewSignerList.map(e => ({
@@ -4576,9 +4573,16 @@ async function openMultisigSendView() {
     const feeDrops = parseInt(filled.Fee ?? '12', 10);
     const totalDrops = feeDrops * msDispatchSigners.length;
     const xrp = (totalDrops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
-    $('ms-dispatch-fee-estimate').textContent = `~${xrp} XRP (~${totalDrops} drops) · expires ~ledger ${verifiedTx.LastLedgerSequence ?? '?'}`;
 
-    $('ms-dispatch-tx-summary').innerHTML = buildTxRows(verifiedTx);
+    const updateExpiryDisplay = () => {
+      const buf = Math.max(1, parseInt($('ms-dispatch-ledger-buffer').value, 10) || 20);
+      $('ms-dispatch-fee-estimate').textContent =
+        `~${xrp} XRP (~${totalDrops} drops) · expires ~ledger ${msDispatchCurrentSeq + buf}`;
+    };
+    updateExpiryDisplay();
+    $('ms-dispatch-ledger-buffer').oninput = updateExpiryDisplay;
+
+    $('ms-dispatch-tx-summary').innerHTML = buildTxRows(txJson);
 
     $('ms-dispatch-signer-rows').innerHTML = msDispatchSigners.map((s, i) => `
       <div class="ms-dispatch-signer-row">
@@ -4624,7 +4628,22 @@ async function signWithAddress(prepared, address) {
 }
 
 async function executeMultisigDispatch() {
-  if (!msDispatchTxHex || !msDispatchSigners.length) return;
+  if (!msDispatchFilledTx || !msDispatchSigners.length) return;
+
+  // Encode the transaction with the user's chosen ledger buffer, fresh at confirm time
+  try {
+    await ensureConnected();
+    const ledgerResp = await state.client.request({ command: 'ledger_current' });
+    const currentSeq = Number(ledgerResp.result.ledger_current_index);
+    const ledgerBuffer = Math.max(1, parseInt($('ms-dispatch-ledger-buffer').value, 10) || 20);
+    msDispatchFilledTx.LastLedgerSequence = currentSeq + ledgerBuffer;
+    msDispatchTxHex = encode(msDispatchFilledTx);
+  } catch (err) {
+    showAlert('ms-dispatch-error', `Failed to prepare transaction: ${err.message || 'Unknown error'}`);
+    return;
+  }
+
+  if (!msDispatchTxHex) return;
 
   $('ms-dispatch-confirm-btn').disabled = true;
   $('ms-dispatch-confirm-btn').textContent = 'Creating MPT…';
@@ -5801,6 +5820,8 @@ let msMasterKeyDisabled = false;
 let msMessengerAddress  = null;   // locally stored messenger account for active account
 let reviewSignerList    = null;   // null=unknown, []=none, [entries]=has signers — for send-review probe
 let msDispatchTxHex     = '';     // autofilled+encoded unsigned tx blob for dispatch
+let msDispatchFilledTx  = null;   // autofilled tx (no LLS), encoded fresh at confirm time
+let msDispatchCurrentSeq = 0;    // current ledger seq at view-open time, for display
 let msDispatchTxType    = '';     // TransactionType of the pending tx, for MPT metadata
 let msDispatchSigners   = [];     // [{ address, name }] for current dispatch
 let msSentList          = [];     // MPTokenIssuance objects with ac==='multisig' from messenger
