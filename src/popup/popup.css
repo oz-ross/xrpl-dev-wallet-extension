@@ -2776,6 +2776,11 @@ details[open] .review-json-summary::before {
 .ms-sent-item-label { font-size: 12px; font-weight: 500; }
 .ms-sent-item-hash { font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-3); margin-top: 1px; }
 .ms-sent-item-chevron { color: var(--text-3); font-size: 16px; line-height: 1; }
+.ms-sent-weight-badge { font-size: 11px; font-weight: 600; min-width: 36px; text-align: right; white-space: nowrap; }
+.ms-sent-weight-badge.met { color: var(--success); }
+.ms-sent-weight-badge.pending { color: var(--text-3); }
+.ms-trxn-weight-met { color: var(--success); font-weight: 600; }
+.ms-trxn-weight-pending { color: var(--text-3); }
 /* Cancel progress */
 .ms-trxn-cancel-progress { margin-top: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .ms-trxn-cancel-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 14px; border-bottom: 1px solid var(--border); font-size: 12px; }
