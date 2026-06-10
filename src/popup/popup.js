@@ -6251,6 +6251,64 @@ async function openMsSignDetail(idx) {
   }
 }
 
+async function getSignatureForAddress(txJson, address) {
+  const wallet = getWalletForAddress(address);
+  if (wallet) {
+    const sig = keypairsSign(encodeForSigning(txJson), wallet.privateKey).toUpperCase();
+    return { pubKey: wallet.publicKey, sig };
+  }
+  const ledgerKr = state.keyrings.find(k => k.type === 'ledger' && k.address === address);
+  if (ledgerKr) {
+    const txBlob = encode(txJson);
+    let transport;
+    try {
+      transport = await TransportWebHID.create();
+      const xrpApp = new Xrp(transport);
+      const sig = await xrpApp.signTransaction(ledgerKr.derivationPath, txBlob);
+      return { pubKey: ledgerKr.publicKey, sig: sig.toUpperCase() };
+    } finally {
+      if (transport) await transport.close().catch(() => {});
+    }
+  }
+  throw new Error(`No signing key available for ${truncAddr(address)}.`);
+}
+
+async function signMsTransaction() {
+  if (!msMsSignDetail) return;
+
+  $('ms-sign-submit-btn').disabled = true;
+  $('ms-sign-submit-btn').textContent = 'Signing…';
+  hideAlert('ms-sign-detail-error');
+
+  try {
+    const { credential, decodedTxJson } = msMsSignDetail;
+    const { pubKey, sig } = await getSignatureForAddress(decodedTxJson, state.activeAccount);
+
+    const txJson = {
+      TransactionType: 'CredentialAccept',
+      Account: state.activeAccount,
+      Issuer: credential.Issuer,
+      CredentialType: '4D554C5449534947',
+      Memos: [
+        { Memo: {
+          MemoType: Buffer.from('SigningPubKey').toString('hex').toUpperCase(),
+          MemoData: pubKey,
+        }},
+        { Memo: {
+          MemoType: Buffer.from('TxnSignature').toString('hex').toUpperCase(),
+          MemoData: sig,
+        }},
+      ],
+    };
+
+    reviewMultisignTx(txJson, 'Signature submitted.');
+  } catch (err) {
+    showAlert('ms-sign-detail-error', `Signing failed: ${err.message || 'Unknown error'}`);
+    $('ms-sign-submit-btn').disabled = false;
+    $('ms-sign-submit-btn').textContent = 'Sign Transaction';
+  }
+}
+
 function renderSignerListSummary() {
   $('ms-quorum-display').textContent = msSignerList.SignerQuorum ?? '—';
   const entries = msSignerList.SignerEntries ?? [];
