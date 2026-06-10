@@ -4539,6 +4539,8 @@ async function openMultisigSendView() {
   $('ms-dispatch-tx-summary').innerHTML = '';
   $('ms-dispatch-signer-rows').innerHTML = '';
   $('ms-dispatch-fee-estimate').textContent = '—';
+  $('ms-dispatch-nft-status').textContent = '';
+  $('ms-dispatch-nft-status').className = 'ms-dispatch-nft-status hidden';
   showView('multisig-send');
 
   try {
@@ -4615,9 +4617,10 @@ async function executeMultisigDispatch() {
   if (!msDispatchTxHex || !msDispatchSigners.length) return;
 
   $('ms-dispatch-confirm-btn').disabled = true;
-  $('ms-dispatch-confirm-btn').textContent = 'Sending…';
+  $('ms-dispatch-confirm-btn').textContent = 'Minting NFT…';
   $('ms-dispatch-cancel-btn').classList.add('hidden');
   hideAlert('ms-dispatch-error');
+  $('ms-dispatch-nft-status').className = 'ms-dispatch-nft-status hidden';
 
   try {
     await ensureConnected();
@@ -4629,7 +4632,45 @@ async function executeMultisigDispatch() {
     return;
   }
 
+  // ── Step 1: Mint NFT ──────────────────────────────────────────────────────
   const txHash = computeTxHash(msDispatchTxHex);
+  const nftUri = Buffer.from('MULTISIG:' + txHash).toString('hex').toUpperCase();
+
+  let nftTokenId;
+  try {
+    const mintTx = {
+      TransactionType: 'NFTokenMint',
+      Account: msMessengerAddress,
+      NFTokenTaxon: 0,
+      Flags: 1,        // tfBurnable; no tfTransferable = non-transferable
+      URI: nftUri,
+      Memos: [{ Memo: { MemoType: '5458', MemoData: msDispatchTxHex } }],
+    };
+    const preparedMint = await state.client.autofill(mintTx);
+    const mintBlob = await signWithAddress(preparedMint, msMessengerAddress);
+    const mintResp = await state.client.submitAndWait(mintBlob);
+    const mintResult = mintResp.result?.meta?.TransactionResult;
+    if (mintResult !== 'tesSUCCESS') {
+      throw new Error(`NFTokenMint failed: ${mintResult ?? 'Unknown'}`);
+    }
+    nftTokenId = mintResp.result.meta?.nftoken_id;
+    if (!nftTokenId) throw new Error('NFTokenID not found in mint response.');
+    const nftStatusEl = $('ms-dispatch-nft-status');
+    nftStatusEl.textContent = `✓ NFT minted: ${nftTokenId.slice(0, 12)}…`;
+    nftStatusEl.className = 'ms-dispatch-nft-status success';
+  } catch (err) {
+    const nftStatusEl = $('ms-dispatch-nft-status');
+    nftStatusEl.textContent = `✗ NFT mint failed: ${err.message || 'Unknown error'}`;
+    nftStatusEl.className = 'ms-dispatch-nft-status error';
+    showAlert('ms-dispatch-error', `Could not mint NFT: ${err.message || 'Unknown error'}`);
+    $('ms-dispatch-confirm-btn').disabled = false;
+    $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
+    $('ms-dispatch-cancel-btn').classList.remove('hidden');
+    return;
+  }
+
+  // ── Step 2: Credential per signer ────────────────────────────────────────
+  $('ms-dispatch-confirm-btn').textContent = 'Sending credentials…';
   let successCount = 0;
   let connectionLost = false;
 
@@ -4645,8 +4686,7 @@ async function executeMultisigDispatch() {
       Account: msMessengerAddress,
       Subject: signer.address,
       CredentialType: '4D554C5449534947',
-      URI: txHash,
-      Memos: [{ Memo: { MemoType: '5458', MemoData: msDispatchTxHex } }],
+      URI: nftTokenId,
     };
 
     try {

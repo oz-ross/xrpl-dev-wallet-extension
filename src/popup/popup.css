@@ -2764,6 +2764,9 @@ details[open] .review-json-summary::before {
 .ms-dispatch-signer-status.success { color: var(--success); }
 .ms-dispatch-signer-status.error { color: #ef4444; font-size: 11px; }
 .ms-dispatch-summary { font-size: 12px; color: var(--text-2); text-align: center; padding: 10px 0 4px; }
+.ms-dispatch-nft-status { font-size: 11px; color: var(--text-2); margin-top: 6px; padding: 6px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xs); }
+.ms-dispatch-nft-status.success { color: var(--success); border-color: rgba(16,185,129,0.3); }
+.ms-dispatch-nft-status.error { color: #ef4444; border-color: rgba(239,68,68,0.3); }
 
 /* Picker modal */
 .ms-picker-modal {
