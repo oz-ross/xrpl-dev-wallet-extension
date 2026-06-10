@@ -5857,13 +5857,50 @@ async function loadMultisignData() {
     if (msMessengerAddress) {
       try {
         const allObjs = await fetchAllAccountObjects(msMessengerAddress);
-        msSentList = allObjs.filter(o => {
+        const rawMpts = allObjs.filter(o => {
           if (o.LedgerEntryType !== 'MPTokenIssuance') return false;
           try {
-            const meta = JSON.parse(Buffer.from(o.MPTokenMetadata ?? '', 'hex').toString('utf8'));
-            return meta?.ac === 'multisig';
+            return JSON.parse(Buffer.from(o.MPTokenMetadata ?? '', 'hex').toString('utf8'))?.ac === 'multisig';
           } catch { return false; }
         });
+        msSentList = await Promise.all(rawMpts.map(async mptObj => {
+          let txType = '—', txHash = '—';
+          try {
+            const meta = JSON.parse(Buffer.from(mptObj.MPTokenMetadata ?? '', 'hex').toString('utf8'));
+            txType = meta?.ai?.transaction_type ?? '—';
+            txHash = (meta?.ai?.hash ?? '').slice(0, 8);
+          } catch { /* keep defaults */ }
+          const quorum = msSignerList?.SignerQuorum ?? 0;
+          let signerStatus = [];
+          if (msSignerList && msMessengerAddress) {
+            signerStatus = await Promise.all(
+              (msSignerList.SignerEntries ?? []).map(async e => {
+                const addr   = e.SignerEntry.Account;
+                const weight = e.SignerEntry.SignerWeight;
+                try {
+                  const credResp = await state.client.request({
+                    command: 'ledger_entry',
+                    credential: {
+                      subject: addr,
+                      issuer: msMessengerAddress,
+                      credential_type: '4D554C5449534947',
+                    },
+                    ledger_index: 'validated',
+                  });
+                  const cred     = credResp.result.node ?? {};
+                  const accepted = !!(cred.Flags & LSF_ACCEPTED);
+                  return { address: addr, weight, accepted, prevTxnId: accepted ? cred.PreviousTxnID : null };
+                } catch {
+                  return { address: addr, weight, accepted: false, prevTxnId: null };
+                }
+              })
+            );
+          }
+          const currentWeight = signerStatus
+            .filter(s => s.accepted)
+            .reduce((sum, s) => sum + s.weight, 0);
+          return { mptObj, txType, txHash, currentWeight, quorum, signerStatus };
+        }));
       } catch { /* silent — sent list is optional */ }
     }
     msIncomingList = [];
@@ -5950,19 +5987,17 @@ function renderMultisignScreen() {
   if (msSentList.length === 0) {
     $('ms-sent-card').classList.add('hidden');
   } else {
-    sentListEl.innerHTML = msSentList.map((o, i) => {
-      let txType = '—', txHash = '—';
-      try {
-        const meta = JSON.parse(Buffer.from(o.MPTokenMetadata ?? '', 'hex').toString('utf8'));
-        txType = meta?.ai?.transaction_type ?? '—';
-        txHash = (meta?.ai?.hash ?? '').slice(0, 8);
-      } catch { /* keep defaults */ }
+    sentListEl.innerHTML = msSentList.map((entry, i) => {
+      const met   = entry.quorum > 0 && entry.currentWeight >= entry.quorum;
+      const badge = entry.quorum > 0
+        ? `<span class="ms-sent-weight-badge ${met ? 'met' : 'pending'}">${entry.currentWeight}/${entry.quorum}</span>`
+        : `<span class="ms-sent-weight-badge pending">—</span>`;
       return `<div class="ms-sent-item" data-sent-idx="${i}">
         <div>
-          <div class="ms-sent-item-label">${esc(txType)}</div>
-          <div class="ms-sent-item-hash">${esc(txHash)}…</div>
+          <div class="ms-sent-item-label">${esc(entry.txType)}</div>
+          <div class="ms-sent-item-hash">${esc(entry.txHash)}…</div>
         </div>
-        <span class="ms-sent-item-chevron">›</span>
+        ${badge}
       </div>`;
     }).join('');
     sentListEl.querySelectorAll('.ms-sent-item').forEach(el => {
