@@ -1,5 +1,5 @@
 import './popup.css';
-import { Client, Wallet, dropsToXrp, xrpToDrops, encodeAccountID, decodeMPTokenMetadata, isValidClassicAddress } from 'xrpl';
+import { Client, Wallet, dropsToXrp, xrpToDrops, encodeAccountID, decodeAccountID, decodeMPTokenMetadata, isValidClassicAddress } from 'xrpl';
 import xrplPkg from 'xrpl/package.json';
 import QRCode from 'qrcode';
 import { getSdkError } from '@walletconnect/utils';
