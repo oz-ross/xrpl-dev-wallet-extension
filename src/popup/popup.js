@@ -7,7 +7,7 @@ import { generateMnemonic, validateMnemonic } from 'bip39';
 import TransportWebHID from '@ledgerhq/hw-transport-webhid';
 import Xrp from '@ledgerhq/hw-app-xrp';
 import { encode, encodeForSigning, decode } from 'ripple-binary-codec';
-import { sign as keypairsSign } from 'ripple-keypairs';
+import { sign as keypairsSign, deriveAddress } from 'ripple-keypairs';
 import { createHash } from 'crypto';
 
 // ─────────────────────────────────────────────
