@@ -6073,15 +6073,15 @@ async function openMsTrxnDetail(idx) {
     $('ms-trxn-quorum-required').textContent = String(entry.quorum);
     const weightEl = $('ms-trxn-current-weight');
     weightEl.textContent = `${entry.currentWeight} / ${entry.quorum}`;
-    weightEl.className   = `tx-value ${entry.currentWeight >= entry.quorum ? 'ms-trxn-weight-met' : 'ms-trxn-weight-pending'}`;
-    $('ms-trxn-quorum-card').classList.remove('hidden');
+    weightEl.className   = `tx-value ${entry.quorum > 0 && entry.currentWeight >= entry.quorum ? 'ms-trxn-weight-met' : 'ms-trxn-weight-pending'}`;
+    if (entry.quorum > 0) $('ms-trxn-quorum-card').classList.remove('hidden');
 
     // Expiry check
     let expired = false;
     try {
       const srvResp   = await state.client.request({ command: 'server_info' });
       const ledgerSeq = srvResp.result.info?.validated_ledger?.seq ?? 0;
-      if (decodedTxJson.LastLedgerSequence && decodedTxJson.LastLedgerSequence < ledgerSeq) {
+      if (decodedTxJson.LastLedgerSequence && decodedTxJson.LastLedgerSequence <= ledgerSeq) {
         expired = true;
       }
     } catch { /* assume not expired */ }
