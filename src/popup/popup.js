@@ -4540,6 +4540,7 @@ async function openMultisigSendView() {
   $('ms-dispatch-tx-summary').innerHTML = '';
   $('ms-dispatch-signer-rows').innerHTML = '';
   $('ms-dispatch-fee-estimate').textContent = '—';
+  $('ms-dispatch-ledger-buffer').value = '20';
   $('ms-dispatch-nft-status').textContent = '';
   $('ms-dispatch-nft-status').className = 'ms-dispatch-nft-status hidden';
   showView('multisig-send');
@@ -4554,7 +4555,10 @@ async function openMultisigSendView() {
     }
 
     await ensureConnected();
-    const filled = await state.client.autofill({ ...txJson });
+    const ledgerBuffer = Math.max(1, parseInt($('ms-dispatch-ledger-buffer').value, 10) || 20);
+    const srvResp      = await state.client.request({ command: 'server_info' });
+    const currentSeq   = srvResp.result.info?.validated_ledger?.seq ?? 0;
+    const filled = await state.client.autofill({ ...txJson, LastLedgerSequence: currentSeq + ledgerBuffer });
     filled.SigningPubKey = '';
     msDispatchTxHex  = encode(filled);
     msDispatchTxType = txJson.TransactionType ?? '';
