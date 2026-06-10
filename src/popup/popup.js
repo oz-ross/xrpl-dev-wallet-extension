@@ -5795,6 +5795,8 @@ let reviewSignerList    = null;   // null=unknown, []=none, [entries]=has signer
 let msDispatchTxHex     = '';     // autofilled+encoded unsigned tx blob for dispatch
 let msDispatchTxType    = '';     // TransactionType of the pending tx, for MPT metadata
 let msDispatchSigners   = [];     // [{ address, name }] for current dispatch
+let msSentList          = [];     // MPTokenIssuance objects with ac==='multisig' from messenger
+let msTrxnDetail        = null;   // { mptObj, decodedTxJson } for currently open detail
 let msFormState         = { quorum: '', signers: [{ address: '', weight: 1 }] };
 let msFormVisible       = false;  // setup form open in no-setup state
 let msUpdateMode        = false;  // true when editing existing signer list
@@ -5821,6 +5823,7 @@ async function loadMultisignData() {
   $('ms-form-card').classList.add('hidden');
   $('ms-master-key-card').classList.add('hidden');
   $('ms-messenger-card').classList.add('hidden');
+  $('ms-sent-card').classList.add('hidden');
 
   try {
     await ensureConnected();
@@ -5846,6 +5849,18 @@ async function loadMultisignData() {
 
     await refreshAddressNames();
     msMessengerAddress = await loadMessengerLink(state.activeAccount);
+    msSentList = [];
+    if (msMessengerAddress) {
+      try {
+        const allObjs = await fetchAllAccountObjects(msMessengerAddress);
+        msSentList = allObjs.filter(o => {
+          if (o.LedgerEntryType !== 'MPTokenIssuance') return false;
+          try {
+            return decodeMPTokenMetadata(o.MPTokenMetadata ?? '')?.ac === 'multisig';
+          } catch { return false; }
+        });
+      } catch { /* silent — sent list is optional */ }
+    }
     $('ms-loading').classList.add('hidden');
     renderMultisignScreen();
   } catch (err) {
@@ -5902,6 +5917,32 @@ function renderMultisignScreen() {
     : 'No messenger account set.';
   hideAlert('ms-messenger-error');
   $('ms-messenger-card').classList.remove('hidden');
+
+  // ── TRXN SENT card ──
+  const sentListEl = $('ms-sent-list');
+  if (msSentList.length === 0) {
+    $('ms-sent-card').classList.add('hidden');
+  } else {
+    sentListEl.innerHTML = msSentList.map((o, i) => {
+      let txType = '—', txHash = '—';
+      try {
+        const meta = decodeMPTokenMetadata(o.MPTokenMetadata ?? '');
+        txType = meta?.ai?.transaction_type ?? '—';
+        txHash = (meta?.ai?.hash ?? '').slice(0, 8);
+      } catch { /* keep defaults */ }
+      return `<div class="ms-sent-item" data-sent-idx="${i}">
+        <div>
+          <div class="ms-sent-item-label">${esc(txType)}</div>
+          <div class="ms-sent-item-hash">${esc(txHash)}…</div>
+        </div>
+        <span class="ms-sent-item-chevron">›</span>
+      </div>`;
+    }).join('');
+    sentListEl.querySelectorAll('.ms-sent-item').forEach(el => {
+      el.addEventListener('click', () => openMsTrxnDetail(+el.dataset.sentIdx));
+    });
+    $('ms-sent-card').classList.remove('hidden');
+  }
 }
 
 function renderSignerListSummary() {
