@@ -5945,6 +5945,45 @@ function renderMultisignScreen() {
   }
 }
 
+// ─────────────────────────────────────────────
+// MULTISIG TRXN DETAIL
+// ─────────────────────────────────────────────
+
+async function openMsTrxnDetail(idx) {
+  const mptObj = msSentList[idx];
+  if (!mptObj) return;
+  msTrxnDetail = null;
+
+  $('ms-trxn-detail-rows').innerHTML = '';
+  $('ms-trxn-raw-json').textContent = '';
+  $('ms-trxn-json-details').removeAttribute('open');
+  $('ms-trxn-cancel-progress').classList.add('hidden');
+  $('ms-trxn-cancel-progress').innerHTML = '';
+  hideAlert('ms-trxn-detail-error');
+  $('ms-trxn-cancel-btn').disabled = false;
+  $('ms-trxn-cancel-btn').textContent = 'Cancel Transaction';
+  $('ms-trxn-cancel-btn').classList.remove('hidden');
+  $('ms-trxn-close-btn').disabled = false;
+  showView('ms-trxn-detail');
+
+  try {
+    await ensureConnected();
+    const txResp = await state.client.request({
+      command: 'tx',
+      transaction: mptObj.PreviousTxnID,
+    });
+    const memoData = txResp.result?.Memos?.[0]?.Memo?.MemoData ?? '';
+    if (!memoData) throw new Error('No transaction data found in memo.');
+    const decodedTxJson = decode(memoData);
+    msTrxnDetail = { mptObj, decodedTxJson };
+    $('ms-trxn-detail-rows').innerHTML = buildTxRows(decodedTxJson);
+    $('ms-trxn-raw-json').textContent = JSON.stringify(decodedTxJson, null, 2);
+  } catch (err) {
+    showAlert('ms-trxn-detail-error', `Failed to load: ${err.message || 'Unknown error'}`);
+    $('ms-trxn-cancel-btn').disabled = true;
+  }
+}
+
 function renderSignerListSummary() {
   $('ms-quorum-display').textContent = msSignerList.SignerQuorum ?? '—';
   const entries = msSignerList.SignerEntries ?? [];
