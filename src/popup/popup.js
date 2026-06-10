@@ -5856,7 +5856,8 @@ async function loadMultisignData() {
         msSentList = allObjs.filter(o => {
           if (o.LedgerEntryType !== 'MPTokenIssuance') return false;
           try {
-            return decodeMPTokenMetadata(o.MPTokenMetadata ?? '')?.ac === 'multisig';
+            const meta = JSON.parse(Buffer.from(o.MPTokenMetadata ?? '', 'hex').toString('utf8'));
+            return meta?.ac === 'multisig';
           } catch { return false; }
         });
       } catch { /* silent — sent list is optional */ }
@@ -5926,7 +5927,7 @@ function renderMultisignScreen() {
     sentListEl.innerHTML = msSentList.map((o, i) => {
       let txType = '—', txHash = '—';
       try {
-        const meta = decodeMPTokenMetadata(o.MPTokenMetadata ?? '');
+        const meta = JSON.parse(Buffer.from(o.MPTokenMetadata ?? '', 'hex').toString('utf8'));
         txType = meta?.ai?.transaction_type ?? '—';
         txHash = (meta?.ai?.hash ?? '').slice(0, 8);
       } catch { /* keep defaults */ }
@@ -5972,7 +5973,7 @@ async function openMsTrxnDetail(idx) {
       command: 'tx',
       transaction: mptObj.PreviousTxnID,
     });
-    const memoData = txResp.result?.Memos?.[0]?.Memo?.MemoData ?? '';
+    const memoData = txResp.result?.tx_json?.Memos?.[0]?.Memo?.MemoData ?? '';
     if (!memoData) throw new Error('No transaction data found in memo.');
     const decodedTxJson = decode(memoData);
     msTrxnDetail = { mptObj, decodedTxJson };
