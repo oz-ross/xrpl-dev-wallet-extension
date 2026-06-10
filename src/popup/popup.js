@@ -4555,7 +4555,8 @@ async function openMultisigSendView() {
     await ensureConnected();
     const filled = await state.client.autofill({ ...txJson });
     filled.SigningPubKey = '';
-    msDispatchTxHex = encode(filled);
+    msDispatchTxHex  = encode(filled);
+    msDispatchTxType = txJson.TransactionType ?? '';
 
     await refreshAddressNames();
     msDispatchSigners = reviewSignerList.map(e => ({
@@ -4632,37 +4633,39 @@ async function executeMultisigDispatch() {
     return;
   }
 
-  // ── Step 1: Mint NFT ──────────────────────────────────────────────────────
-  const txHash = computeTxHash(msDispatchTxHex);
-  const nftUri = Buffer.from('MULTISIG:' + txHash).toString('hex').toUpperCase();
+  // ── Step 1: Create MPT Issuance ──────────────────────────────────────────
+  const txHash   = computeTxHash(msDispatchTxHex);
+  const mptMeta  = JSON.stringify({
+    ac: 'multisig',
+    ai: { hash: txHash, transaction_type: msDispatchTxType },
+  });
+  const mptMetaHex = Buffer.from(mptMeta).toString('hex').toUpperCase();
 
-  let nftTokenId;
+  let mptIssuanceId;
   try {
-    const mintTx = {
-      TransactionType: 'NFTokenMint',
+    const issuanceTx = {
+      TransactionType: 'MPTokenIssuanceCreate',
       Account: msMessengerAddress,
-      NFTokenTaxon: 0,
-      Flags: 1,        // tfBurnable; no tfTransferable = non-transferable
-      URI: nftUri,
+      MPTokenMetadata: mptMetaHex,
       Memos: [{ Memo: { MemoType: '5458', MemoData: msDispatchTxHex } }],
     };
-    const preparedMint = await state.client.autofill(mintTx);
-    const mintBlob = await signWithAddress(preparedMint, msMessengerAddress);
-    const mintResp = await state.client.submitAndWait(mintBlob);
-    const mintResult = mintResp.result?.meta?.TransactionResult;
-    if (mintResult !== 'tesSUCCESS') {
-      throw new Error(`NFTokenMint failed: ${mintResult ?? 'Unknown'}`);
+    const preparedIssuance = await state.client.autofill(issuanceTx);
+    const issuanceBlob = await signWithAddress(preparedIssuance, msMessengerAddress);
+    const issuanceResp = await state.client.submitAndWait(issuanceBlob);
+    const issuanceResult = issuanceResp.result?.meta?.TransactionResult;
+    if (issuanceResult !== 'tesSUCCESS') {
+      throw new Error(`MPTokenIssuanceCreate failed: ${issuanceResult ?? 'Unknown'}`);
     }
-    nftTokenId = mintResp.result.meta?.nftoken_id;
-    if (!nftTokenId) throw new Error('NFTokenID not found in mint response.');
-    const nftStatusEl = $('ms-dispatch-nft-status');
-    nftStatusEl.textContent = `✓ NFT minted: ${nftTokenId.slice(0, 12)}…`;
-    nftStatusEl.className = 'ms-dispatch-nft-status success';
+    mptIssuanceId = issuanceResp.result.meta?.mpt_issuance_id;
+    if (!mptIssuanceId) throw new Error('mpt_issuance_id not found in response.');
+    const statusEl = $('ms-dispatch-nft-status');
+    statusEl.textContent = `✓ MPT created: ${mptIssuanceId.slice(0, 12)}…`;
+    statusEl.className = 'ms-dispatch-nft-status success';
   } catch (err) {
-    const nftStatusEl = $('ms-dispatch-nft-status');
-    nftStatusEl.textContent = `✗ NFT mint failed: ${err.message || 'Unknown error'}`;
-    nftStatusEl.className = 'ms-dispatch-nft-status error';
-    showAlert('ms-dispatch-error', `Could not mint NFT: ${err.message || 'Unknown error'}`);
+    const statusEl = $('ms-dispatch-nft-status');
+    statusEl.textContent = `✗ MPT creation failed: ${err.message || 'Unknown error'}`;
+    statusEl.className = 'ms-dispatch-nft-status error';
+    showAlert('ms-dispatch-error', `Could not create MPT: ${err.message || 'Unknown error'}`);
     $('ms-dispatch-confirm-btn').disabled = false;
     $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
     $('ms-dispatch-cancel-btn').classList.remove('hidden');
@@ -4686,7 +4689,7 @@ async function executeMultisigDispatch() {
       Account: msMessengerAddress,
       Subject: signer.address,
       CredentialType: '4D554C5449534947',
-      URI: nftTokenId,
+      URI: mptIssuanceId,
     };
 
     try {
@@ -5789,6 +5792,7 @@ let msMasterKeyDisabled = false;
 let msMessengerAddress  = null;   // locally stored messenger account for active account
 let reviewSignerList    = null;   // null=unknown, []=none, [entries]=has signers — for send-review probe
 let msDispatchTxHex     = '';     // autofilled+encoded unsigned tx blob for dispatch
+let msDispatchTxType    = '';     // TransactionType of the pending tx, for MPT metadata
 let msDispatchSigners   = [];     // [{ address, name }] for current dispatch
 let msFormState         = { quorum: '', signers: [{ address: '', weight: 1 }] };
 let msFormVisible       = false;  // setup form open in no-setup state
