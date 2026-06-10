@@ -4618,7 +4618,7 @@ async function executeMultisigDispatch() {
   if (!msDispatchTxHex || !msDispatchSigners.length) return;
 
   $('ms-dispatch-confirm-btn').disabled = true;
-  $('ms-dispatch-confirm-btn').textContent = 'Minting NFT…';
+  $('ms-dispatch-confirm-btn').textContent = 'Creating MPT…';
   $('ms-dispatch-cancel-btn').classList.add('hidden');
   hideAlert('ms-dispatch-error');
   $('ms-dispatch-nft-status').className = 'ms-dispatch-nft-status hidden';
