@@ -4558,7 +4558,9 @@ async function openMultisigSendView() {
     const ledgerBuffer = Math.max(1, parseInt($('ms-dispatch-ledger-buffer').value, 10) || 20);
     const srvResp      = await state.client.request({ command: 'server_info' });
     const currentSeq   = srvResp.result.info?.validated_ledger?.seq ?? 0;
-    const filled = await state.client.autofill({ ...txJson, LastLedgerSequence: currentSeq + ledgerBuffer });
+    const filled = await state.client.autofill({ ...txJson });
+    // Override after autofill to guarantee the user-specified window is applied
+    filled.LastLedgerSequence = currentSeq + ledgerBuffer;
     filled.SigningPubKey = '';
     msDispatchTxHex  = encode(filled);
     msDispatchTxType = txJson.TransactionType ?? '';
