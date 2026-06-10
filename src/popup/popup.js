@@ -4556,14 +4556,16 @@ async function openMultisigSendView() {
 
     await ensureConnected();
     const ledgerBuffer  = Math.max(1, parseInt($('ms-dispatch-ledger-buffer').value, 10) || 20);
-    const filled        = await state.client.autofill({ ...txJson });
     const ledgerResp    = await state.client.request({ command: 'ledger_current' });
-    const currentSeq    = ledgerResp.result.ledger_current_index;
-    // Set after autofill so it cannot be overridden
+    const currentSeq    = Number(ledgerResp.result.ledger_current_index);
+    const filled        = await state.client.autofill({ ...txJson });
     filled.LastLedgerSequence = currentSeq + ledgerBuffer;
     filled.SigningPubKey = '';
     msDispatchTxHex  = encode(filled);
     msDispatchTxType = txJson.TransactionType ?? '';
+
+    // Verify by decoding the encoded hex — this is what signers will actually receive
+    const verifiedTx = decode(msDispatchTxHex);
 
     await refreshAddressNames();
     msDispatchSigners = reviewSignerList.map(e => ({
@@ -4574,9 +4576,9 @@ async function openMultisigSendView() {
     const feeDrops = parseInt(filled.Fee ?? '12', 10);
     const totalDrops = feeDrops * msDispatchSigners.length;
     const xrp = (totalDrops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
-    $('ms-dispatch-fee-estimate').textContent = `~${xrp} XRP (~${totalDrops} drops)`;
+    $('ms-dispatch-fee-estimate').textContent = `~${xrp} XRP (~${totalDrops} drops) · expires ~ledger ${verifiedTx.LastLedgerSequence ?? '?'}`;
 
-    $('ms-dispatch-tx-summary').innerHTML = buildTxRows(txJson);
+    $('ms-dispatch-tx-summary').innerHTML = buildTxRows(verifiedTx);
 
     $('ms-dispatch-signer-rows').innerHTML = msDispatchSigners.map((s, i) => `
       <div class="ms-dispatch-signer-row">
