@@ -5798,6 +5798,8 @@ let msDispatchSigners   = [];     // [{ address, name }] for current dispatch
 let msSentList          = [];     // MPTokenIssuance objects with ac==='multisig' from messenger
 let msTrxnDetail        = null;   // { mptObj, decodedTxJson } for currently open detail
 let msCancelCredsDone   = false;  // true after cred revocations complete — skips creds on MPT retry
+let msIncomingList      = [];     // [{ credential, txType, txHash }] — MULTISIG creds for current account
+let msMsSignDetail      = null;   // { credential, decodedTxJson, verified, alreadySigned }
 let msFormState         = { quorum: '', signers: [{ address: '', weight: 1 }] };
 let msFormVisible       = false;  // setup form open in no-setup state
 let msUpdateMode        = false;  // true when editing existing signer list
@@ -5825,6 +5827,7 @@ async function loadMultisignData() {
   $('ms-master-key-card').classList.add('hidden');
   $('ms-messenger-card').classList.add('hidden');
   $('ms-sent-card').classList.add('hidden');
+  $('ms-incoming-card').classList.add('hidden');
 
   try {
     await ensureConnected();
@@ -5863,6 +5866,32 @@ async function loadMultisignData() {
         });
       } catch { /* silent — sent list is optional */ }
     }
+    msIncomingList = [];
+    try {
+      const credResp = await state.client.request({
+        command: 'account_objects',
+        account: state.activeAccount,
+        ledger_index: 'validated',
+      });
+      const multisigCreds = (credResp.result.account_objects ?? [])
+        .filter(o => o.LedgerEntryType === 'Credential' && hexToUtf8(o.CredentialType ?? '') === 'MULTISIG');
+      for (const cred of multisigCreds) {
+        try {
+          const mptResp = await state.client.request({
+            command: 'ledger_entry',
+            mpt_issuance: cred.URI,
+            ledger_index: 'validated',
+          });
+          const node = mptResp.result.node ?? {};
+          const meta = JSON.parse(Buffer.from(node.MPTokenMetadata ?? '', 'hex').toString('utf8'));
+          msIncomingList.push({
+            credential: cred,
+            txType: meta?.ai?.transaction_type ?? '—',
+            txHash: (meta?.ai?.hash ?? '').slice(0, 8),
+          });
+        } catch { /* skip this credential */ }
+      }
+    } catch { /* silent — incoming list is optional */ }
     $('ms-loading').classList.add('hidden');
     renderMultisignScreen();
   } catch (err) {
@@ -5944,6 +5973,26 @@ function renderMultisignScreen() {
       el.addEventListener('click', () => openMsTrxnDetail(+el.dataset.sentIdx));
     });
     $('ms-sent-card').classList.remove('hidden');
+  }
+
+  // ── TRXN FOR SIGNATURE card ──
+  const incomingListEl = $('ms-incoming-list');
+  if (msIncomingList.length === 0) {
+    $('ms-incoming-card').classList.add('hidden');
+  } else {
+    incomingListEl.innerHTML = msIncomingList.map((item, i) => {
+      const signed = !!(item.credential.Flags & LSF_ACCEPTED);
+      return `<div class="ms-incoming-item" data-incoming-idx="${i}">
+        <div class="ms-incoming-item-left">
+          <div class="ms-incoming-item-label">${esc(item.txType)}: ${esc(item.txHash)}…</div>
+        </div>
+        <span class="ms-incoming-item-status ${signed ? 'signed' : 'waiting'}">${signed ? '✓ Signed' : '○ Waiting'}</span>
+      </div>`;
+    }).join('');
+    incomingListEl.querySelectorAll('.ms-incoming-item').forEach(el => {
+      el.addEventListener('click', () => openMsSignDetail(+el.dataset.incomingIdx));
+    });
+    $('ms-incoming-card').classList.remove('hidden');
   }
 }
 
