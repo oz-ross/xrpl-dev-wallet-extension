@@ -6229,6 +6229,130 @@ async function cancelMsTrxn() {
   $('ms-trxn-close-btn').disabled = false;
 }
 
+function hexFromMemo(memos, typeName) {
+  const typeHex = Buffer.from(typeName).toString('hex').toUpperCase();
+  const found   = memos.find(m => m.Memo?.MemoType?.toUpperCase() === typeHex);
+  return found?.Memo?.MemoData ?? null;
+}
+
+async function submitMultisigTx() {
+  if (!msTrxnDetail) return;
+
+  const { mptObj, decodedTxJson, entry } = msTrxnDetail;
+  $('ms-trxn-submit-btn').disabled = true;
+  $('ms-trxn-submit-btn').textContent = 'Collecting signatures…';
+  $('ms-trxn-cancel-btn').classList.add('hidden');
+  $('ms-trxn-close-btn').disabled = true;
+  hideAlert('ms-trxn-detail-error');
+
+  try {
+    await ensureConnected();
+
+    // Collect signatures from CredentialAccept tx memos
+    const signerData = [];
+    for (const s of entry.signerStatus.filter(ss => ss.accepted && ss.prevTxnId)) {
+      const txResp = await state.client.request({ command: 'tx', transaction: s.prevTxnId });
+      const memos  = txResp.result?.tx_json?.Memos ?? [];
+      const pubKey = hexFromMemo(memos, 'SigningPubKey');
+      const sig    = hexFromMemo(memos, 'TxnSignature');
+      if (pubKey && sig) signerData.push({ address: s.address, pubKey, sig });
+    }
+
+    if (signerData.length === 0) {
+      throw new Error('No valid signatures found in accepted credentials.');
+    }
+
+    // Build Signers array sorted by account ID ascending (XRPL requirement)
+    const Signers = signerData
+      .map(s => ({ Signer: { Account: s.address, SigningPubKey: s.pubKey, TxnSignature: s.sig } }))
+      .sort((a, b) => Buffer.compare(
+        Buffer.from(decodeAccountID(a.Signer.Account)),
+        Buffer.from(decodeAccountID(b.Signer.Account))
+      ));
+
+    // Submit multisigned transaction
+    $('ms-trxn-submit-btn').textContent = 'Submitting…';
+    const finalTx  = { ...decodedTxJson, Signers };
+    const tx_blob  = encode(finalTx);
+    const response = await state.client.submitAndWait(tx_blob);
+    const txResult = response.result?.meta?.TransactionResult;
+    if (txResult !== 'tesSUCCESS') throw new Error(`Transaction failed: ${txResult ?? 'Unknown'}`);
+
+    // Success — clean up credentials + MPT
+    $('ms-trxn-submit-btn').textContent = 'Cleaning up…';
+    $('ms-trxn-cancel-progress').classList.remove('hidden');
+    const cleanupSteps = [
+      ...entry.signerStatus.map(s => ({
+        label: `Revoke: ${resolveAddrDisplay(s.address)} (${truncAddr(s.address)})`,
+        address: s.address,
+      })),
+      { label: 'Destroy MPT issuance' },
+    ];
+    $('ms-trxn-cancel-progress').innerHTML = cleanupSteps.map((s, i) =>
+      `<div class="ms-trxn-cancel-row">
+        <span class="ms-trxn-cancel-label">${esc(s.label)}</span>
+        <span class="ms-trxn-cancel-status" id="ms-submit-cleanup-${i}">…</span>
+      </div>`
+    ).join('');
+
+    for (let i = 0; i < entry.signerStatus.length; i++) {
+      const addr     = entry.signerStatus[i].address;
+      const statusEl = $(`ms-submit-cleanup-${i}`);
+      try {
+        const credTx   = {
+          TransactionType: 'CredentialDelete',
+          Account: msMessengerAddress,
+          Subject: addr,
+          CredentialType: '4D554C5449534947',
+        };
+        const prepared = await state.client.autofill(credTx);
+        const tx_blob  = await signWithAddress(prepared, msMessengerAddress);
+        const resp     = await state.client.submitAndWait(tx_blob);
+        const result   = resp.result?.meta?.TransactionResult;
+        statusEl.textContent = (result === 'tesSUCCESS' || result === 'tecNO_ENTRY') ? '✓' : `✗ ${result ?? 'Unknown'}`;
+        statusEl.className   = (result === 'tesSUCCESS' || result === 'tecNO_ENTRY')
+          ? 'ms-trxn-cancel-status success'
+          : 'ms-trxn-cancel-status error';
+      } catch (err) {
+        statusEl.textContent = `✗ ${(err.message || 'Error').slice(0, 20)}`;
+        statusEl.className   = 'ms-trxn-cancel-status error';
+      }
+    }
+
+    const mptStatusEl   = $(`ms-submit-cleanup-${entry.signerStatus.length}`);
+    const mptIssuanceId = mptObj.MPTokenIssuanceID ?? mptObj.mpt_issuance_id ?? mptObj.index;
+    try {
+      const destroyTx = {
+        TransactionType: 'MPTokenIssuanceDestroy',
+        Account: msMessengerAddress,
+        MPTokenIssuanceID: mptIssuanceId,
+      };
+      const prepared = await state.client.autofill(destroyTx);
+      const tx_blob  = await signWithAddress(prepared, msMessengerAddress);
+      const resp     = await state.client.submitAndWait(tx_blob);
+      const result   = resp.result?.meta?.TransactionResult;
+      mptStatusEl.textContent = result === 'tesSUCCESS' ? '✓' : `✗ ${result ?? 'Unknown'}`;
+      mptStatusEl.className   = result === 'tesSUCCESS'
+        ? 'ms-trxn-cancel-status success'
+        : 'ms-trxn-cancel-status error';
+    } catch (err) {
+      mptStatusEl.textContent = `✗ ${(err.message || 'Error').slice(0, 20)}`;
+      mptStatusEl.className   = 'ms-trxn-cancel-status error';
+    }
+
+    $('ms-trxn-submit-btn').classList.add('hidden');
+    $('ms-trxn-close-btn').disabled = false;
+    $('ms-trxn-close-btn').textContent = 'Done';
+
+  } catch (err) {
+    showAlert('ms-trxn-detail-error', err.message || 'Submission failed.');
+    $('ms-trxn-submit-btn').disabled = false;
+    $('ms-trxn-submit-btn').textContent = 'Submit';
+    $('ms-trxn-cancel-btn').classList.remove('hidden');
+    $('ms-trxn-close-btn').disabled = false;
+  }
+}
+
 // ─────────────────────────────────────────────
 // MULTISIG SIGN INCOMING
 // ─────────────────────────────────────────────
