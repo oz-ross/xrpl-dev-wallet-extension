@@ -1597,6 +1597,36 @@
     </div>
     <button id="ms-master-key-btn" class="btn btn-full ms-master-key-btn">…</button>
   </div>
+
+  <!-- ── TRXN SENT card ── -->
+  <div id="ms-sent-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">Transactions Sent</div>
+    <div id="ms-sent-list" class="ms-sent-list"></div>
+  </div>
+</div>
+
+<!-- ===== MULTISIG TRANSACTION DETAIL ===== -->
+<div id="view-ms-trxn-detail" class="view hidden">
+  <div class="view-header">
+    <h2>Transaction Details</h2>
+  </div>
+
+  <div id="ms-trxn-detail-rows" class="tx-card"></div>
+
+  <details id="ms-trxn-json-details" class="review-json-panel">
+    <summary class="review-json-summary">Raw JSON</summary>
+    <div class="review-json-body">
+      <pre id="ms-trxn-raw-json"></pre>
+    </div>
+  </details>
+
+  <div id="ms-trxn-cancel-progress" class="ms-trxn-cancel-progress hidden"></div>
+  <div id="ms-trxn-detail-error" class="alert alert-error hidden" style="margin-top:8px"></div>
+
+  <div class="action-row" style="margin-top:12px">
+    <button id="ms-trxn-close-btn" class="btn btn-ghost">Close</button>
+    <button id="ms-trxn-cancel-btn" class="btn btn-primary">Cancel Transaction</button>
+  </div>
 </div>
 
 <!-- ===== MULTISIGN PICKER MODAL ===== -->
