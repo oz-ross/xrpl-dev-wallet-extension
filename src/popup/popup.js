@@ -6,7 +6,7 @@ import { getSdkError } from '@walletconnect/utils';
 import { generateMnemonic, validateMnemonic } from 'bip39';
 import TransportWebHID from '@ledgerhq/hw-transport-webhid';
 import Xrp from '@ledgerhq/hw-app-xrp';
-import { encode, encodeForSigning, decode } from 'ripple-binary-codec';
+import { encode, encodeForSigning, encodeForMultisigning, decode } from 'ripple-binary-codec';
 import { sign as keypairsSign, deriveAddress } from 'ripple-keypairs';
 import { createHash } from 'crypto';
 
@@ -5868,12 +5868,8 @@ async function loadMultisignData() {
     }
     msIncomingList = [];
     try {
-      const credResp = await state.client.request({
-        command: 'account_objects',
-        account: state.activeAccount,
-        ledger_index: 'validated',
-      });
-      const multisigCreds = (credResp.result.account_objects ?? [])
+      const allObjs = await fetchAllAccountObjects(state.activeAccount);
+      const multisigCreds = allObjs
         .filter(o => o.LedgerEntryType === 'Credential' && hexToUtf8(o.CredentialType ?? '') === 'MULTISIG');
       for (const cred of multisigCreds) {
         try {
@@ -6254,21 +6250,12 @@ async function openMsSignDetail(idx) {
 async function getSignatureForAddress(txJson, address) {
   const wallet = getWalletForAddress(address);
   if (wallet) {
-    const sig = keypairsSign(encodeForSigning(txJson), wallet.privateKey).toUpperCase();
+    const sig = keypairsSign(encodeForMultisigning(txJson, address), wallet.privateKey).toUpperCase();
     return { pubKey: wallet.publicKey, sig };
   }
   const ledgerKr = state.keyrings.find(k => k.type === 'ledger' && k.address === address);
   if (ledgerKr) {
-    const txBlob = encode(txJson);
-    let transport;
-    try {
-      transport = await TransportWebHID.create();
-      const xrpApp = new Xrp(transport);
-      const sig = await xrpApp.signTransaction(ledgerKr.derivationPath, txBlob);
-      return { pubKey: ledgerKr.publicKey, sig: sig.toUpperCase() };
-    } finally {
-      if (transport) await transport.close().catch(() => {});
-    }
+    throw new Error('Ledger hardware wallets cannot be used as multisig signers in this version.');
   }
   throw new Error(`No signing key available for ${truncAddr(address)}.`);
 }
