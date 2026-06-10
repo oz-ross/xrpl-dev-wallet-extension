@@ -6003,22 +6003,6 @@ async function cancelMsTrxn() {
   const progressEl  = $('ms-trxn-cancel-progress');
   progressEl.classList.remove('hidden');
 
-  // On first run, build and render all steps; on retry (creds already done), reuse existing rows
-  if (!msCancelCredsDone) {
-    const allSteps = [
-      ...signers.map(e => ({
-        label: `Revoke: ${resolveAddrDisplay(e.SignerEntry.Account)} (${truncAddr(e.SignerEntry.Account)})`,
-      })),
-      { label: 'Destroy MPT issuance' },
-    ];
-    progressEl.innerHTML = allSteps.map((s, i) =>
-      `<div class="ms-trxn-cancel-row">
-        <span class="ms-trxn-cancel-label">${esc(s.label)}</span>
-        <span class="ms-trxn-cancel-status" id="ms-cancel-status-${i}">…</span>
-      </div>`
-    ).join('');
-  }
-
   try {
     await ensureConnected();
   } catch (err) {
@@ -6029,13 +6013,45 @@ async function cancelMsTrxn() {
     return;
   }
 
-  // ── Credential revocations (first run only) ──────────────────────────────
+  // ── Credential revocations — query ledger first, only act on existing creds ──
   if (!msCancelCredsDone) {
-    for (let i = 0; i < signers.length; i++) {
-      const signerAddr = signers[i].SignerEntry.Account;
+    // Find which signers actually have an outstanding credential
+    const existingCredSigners = [];
+    for (const entry of signers) {
+      const addr = entry.SignerEntry.Account;
+      try {
+        await state.client.request({
+          command: 'ledger_entry',
+          credential: {
+            subject: addr,
+            issuer: msMessengerAddress,
+            credential_type: '4D554C5449534947',
+          },
+          ledger_index: 'validated',
+        });
+        existingCredSigners.push(addr);
+      } catch { /* credential not found — skip */ }
+    }
+
+    // Build progress rows only for existing credentials + MPT step
+    const credSteps = existingCredSigners.map(addr => ({
+      label: `Revoke: ${resolveAddrDisplay(addr)} (${truncAddr(addr)})`,
+      address: addr,
+    }));
+    progressEl.innerHTML = [
+      ...credSteps.map((s, i) => `<div class="ms-trxn-cancel-row">
+        <span class="ms-trxn-cancel-label">${esc(s.label)}</span>
+        <span class="ms-trxn-cancel-status" id="ms-cancel-status-${i}">…</span>
+      </div>`),
+      `<div class="ms-trxn-cancel-row">
+        <span class="ms-trxn-cancel-label">Destroy MPT issuance</span>
+        <span class="ms-trxn-cancel-status" id="ms-cancel-status-mpt">…</span>
+      </div>`,
+    ].join('');
+
+    for (let i = 0; i < credSteps.length; i++) {
+      const signerAddr = credSteps[i].address;
       const statusEl   = $(`ms-cancel-status-${i}`);
-      statusEl.textContent = '…';
-      statusEl.className = 'ms-trxn-cancel-status';
       try {
         const tx = {
           TransactionType: 'CredentialDelete',
@@ -6063,7 +6079,7 @@ async function cancelMsTrxn() {
   }
 
   // ── MPT issuance destroy ─────────────────────────────────────────────────
-  const mptStatusEl = $(`ms-cancel-status-${signers.length}`);
+  const mptStatusEl = $('ms-cancel-status-mpt');
   mptStatusEl.textContent = '…';
   mptStatusEl.className = 'ms-trxn-cancel-status';
   const mptIssuanceId = mptObj.MPTokenIssuanceID ?? mptObj.mpt_issuance_id ?? mptObj.index;
