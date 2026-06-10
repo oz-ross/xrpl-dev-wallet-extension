@@ -6167,6 +6167,90 @@ async function cancelMsTrxn() {
   $('ms-trxn-close-btn').disabled = false;
 }
 
+// ─────────────────────────────────────────────
+// MULTISIG SIGN INCOMING
+// ─────────────────────────────────────────────
+
+async function openMsSignDetail(idx) {
+  const item = msIncomingList[idx];
+  if (!item) return;
+  msMsSignDetail = null;
+
+  $('ms-sign-from').textContent = '—';
+  $('ms-sign-via').textContent  = '—';
+  $('ms-sign-detail-rows').innerHTML = '';
+  $('ms-sign-raw-json').textContent  = '';
+  $('ms-sign-json-details').removeAttribute('open');
+  $('ms-sign-verification').textContent = '';
+  $('ms-sign-verification').className   = 'ms-sign-verification hidden';
+  hideAlert('ms-sign-detail-error');
+  $('ms-sign-submit-btn').disabled = true;
+  $('ms-sign-submit-btn').textContent = 'Sign Transaction';
+  $('ms-sign-close-btn').disabled = false;
+  showView('ms-sign-detail');
+
+  try {
+    await ensureConnected();
+
+    // Get MPT PreviousTxnID
+    const mptResp = await state.client.request({
+      command: 'ledger_entry',
+      mpt_issuance: item.credential.URI,
+      ledger_index: 'validated',
+    });
+    const mptNode  = mptResp.result.node ?? {};
+    const prevTxId = mptNode.PreviousTxnID;
+    if (!prevTxId) throw new Error('MPT has no PreviousTxnID.');
+
+    // Fetch MPTokenIssuanceCreate tx and decode memo
+    const txResp = await state.client.request({
+      command: 'tx',
+      transaction: prevTxId,
+    });
+    const memoData = txResp.result?.tx_json?.Memos?.[0]?.Memo?.MemoData ?? '';
+    if (!memoData) throw new Error('No transaction data found in memo.');
+    const decodedTxJson = decode(memoData);
+
+    // Populate header
+    const txAccount = decodedTxJson.Account ?? '';
+    const issuer    = item.credential.Issuer ?? '';
+    $('ms-sign-from').textContent = `${resolveAddrDisplay(txAccount)} (${truncAddr(txAccount)})`;
+    $('ms-sign-via').textContent  = `${resolveAddrDisplay(issuer)} (${truncAddr(issuer)})`;
+
+    // Verify MessageKey → derive address → compare to credential Issuer
+    let verified = false;
+    try {
+      const infoResp = await state.client.request({
+        command: 'account_info',
+        account: txAccount,
+        ledger_index: 'validated',
+      });
+      const messageKey = infoResp.result.account_data?.MessageKey ?? '';
+      if (messageKey) verified = (deriveAddress(messageKey) === issuer);
+    } catch { /* treat as unverified */ }
+
+    const verEl = $('ms-sign-verification');
+    if (verified) {
+      verEl.textContent = '● Sender Verified';
+      verEl.className   = 'ms-sign-verification verified';
+    } else {
+      verEl.textContent = '● Sender Failed Verification';
+      verEl.className   = 'ms-sign-verification failed';
+    }
+
+    const alreadySigned = !!(item.credential.Flags & LSF_ACCEPTED);
+    msMsSignDetail = { credential: item.credential, decodedTxJson, verified, alreadySigned };
+
+    $('ms-sign-detail-rows').innerHTML = buildTxRows(decodedTxJson);
+    $('ms-sign-raw-json').textContent  = JSON.stringify(decodedTxJson, null, 2);
+
+    $('ms-sign-submit-btn').disabled =
+      !verified || alreadySigned || isActiveAccountReadOnly();
+  } catch (err) {
+    showAlert('ms-sign-detail-error', `Failed to load: ${err.message || 'Unknown error'}`);
+  }
+}
+
 function renderSignerListSummary() {
   $('ms-quorum-display').textContent = msSignerList.SignerQuorum ?? '—';
   const entries = msSignerList.SignerEntries ?? [];
