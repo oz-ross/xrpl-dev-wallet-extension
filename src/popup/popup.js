@@ -5984,6 +5984,106 @@ async function openMsTrxnDetail(idx) {
   }
 }
 
+async function cancelMsTrxn() {
+  if (!msTrxnDetail || !msSignerList) {
+    showAlert('ms-trxn-detail-error', 'Signer list not loaded. Return to Multisig screen and try again.');
+    return;
+  }
+
+  $('ms-trxn-cancel-btn').disabled = true;
+  $('ms-trxn-cancel-btn').textContent = 'Cancelling…';
+  $('ms-trxn-close-btn').disabled = true;
+  hideAlert('ms-trxn-detail-error');
+
+  const { mptObj }  = msTrxnDetail;
+  const signers     = msSignerList.SignerEntries ?? [];
+  const progressEl  = $('ms-trxn-cancel-progress');
+  progressEl.classList.remove('hidden');
+
+  const allSteps = [
+    ...signers.map(e => ({
+      label: `Revoke: ${resolveAddrDisplay(e.SignerEntry.Account)} (${truncAddr(e.SignerEntry.Account)})`,
+      type: 'cred',
+      address: e.SignerEntry.Account,
+    })),
+    { label: 'Destroy MPT issuance', type: 'mpt' },
+  ];
+
+  progressEl.innerHTML = allSteps.map((s, i) =>
+    `<div class="ms-trxn-cancel-row">
+      <span class="ms-trxn-cancel-label">${esc(s.label)}</span>
+      <span class="ms-trxn-cancel-status" id="ms-cancel-status-${i}">…</span>
+    </div>`
+  ).join('');
+
+  try {
+    await ensureConnected();
+  } catch (err) {
+    showAlert('ms-trxn-detail-error', `Connection failed: ${err.message || 'Unknown error'}`);
+    $('ms-trxn-cancel-btn').disabled = false;
+    $('ms-trxn-cancel-btn').textContent = 'Cancel Transaction';
+    $('ms-trxn-close-btn').disabled = false;
+    return;
+  }
+
+  for (let i = 0; i < signers.length; i++) {
+    const signerAddr = signers[i].SignerEntry.Account;
+    const statusEl   = $(`ms-cancel-status-${i}`);
+    statusEl.textContent = '…';
+    statusEl.className = 'ms-trxn-cancel-status';
+    try {
+      const tx = {
+        TransactionType: 'CredentialDelete',
+        Account: msMessengerAddress,
+        Subject: signerAddr,
+        CredentialType: '4D554C5449534947',
+      };
+      const prepared = await state.client.autofill(tx);
+      const tx_blob  = await signWithAddress(prepared, msMessengerAddress);
+      const resp     = await state.client.submitAndWait(tx_blob);
+      const result   = resp.result?.meta?.TransactionResult;
+      if (result === 'tesSUCCESS' || result === 'tecNO_ENTRY') {
+        statusEl.textContent = '✓';
+        statusEl.className = 'ms-trxn-cancel-status success';
+      } else {
+        statusEl.textContent = `✗ ${result ?? 'Unknown'}`;
+        statusEl.className = 'ms-trxn-cancel-status error';
+      }
+    } catch (err) {
+      statusEl.textContent = `✗ ${(err.message || 'Error').slice(0, 20)}`;
+      statusEl.className = 'ms-trxn-cancel-status error';
+    }
+  }
+
+  const mptStatusEl = $(`ms-cancel-status-${signers.length}`);
+  mptStatusEl.textContent = '…';
+  mptStatusEl.className = 'ms-trxn-cancel-status';
+  try {
+    const destroyTx = {
+      TransactionType: 'MPTokenIssuanceDestroy',
+      Account: msMessengerAddress,
+      MPTokenIssuanceID: mptObj.MPTokenIssuanceID,
+    };
+    const prepared = await state.client.autofill(destroyTx);
+    const tx_blob  = await signWithAddress(prepared, msMessengerAddress);
+    const resp     = await state.client.submitAndWait(tx_blob);
+    const result   = resp.result?.meta?.TransactionResult;
+    if (result === 'tesSUCCESS') {
+      mptStatusEl.textContent = '✓';
+      mptStatusEl.className = 'ms-trxn-cancel-status success';
+    } else {
+      mptStatusEl.textContent = `✗ ${result ?? 'Unknown'}`;
+      mptStatusEl.className = 'ms-trxn-cancel-status error';
+    }
+  } catch (err) {
+    mptStatusEl.textContent = `✗ ${(err.message || 'Error').slice(0, 20)}`;
+    mptStatusEl.className = 'ms-trxn-cancel-status error';
+  }
+
+  $('ms-trxn-cancel-btn').classList.add('hidden');
+  $('ms-trxn-close-btn').disabled = false;
+}
+
 function renderSignerListSummary() {
   $('ms-quorum-display').textContent = msSignerList.SignerQuorum ?? '—';
   const entries = msSignerList.SignerEntries ?? [];
