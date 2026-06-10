@@ -2785,6 +2785,22 @@ details[open] .review-json-summary::before {
 .ms-trxn-cancel-status.success { color: var(--success); }
 .ms-trxn-cancel-status.error { color: #ef4444; font-size: 11px; }
 
+/* Incoming transactions list */
+.ms-incoming-list { }
+.ms-incoming-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.ms-incoming-item:last-child { border-bottom: none; }
+.ms-incoming-item:hover { background: var(--surface-2); }
+.ms-incoming-item-left { flex: 1; }
+.ms-incoming-item-label { font-size: 12px; font-weight: 500; }
+.ms-incoming-item-hash { font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-3); margin-top: 1px; }
+.ms-incoming-item-status { font-size: 11px; white-space: nowrap; }
+.ms-incoming-item-status.signed { color: var(--success); }
+.ms-incoming-item-status.waiting { color: var(--text-3); }
+/* Verification badge */
+.ms-sign-verification { font-size: 12px; font-weight: 500; padding: 8px 12px; border-radius: var(--radius-sm); margin-bottom: 8px; }
+.ms-sign-verification.verified { background: rgba(16,185,129,0.12); color: var(--success); border: 1px solid rgba(16,185,129,0.3); }
+.ms-sign-verification.failed { background: var(--danger-dim); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
+
 /* Picker modal */
 .ms-picker-modal {
   position: fixed; inset: 0; z-index: 200;
