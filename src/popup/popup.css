@@ -2768,6 +2768,23 @@ details[open] .review-json-summary::before {
 .ms-dispatch-nft-status.success { color: var(--success); border-color: rgba(16,185,129,0.3); }
 .ms-dispatch-nft-status.error { color: #ef4444; border-color: rgba(239,68,68,0.3); }
 
+/* Sent list */
+.ms-sent-list { }
+.ms-sent-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.ms-sent-item:last-child { border-bottom: none; }
+.ms-sent-item:hover { background: var(--surface-2); }
+.ms-sent-item-label { font-size: 12px; font-weight: 500; }
+.ms-sent-item-hash { font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-3); margin-top: 1px; }
+.ms-sent-item-chevron { color: var(--text-3); font-size: 16px; line-height: 1; }
+/* Cancel progress */
+.ms-trxn-cancel-progress { margin-top: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.ms-trxn-cancel-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 14px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.ms-trxn-cancel-row:last-child { border-bottom: none; }
+.ms-trxn-cancel-label { color: var(--text-2); flex: 1; margin-right: 8px; }
+.ms-trxn-cancel-status { min-width: 70px; text-align: right; color: var(--text-3); }
+.ms-trxn-cancel-status.success { color: var(--success); }
+.ms-trxn-cancel-status.error { color: #ef4444; font-size: 11px; }
+
 /* Picker modal */
 .ms-picker-modal {
   position: fixed; inset: 0; z-index: 200;
