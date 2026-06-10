@@ -8078,6 +8078,7 @@ $('ms-master-key-btn').addEventListener('click', submitMasterKeyToggle);
 $('ms-messenger-btn').addEventListener('click', submitMessengerAccountSet);
 $('ms-trxn-close-btn').addEventListener('click', () => { msTrxnDetail = null; openMultisignView(); });
 $('ms-trxn-cancel-btn').addEventListener('click', () => cancelMsTrxn().catch(() => {}));
+$('ms-trxn-submit-btn').addEventListener('click', () => submitMultisigTx().catch(() => {}));
 $('ms-sign-close-btn').addEventListener('click', () => { msMsSignDetail = null; openMultisignView(); });
 $('ms-sign-submit-btn').addEventListener('click', () => signMsTransaction().catch(() => {}));
 
