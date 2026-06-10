@@ -1603,6 +1603,48 @@
     <div class="iou-balance-header">Transactions Gathering Signatures</div>
     <div id="ms-sent-list" class="ms-sent-list"></div>
   </div>
+
+  <!-- ── TRXN FOR SIGNATURE card ── -->
+  <div id="ms-incoming-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">Transactions for Signature</div>
+    <div id="ms-incoming-list" class="ms-incoming-list"></div>
+  </div>
+</div>
+
+<!-- ===== MULTISIG SIGN INCOMING ===== -->
+<div id="view-ms-sign-detail" class="view hidden">
+  <div class="view-header">
+    <h2>Sign Transaction</h2>
+  </div>
+
+  <div class="tx-card" style="margin-bottom:6px">
+    <div class="tx-row">
+      <span class="tx-label">From</span>
+      <span id="ms-sign-from" class="tx-value tx-address">—</span>
+    </div>
+    <div class="tx-row">
+      <span class="tx-label">Via</span>
+      <span id="ms-sign-via" class="tx-value tx-address">—</span>
+    </div>
+  </div>
+
+  <div id="ms-sign-verification" class="ms-sign-verification hidden"></div>
+
+  <div id="ms-sign-detail-rows" class="tx-card"></div>
+
+  <details id="ms-sign-json-details" class="review-json-panel">
+    <summary class="review-json-summary">Raw JSON</summary>
+    <div class="review-json-body">
+      <pre id="ms-sign-raw-json"></pre>
+    </div>
+  </details>
+
+  <div id="ms-sign-detail-error" class="alert alert-error hidden" style="margin-top:8px"></div>
+
+  <div class="action-row" style="margin-top:12px">
+    <button id="ms-sign-close-btn" class="btn btn-ghost">Close</button>
+    <button id="ms-sign-submit-btn" class="btn btn-primary">Sign Transaction</button>
+  </div>
 </div>
 
 <!-- ===== MULTISIG TRANSACTION DETAIL ===== -->
