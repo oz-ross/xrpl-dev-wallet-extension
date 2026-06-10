@@ -6032,8 +6032,9 @@ function renderMultisignScreen() {
 // ─────────────────────────────────────────────
 
 async function openMsTrxnDetail(idx) {
-  const mptObj = msSentList[idx];
-  if (!mptObj) return;
+  const entry = msSentList[idx];
+  if (!entry) return;
+  const mptObj = entry.mptObj;
   msTrxnDetail = null;
   msCancelCredsDone = false;
 
@@ -6042,11 +6043,17 @@ async function openMsTrxnDetail(idx) {
   $('ms-trxn-json-details').removeAttribute('open');
   $('ms-trxn-cancel-progress').classList.add('hidden');
   $('ms-trxn-cancel-progress').innerHTML = '';
+  $('ms-trxn-quorum-card').classList.add('hidden');
+  $('ms-trxn-expired-warn').classList.add('hidden');
+  $('ms-trxn-submit-btn').classList.add('hidden');
+  $('ms-trxn-submit-btn').disabled = true;
+  $('ms-trxn-submit-btn').textContent = 'Submit';
   hideAlert('ms-trxn-detail-error');
   $('ms-trxn-cancel-btn').disabled = false;
   $('ms-trxn-cancel-btn').textContent = 'Cancel Transaction';
   $('ms-trxn-cancel-btn').classList.remove('hidden');
   $('ms-trxn-close-btn').disabled = false;
+  $('ms-trxn-close-btn').textContent = 'Close';
   showView('ms-trxn-detail');
 
   try {
@@ -6058,9 +6065,33 @@ async function openMsTrxnDetail(idx) {
     const memoData = txResp.result?.tx_json?.Memos?.[0]?.Memo?.MemoData ?? '';
     if (!memoData) throw new Error('No transaction data found in memo.');
     const decodedTxJson = decode(memoData);
-    msTrxnDetail = { mptObj, decodedTxJson };
+    msTrxnDetail = { mptObj, decodedTxJson, entry };
     $('ms-trxn-detail-rows').innerHTML = buildTxRows(decodedTxJson);
     $('ms-trxn-raw-json').textContent = JSON.stringify(decodedTxJson, null, 2);
+
+    // Quorum card
+    $('ms-trxn-quorum-required').textContent = String(entry.quorum);
+    const weightEl = $('ms-trxn-current-weight');
+    weightEl.textContent = `${entry.currentWeight} / ${entry.quorum}`;
+    weightEl.className   = `tx-value ${entry.currentWeight >= entry.quorum ? 'ms-trxn-weight-met' : 'ms-trxn-weight-pending'}`;
+    $('ms-trxn-quorum-card').classList.remove('hidden');
+
+    // Expiry check
+    let expired = false;
+    try {
+      const srvResp   = await state.client.request({ command: 'server_info' });
+      const ledgerSeq = srvResp.result.info?.validated_ledger?.seq ?? 0;
+      if (decodedTxJson.LastLedgerSequence && decodedTxJson.LastLedgerSequence < ledgerSeq) {
+        expired = true;
+      }
+    } catch { /* assume not expired */ }
+
+    if (expired) {
+      $('ms-trxn-expired-warn').classList.remove('hidden');
+    } else if (entry.quorum > 0 && entry.currentWeight >= entry.quorum) {
+      $('ms-trxn-submit-btn').classList.remove('hidden');
+      $('ms-trxn-submit-btn').disabled = false;
+    }
   } catch (err) {
     showAlert('ms-trxn-detail-error', `Failed to load: ${err.message || 'Unknown error'}`);
     $('ms-trxn-cancel-btn').disabled = true;
