@@ -7674,6 +7674,8 @@ $('ms-add-signer-btn').addEventListener('click', () => {
 $('ms-submit-btn').addEventListener('click', submitSignerListSet);
 $('ms-master-key-btn').addEventListener('click', submitMasterKeyToggle);
 $('ms-messenger-btn').addEventListener('click', submitMessengerAccountSet);
+$('ms-trxn-close-btn').addEventListener('click', () => { msTrxnDetail = null; openMultisignView(); });
+$('ms-trxn-cancel-btn').addEventListener('click', () => cancelMsTrxn().catch(() => {}));
 
 // ─────────────────────────────────────────────
 // BOOT
