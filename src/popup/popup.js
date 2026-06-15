@@ -6108,8 +6108,9 @@ function renderMultisignScreen() {
   const readyCount    = msSentList.filter(e => e.quorum > 0 && e.currentWeight >= e.quorum).length;
   const awaitingCount = msIncomingList.filter(item => !(item.credential.Flags & LSF_ACCEPTED)).length;
   const summaryEl     = $('ms-nav-summary');
-  if (activeCount > 0 || awaitingCount > 0) {
+  if (msSignerList || activeCount > 0 || awaitingCount > 0) {
     const parts = [];
+    if (msSignerList) parts.push('Multisig Activated');
     if (activeCount > 0) {
       const activeText = `${activeCount} active`;
       const readyBadge = readyCount > 0
