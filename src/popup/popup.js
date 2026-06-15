@@ -1228,6 +1228,12 @@ async function executeProjectRemove() {
 async function activateAccount(address) {
   state.activeAccount = address;
   activeMasterKeyDisabled = false;  // reset; will be refreshed on next probe or loadMultisignData
+  // Reset multisign state so the nav card summary reflects the new account immediately
+  msSignerList   = null;
+  msSentList     = [];
+  msIncomingList = [];
+  const summaryEl = $('ms-nav-summary');
+  if (summaryEl) summaryEl.classList.add('hidden');
   state.wallet = getActiveWallet();
   await updateSessionActiveAccount();
   // Persist the new active account to the vault so it survives a lock/unlock.
