@@ -4664,7 +4664,12 @@ async function executeMultisigDispatch() {
   // ── Step 1: Create MPT Issuance ──────────────────────────────────────────
   const txHash   = computeTxHash(msDispatchTxHex);
   const mptMeta  = JSON.stringify({
-    ac: 'multisig',
+    t:  'MS',
+    n:  'Multisig',
+    i:  'X',
+    in: 'X',
+    ac: 'other',
+    as: 'other',
     ai: { hash: txHash, transaction_type: msDispatchTxType },
   });
   const mptMetaHex = Buffer.from(mptMeta).toString('hex').toUpperCase();
@@ -5824,7 +5829,7 @@ let msDispatchFilledTx  = null;   // autofilled tx (no LLS), encoded fresh at co
 let msDispatchCurrentSeq = 0;    // current ledger seq at view-open time, for display
 let msDispatchTxType    = '';     // TransactionType of the pending tx, for MPT metadata
 let msDispatchSigners   = [];     // [{ address, name }] for current dispatch
-let msSentList          = [];     // MPTokenIssuance objects with ac==='multisig' from messenger
+let msSentList          = [];     // MPTokenIssuance objects with t==='MS' from messenger
 let msTrxnDetail        = null;   // { mptObj, decodedTxJson } for currently open detail
 let msCancelCredsDone   = false;  // true after cred revocations complete — skips creds on MPT retry
 let msIncomingList      = [];     // [{ credential, txType, txHash }] — MULTISIG creds for current account
@@ -5889,7 +5894,7 @@ async function loadMultisignData() {
         const rawMpts = allObjs.filter(o => {
           if (o.LedgerEntryType !== 'MPTokenIssuance') return false;
           try {
-            return JSON.parse(Buffer.from(o.MPTokenMetadata ?? '', 'hex').toString('utf8'))?.ac === 'multisig';
+            return JSON.parse(Buffer.from(o.MPTokenMetadata ?? '', 'hex').toString('utf8'))?.t === 'MS';
           } catch { return false; }
         });
         msSentList = await Promise.all(rawMpts.map(async mptObj => {
