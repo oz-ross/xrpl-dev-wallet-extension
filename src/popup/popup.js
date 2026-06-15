@@ -4559,6 +4559,10 @@ async function openMultisigSendView() {
     msDispatchCurrentSeq   = Number(ledgerResp.result.ledger_current_index);
     const filled           = await state.client.autofill({ ...txJson });
     filled.SigningPubKey   = '';
+    // Multisig fee must be at least (numSigners + 1) × base_fee
+    const baseFeeDrop      = parseInt(filled.Fee ?? '12', 10);
+    const numSigners       = reviewSignerList.length;
+    filled.Fee             = String((numSigners + 1) * baseFeeDrop);
     // Store for encoding at confirm time — LLS is NOT set here
     delete filled.LastLedgerSequence;
     msDispatchFilledTx  = filled;
