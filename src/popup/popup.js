@@ -234,6 +234,8 @@ function showView(name) {
   });
   // Close any open account dropdown
   $('account-dropdown')?.classList.add('hidden');
+  // Refresh multisign nav card summary whenever the wallet home screen is shown
+  if (name === 'wallet') refreshMultisignSummary().catch(() => {});
   // Populate raw JSON panel on review screen
   if (name === 'send-review' && state.pendingTxReview?.txJson) {
     $('review-raw-json').textContent = JSON.stringify(state.pendingTxReview.txJson, null, 2);
@@ -4889,6 +4891,7 @@ function startAutoRefresh() {
     loadLendingPositions();
     loadPermissionedDomains();
     loadTxHistory();
+    refreshMultisignSummary().catch(() => {});
   }, AUTO_REFRESH_INTERVAL);
 }
 
