@@ -6102,6 +6102,29 @@ function renderMultisignScreen() {
     });
     $('ms-incoming-card').classList.remove('hidden');
   }
+
+  // ── Nav card summary ──
+  const activeCount   = msSentList.length;
+  const readyCount    = msSentList.filter(e => e.quorum > 0 && e.currentWeight >= e.quorum).length;
+  const awaitingCount = msIncomingList.filter(item => !(item.credential.Flags & LSF_ACCEPTED)).length;
+  const summaryEl     = $('ms-nav-summary');
+  if (activeCount > 0 || awaitingCount > 0) {
+    const parts = [];
+    if (activeCount > 0) {
+      const activeText = `${activeCount} active`;
+      const readyBadge = readyCount > 0
+        ? ` <span class="ms-nav-badge ready">${readyCount} ready</span>`
+        : '';
+      parts.push(activeText + readyBadge);
+    }
+    if (awaitingCount > 0) {
+      parts.push(`<span class="ms-nav-badge awaiting">${awaitingCount} awaiting signature</span>`);
+    }
+    summaryEl.innerHTML = parts.join(' · ');
+    summaryEl.classList.remove('hidden');
+  } else {
+    summaryEl.classList.add('hidden');
+  }
 }
 
 // ─────────────────────────────────────────────
