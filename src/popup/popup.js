@@ -6457,6 +6457,10 @@ async function submitMultisigTx() {
     // Success — clean up credentials + MPT
     $('ms-trxn-submit-btn').textContent = 'Cleaning up…';
     $('ms-trxn-cancel-progress').classList.remove('hidden');
+    $('ms-trxn-cancel-progress').innerHTML =
+      `<div class="ms-trxn-cancel-row" style="color:var(--success);font-weight:500">
+        <span>✓ Transaction successfully processed</span>
+       </div>`;
     const cleanupSteps = [
       ...entry.signerStatus.map(s => ({
         label: `Revoke: ${resolveAddrDisplay(s.address)} (${truncAddr(s.address)})`,
@@ -6464,7 +6468,7 @@ async function submitMultisigTx() {
       })),
       { label: 'Destroy MPT issuance' },
     ];
-    $('ms-trxn-cancel-progress').innerHTML = cleanupSteps.map((s, i) =>
+    $('ms-trxn-cancel-progress').innerHTML += cleanupSteps.map((s, i) =>
       `<div class="ms-trxn-cancel-row">
         <span class="ms-trxn-cancel-label">${esc(s.label)}</span>
         <span class="ms-trxn-cancel-status" id="ms-submit-cleanup-${i}">…</span>
