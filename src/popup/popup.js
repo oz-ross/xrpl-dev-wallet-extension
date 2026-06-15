@@ -4843,7 +4843,7 @@ async function executeMultisigDispatch() {
   }
 
   // ── Step 2: Credential per signer ────────────────────────────────────────
-  $('ms-dispatch-confirm-btn').textContent = 'Sending credentials…';
+  $('ms-dispatch-confirm-btn').textContent = 'Sending signature requests…';
   let successCount = 0;
   let connectionLost = false;
 
