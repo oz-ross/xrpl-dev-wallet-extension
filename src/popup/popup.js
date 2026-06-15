@@ -6308,6 +6308,7 @@ async function submitMultisigTx() {
     $('ms-trxn-submit-btn').textContent = 'Submitting…';
     const finalTx  = { ...decodedTxJson, Signers };
     const tx_blob  = encode(finalTx);
+    if (state.devSettings.printTxJson) console.log('[multisig tx before submit]', finalTx);
     const response = await state.client.submitAndWait(tx_blob);
     const txResult = response.result?.meta?.TransactionResult;
     if (txResult !== 'tesSUCCESS') throw new Error(`Transaction failed: ${txResult ?? 'Unknown'}`);
