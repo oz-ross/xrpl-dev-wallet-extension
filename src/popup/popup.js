@@ -2334,7 +2334,7 @@ function renderCredentials(creds) {
   const card   = $('credential-card');
   const listEl = $('credential-list');
 
-  const visibleCreds = creds.filter(c => hexToUtf8(c.CredentialType ?? '') !== 'MULTISIG');
+  const visibleCreds = creds.filter(c => !c.CredentialType?.toUpperCase().startsWith('4D554C5449534947'));
   if (!visibleCreds.length) {
     card.classList.add('hidden');
     listEl.innerHTML = '';
@@ -4631,6 +4631,11 @@ async function signWithAddress(prepared, address) {
   throw new Error(`No signing key available for ${truncAddr(address)}.`);
 }
 
+/** Build the CredentialType hex for a multisig dispatch: hex("MULTISIG") + mptIssuanceId. */
+function multisigCredType(mptIssuanceId) {
+  return '4D554C5449534947' + (mptIssuanceId ?? '').toUpperCase();
+}
+
 async function executeMultisigDispatch() {
   if (!msDispatchFilledTx || !msDispatchSigners.length) return;
 
@@ -4725,7 +4730,7 @@ async function executeMultisigDispatch() {
       TransactionType: 'CredentialCreate',
       Account: msMessengerAddress,
       Subject: signer.address,
-      CredentialType: '4D554C5449534947',
+      CredentialType: multisigCredType(mptIssuanceId),
       URI: mptIssuanceId,
     };
 
@@ -5916,12 +5921,13 @@ async function loadMultisignData() {
                 const addr   = e.SignerEntry.Account;
                 const weight = e.SignerEntry.SignerWeight;
                 try {
+                  const mptId    = mptObj.MPTokenIssuanceID ?? mptObj.mpt_issuance_id ?? mptObj.index;
                   const credResp = await state.client.request({
                     command: 'ledger_entry',
                     credential: {
                       subject: addr,
                       issuer: msMessengerAddress,
-                      credential_type: '4D554C5449534947',
+                      credential_type: multisigCredType(mptId),
                     },
                     ledger_index: 'validated',
                   });
@@ -5945,7 +5951,7 @@ async function loadMultisignData() {
     try {
       const allObjs = await fetchAllAccountObjects(state.activeAccount);
       const multisigCreds = allObjs
-        .filter(o => o.LedgerEntryType === 'Credential' && hexToUtf8(o.CredentialType ?? '') === 'MULTISIG');
+        .filter(o => o.LedgerEntryType === 'Credential' && o.CredentialType?.toUpperCase().startsWith('4D554C5449534947'));
       for (const cred of multisigCreds) {
         try {
           const mptResp = await state.client.request({
@@ -6148,6 +6154,8 @@ async function cancelMsTrxn() {
   hideAlert('ms-trxn-detail-error');
 
   const { mptObj }  = msTrxnDetail;
+  const mptId       = mptObj.MPTokenIssuanceID ?? mptObj.mpt_issuance_id ?? mptObj.index;
+  const credType    = multisigCredType(mptId);
   const signers     = msSignerList.SignerEntries ?? [];
   const progressEl  = $('ms-trxn-cancel-progress');
   progressEl.classList.remove('hidden');
@@ -6174,7 +6182,7 @@ async function cancelMsTrxn() {
           credential: {
             subject: addr,
             issuer: msMessengerAddress,
-            credential_type: '4D554C5449534947',
+            credential_type: credType,
           },
           ledger_index: 'validated',
         });
@@ -6206,7 +6214,7 @@ async function cancelMsTrxn() {
           TransactionType: 'CredentialDelete',
           Account: msMessengerAddress,
           Subject: signerAddr,
-          CredentialType: '4D554C5449534947',
+          CredentialType: credType,
         };
         const prepared = await state.client.autofill(tx);
         const tx_blob  = await signWithAddress(prepared, msMessengerAddress);
@@ -6277,6 +6285,7 @@ async function submitMultisigTx() {
   if (!msTrxnDetail) return;
 
   const { mptObj, decodedTxJson, entry } = msTrxnDetail;
+  const credType = multisigCredType(mptObj.MPTokenIssuanceID ?? mptObj.mpt_issuance_id ?? mptObj.index);
   $('ms-trxn-submit-btn').disabled = true;
   $('ms-trxn-submit-btn').textContent = 'Collecting signatures…';
   $('ms-trxn-cancel-btn').classList.add('hidden');
@@ -6342,7 +6351,7 @@ async function submitMultisigTx() {
           TransactionType: 'CredentialDelete',
           Account: msMessengerAddress,
           Subject: addr,
-          CredentialType: '4D554C5449534947',
+          CredentialType: credType,
         };
         const prepared = await state.client.autofill(credTx);
         const tx_blob  = await signWithAddress(prepared, msMessengerAddress);
@@ -6504,7 +6513,7 @@ async function signMsTransaction() {
       TransactionType: 'CredentialAccept',
       Account: state.activeAccount,
       Issuer: credential.Issuer,
-      CredentialType: '4D554C5449534947',
+      CredentialType: credential.CredentialType,
       Memos: [
         { Memo: {
           MemoType: Buffer.from('SigningPubKey').toString('hex').toUpperCase(),
