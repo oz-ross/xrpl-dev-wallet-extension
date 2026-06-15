@@ -4643,6 +4643,7 @@ async function openMultisigSendView() {
   $('ms-dispatch-signer-rows').innerHTML = '';
   $('ms-dispatch-fee-estimate').textContent = '—';
   $('ms-dispatch-ledger-buffer').value = '20';
+  $('ms-dispatch-sequence-select').innerHTML = '<option value="next">Loading…</option>';
   $('ms-dispatch-nft-status').textContent = '';
   $('ms-dispatch-nft-status').className = 'ms-dispatch-nft-status hidden';
   showView('multisig-send');
@@ -4669,6 +4670,22 @@ async function openMultisigSendView() {
     delete filled.LastLedgerSequence;
     msDispatchFilledTx  = filled;
     msDispatchTxType    = txJson.TransactionType ?? '';
+
+    // Populate sequence dropdown with autofilled sequence + any tickets
+    const seqSelect = $('ms-dispatch-sequence-select');
+    seqSelect.innerHTML = `<option value="next">Next Sequence: ${filled.Sequence}</option>`;
+    try {
+      const ticketResp = await state.client.request({
+        command: 'account_objects',
+        account: state.activeAccount,
+        ledger_index: 'validated',
+        type: 'ticket',
+      });
+      for (const t of (ticketResp.result.account_objects ?? [])) {
+        const ts = t.TicketSequence;
+        seqSelect.innerHTML += `<option value="ticket:${ts}">Ticket: ${ts}</option>`;
+      }
+    } catch { /* no tickets or error — next sequence only */ }
 
     await refreshAddressNames();
     msDispatchSigners = reviewSignerList.map(e => ({
@@ -4748,6 +4765,15 @@ async function executeMultisigDispatch() {
     const currentSeq = Number(ledgerResp.result.ledger_current_index);
     const ledgerBuffer = Math.max(1, parseInt($('ms-dispatch-ledger-buffer').value, 10) || 20);
     msDispatchFilledTx.LastLedgerSequence = currentSeq + ledgerBuffer;
+    // Apply sequence or ticket selection
+    const seqVal = $('ms-dispatch-sequence-select').value;
+    if (seqVal.startsWith('ticket:')) {
+      const ticketSeq = parseInt(seqVal.split(':')[1], 10);
+      msDispatchFilledTx.Sequence       = 0;
+      msDispatchFilledTx.TicketSequence = ticketSeq;
+    } else {
+      delete msDispatchFilledTx.TicketSequence;
+    }
     msDispatchTxHex = encode(msDispatchFilledTx);
   } catch (err) {
     showAlert('ms-dispatch-error', `Failed to prepare transaction: ${err.message || 'Unknown error'}`);
