@@ -692,6 +692,67 @@ function isActiveAccountReadOnly() {
   return kr?.type === 'watch';  // ledger CAN sign via device; watch cannot
 }
 
+/** Lightweight probe to populate the multisign nav card summary without opening the Multisign screen. */
+async function refreshMultisignSummary() {
+  if (!state.devSettings.multisignEnabled) return;
+  if (!state.activeAccount || !state.client) return;
+  const summaryEl = $('ms-nav-summary');
+  if (!summaryEl) return;
+  try {
+    await ensureConnected();
+
+    // Parallel: signer list check + all active-account objects (for incoming creds)
+    const [signerResp, allActiveObjs] = await Promise.all([
+      state.client.request({
+        command: 'account_objects',
+        account: state.activeAccount,
+        ledger_index: 'validated',
+        type: 'signer_list',
+      }),
+      fetchAllAccountObjects(state.activeAccount),
+    ]);
+
+    const hasSigner = (signerResp.result.account_objects ?? [])
+      .some(o => o.LedgerEntryType === 'SignerList');
+    const incomingCreds = allActiveObjs.filter(o =>
+      o.LedgerEntryType === 'Credential' &&
+      o.CredentialType?.toUpperCase().startsWith('4D554C5449534947')
+    );
+    const awaitingCount = incomingCreds.filter(c => !(c.Flags & LSF_ACCEPTED)).length;
+
+    // Count dispatched MPTs from the messenger account
+    let activeCount = 0;
+    const messengerAddr = await loadMessengerLink(state.activeAccount);
+    if (messengerAddr) {
+      try {
+        const messengerObjs = await fetchAllAccountObjects(messengerAddr);
+        activeCount = messengerObjs.filter(o => {
+          if (o.LedgerEntryType !== 'MPTokenIssuance') return false;
+          try {
+            return JSON.parse(Buffer.from(o.MPTokenMetadata ?? '', 'hex').toString('utf8'))?.t === 'MS';
+          } catch { return false; }
+        }).length;
+      } catch { /* ignore */ }
+    }
+
+    // Update module-level signer list var so renderMultisignScreen has correct data
+    if (!msSignerList && hasSigner) msSignerList = {}; // sentinel: non-null = activated
+
+    if (hasSigner || activeCount > 0 || awaitingCount > 0) {
+      const parts = [];
+      if (hasSigner) parts.push('Multisig Activated');
+      if (activeCount > 0) parts.push(`${activeCount} active`);
+      if (awaitingCount > 0) {
+        parts.push(`<span class="ms-nav-badge awaiting">${awaitingCount} awaiting signature</span>`);
+      }
+      summaryEl.innerHTML = parts.join(' · ');
+      summaryEl.classList.remove('hidden');
+    } else {
+      summaryEl.classList.add('hidden');
+    }
+  } catch { summaryEl.classList.add('hidden'); }
+}
+
 /** Probe the ledger for the active account's master-key disabled flag and update the send-review submit button. */
 async function probeAccountFlagsForReview() {
   try {
@@ -1913,6 +1974,7 @@ function updateWalletUI() {
 
   renderAccountDropdown(accounts, addr);
   $('multisign-nav-card').classList.toggle('hidden', !state.devSettings.multisignEnabled);
+  if (state.devSettings.multisignEnabled) refreshMultisignSummary().catch(() => {});
 }
 
 function renderAccountDropdown(accounts, activeAddr) {
