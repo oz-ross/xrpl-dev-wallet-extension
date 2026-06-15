@@ -245,6 +245,12 @@ function showView(name) {
     }
     $('review-fee-value').textContent = '…';
     fetchReviewFee().catch(() => { $('review-fee-value').textContent = '—'; });
+    // Disable submit immediately if we already know master key is disabled; probe will confirm
+    $('send-review-submit-btn').disabled = activeMasterKeyDisabled;
+    $('send-review-submit-btn').title = activeMasterKeyDisabled
+      ? 'Master key is disabled — transactions must be submitted via multisig'
+      : '';
+    probeAccountFlagsForReview().catch(() => {});
     reviewSignerList = null;
     $('send-multisig-btn').classList.add('hidden');
     if (state.devSettings.multisignEnabled) probeSignerListForReview().catch(() => {});
@@ -674,13 +680,38 @@ function getAllAccounts() {
 }
 
 /** True when the active account cannot sign transactions. */
+let activeMasterKeyDisabled = false;  // true when on-chain DisableMaster flag is set
+
 function isActiveAccountReadOnly() {
   if (!state.activeAccount) return true;
+  if (activeMasterKeyDisabled) return true;
   const kr = state.keyrings.find(k =>
     (k.type === 'watch'  && k.address === state.activeAccount) ||
     (k.type === 'ledger' && k.address === state.activeAccount)
   );
   return kr?.type === 'watch';  // ledger CAN sign via device; watch cannot
+}
+
+/** Probe the ledger for the active account's master-key disabled flag and update the send-review submit button. */
+async function probeAccountFlagsForReview() {
+  try {
+    await ensureConnected();
+    const resp = await state.client.request({
+      command: 'account_info',
+      account: state.activeAccount,
+      ledger_index: 'validated',
+    });
+    const flags = resp.result.account_data?.Flags ?? 0;
+    activeMasterKeyDisabled = !!(flags & 0x00100000);
+    const submitBtn = $('send-review-submit-btn');
+    if (activeMasterKeyDisabled) {
+      submitBtn.disabled = true;
+      submitBtn.title = 'Master key is disabled — transactions must be submitted via multisig';
+    } else {
+      if (!submitBtn.title?.includes('Master')) submitBtn.disabled = false;
+      submitBtn.title = '';
+    }
+  } catch { /* ignore — leave button state unchanged */ }
 }
 
 // ─────────────────────────────────────────────
@@ -1196,6 +1227,7 @@ async function executeProjectRemove() {
  */
 async function activateAccount(address) {
   state.activeAccount = address;
+  activeMasterKeyDisabled = false;  // reset; will be refreshed on next probe or loadMultisignData
   state.wallet = getActiveWallet();
   await updateSessionActiveAccount();
   // Persist the new active account to the vault so it survives a lock/unlock.
@@ -5892,7 +5924,8 @@ async function loadMultisignData() {
     msSignerList = objects.find(o => o.LedgerEntryType === 'SignerList') ?? null;
 
     const flags = infoResp.result.account_data?.Flags ?? 0;
-    msMasterKeyDisabled = !!(flags & 0x00100000);
+    msMasterKeyDisabled      = !!(flags & 0x00100000);
+    activeMasterKeyDisabled  = msMasterKeyDisabled;
 
     await refreshAddressNames();
     msMessengerAddress = await loadMessengerLink(state.activeAccount);
