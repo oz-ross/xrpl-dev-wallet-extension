@@ -1604,6 +1604,18 @@
     <button id="ms-master-key-btn" class="btn btn-full ms-master-key-btn">…</button>
   </div>
 
+  <!-- ── Tickets card ── -->
+  <div id="ms-ticket-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">Tickets</div>
+    <div id="ms-ticket-count" class="ms-ticket-count"></div>
+    <div class="ms-ticket-create-row">
+      <input id="ms-ticket-input" type="number" min="1" max="250" step="1" value="1"
+             class="input-field ms-ticket-input" placeholder="Count" />
+      <button id="ms-ticket-create-btn" class="btn btn-primary btn-sm">Create Tickets</button>
+    </div>
+    <div id="ms-ticket-error" class="alert alert-error hidden" style="margin-top:6px"></div>
+  </div>
+
   <!-- ── TRXN SENT card ── -->
   <div id="ms-sent-card" class="iou-balance-card hidden">
     <div class="iou-balance-header">Transactions Gathering Signatures</div>

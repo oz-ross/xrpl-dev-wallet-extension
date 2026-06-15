@@ -5941,6 +5941,7 @@ let msDispatchFilledTx  = null;   // autofilled tx (no LLS), encoded fresh at co
 let msDispatchCurrentSeq = 0;    // current ledger seq at view-open time, for display
 let msDispatchTxType    = '';     // TransactionType of the pending tx, for MPT metadata
 let msDispatchSigners   = [];     // [{ address, name }] for current dispatch
+let msTicketCount       = 0;      // number of Ticket objects owned by active account
 let msSentList          = [];     // MPTokenIssuance objects with t==='MS' from messenger
 let msTrxnDetail        = null;   // { mptObj, decodedTxJson } for currently open detail
 let msCancelCredsDone   = false;  // true after cred revocations complete — skips creds on MPT retry
@@ -5972,6 +5973,7 @@ async function loadMultisignData() {
   $('ms-form-card').classList.add('hidden');
   $('ms-master-key-card').classList.add('hidden');
   $('ms-messenger-card').classList.add('hidden');
+  $('ms-ticket-card').classList.add('hidden');
   $('ms-sent-card').classList.add('hidden');
   $('ms-incoming-card').classList.add('hidden');
 
@@ -6073,6 +6075,16 @@ async function loadMultisignData() {
         } catch { /* skip this credential */ }
       }
     } catch { /* silent — incoming list is optional */ }
+    msTicketCount = 0;
+    try {
+      const ticketResp = await state.client.request({
+        command: 'account_objects',
+        account: state.activeAccount,
+        ledger_index: 'validated',
+        type: 'ticket',
+      });
+      msTicketCount = (ticketResp.result.account_objects ?? []).length;
+    } catch { /* silent */ }
     $('ms-loading').classList.add('hidden');
     renderMultisignScreen();
   } catch (err) {
@@ -6173,6 +6185,14 @@ function renderMultisignScreen() {
     });
     $('ms-incoming-card').classList.remove('hidden');
   }
+
+  // ── Tickets card ──
+  $('ms-ticket-count').textContent = msTicketCount === 0
+    ? 'No tickets owned'
+    : `${msTicketCount} ticket${msTicketCount === 1 ? '' : 's'} owned`;
+  $('ms-ticket-input').value = '1';
+  hideAlert('ms-ticket-error');
+  $('ms-ticket-card').classList.remove('hidden');
 
   // ── Nav card summary ──
   const activeCount   = msSentList.length;
@@ -6860,6 +6880,21 @@ function submitMasterKeyToggle() {
   };
   const msg = msMasterKeyDisabled ? 'Master key re-enabled.' : 'Master key disabled.';
   reviewMultisignTx(txJson, msg);
+}
+
+function submitTicketCreate() {
+  hideAlert('ms-ticket-error');
+  const count = parseInt($('ms-ticket-input').value, 10);
+  if (!Number.isInteger(count) || count < 1 || count > 250) {
+    showAlert('ms-ticket-error', 'Enter a number between 1 and 250.');
+    return;
+  }
+  const txJson = {
+    TransactionType: 'TicketCreate',
+    Account: state.activeAccount,
+    TicketCount: count,
+  };
+  reviewMultisignTx(txJson, `${count} ticket${count === 1 ? '' : 's'} created.`);
 }
 
 async function loadMessengerLink(address) {
@@ -8256,6 +8291,7 @@ $('ms-add-signer-btn').addEventListener('click', () => {
 $('ms-submit-btn').addEventListener('click', submitSignerListSet);
 $('ms-master-key-btn').addEventListener('click', submitMasterKeyToggle);
 $('ms-messenger-btn').addEventListener('click', submitMessengerAccountSet);
+$('ms-ticket-create-btn').addEventListener('click', submitTicketCreate);
 $('ms-trxn-close-btn').addEventListener('click', () => { msTrxnDetail = null; openMultisignView(); });
 $('ms-trxn-cancel-btn').addEventListener('click', () => cancelMsTrxn().catch(() => {}));
 $('ms-trxn-submit-btn').addEventListener('click', () => submitMultisigTx().catch(() => {}));

@@ -2751,6 +2751,9 @@ details[open] .review-json-summary::before {
 .ms-master-key-btn.reenable { border: 1px solid rgba(16,185,129,0.35); color: var(--success); background: transparent; }
 .ms-master-key-btn.reenable:hover { background: var(--success-dim); }
 .ms-messenger-current { font-size: 11px; color: var(--text-2); margin-bottom: 8px; }
+.ms-ticket-count { font-size: 12px; color: var(--text-2); margin-bottom: 8px; }
+.ms-ticket-create-row { display: flex; gap: 8px; align-items: center; }
+.ms-ticket-input { width: 72px; text-align: right; padding: 6px 8px; }
 .ms-info-icon { font-size: 11px; color: var(--text-3); margin-left: 4px; cursor: default; }
 .ms-nav-summary { font-size: 11px; color: var(--text-3); margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .ms-nav-badge { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 10px; }
