@@ -1,6 +1,16 @@
-# XRPL Dev Wallet — Multisig Protocol Specification
+# Multisig Coordination Protocol
 
-This document describes the on-chain and off-chain protocol used by the wallet to coordinate multisig transaction dispatch and collection.
+This document specifies the XRPL transactions and ledger objects used to coordinate multisig transaction dispatch, signing, and submission between a **multisig account**, a **messenger account**, and one or more **signer accounts**.
+
+---
+
+## Accounts
+
+| Role | Description |
+|---|---|
+| **Multisig account** | The account whose transactions require multiple signatures to authorise |
+| **Messenger account** | A designated account trusted to dispatch signature requests on behalf of the multisig account |
+| **Signer account(s)** | Accounts listed in the multisig account's `SignerList` |
 
 ---
 
@@ -8,10 +18,10 @@ This document describes the on-chain and off-chain protocol used by the wallet t
 
 The protocol has five phases:
 
-1. **Setup** — configure the multisig account, nominate a messenger account
-2. **Dispatch** — encode an unsigned transaction, create an MPT issuance carrying it, send credentials to signers
-3. **Signing** — each signer verifies the sender, produces a partial signature, and accepts the credential
-4. **Submission** — collect all signatures, assemble a multisigned transaction, submit to the ledger
+1. **Setup** — configure the multisig account and nominate a messenger account
+2. **Dispatch** — encode an unsigned transaction, publish it via an MPT issuance, and notify each signer via a credential
+3. **Signing** — each signer verifies the dispatch, produces a partial signature, and accepts their credential
+4. **Submission** — collect all partial signatures, assemble the multisigned transaction, and submit it
 5. **Cleanup** — revoke credentials and destroy the MPT issuance
 
 ---
@@ -20,80 +30,91 @@ The protocol has five phases:
 
 ### 1.1 Configure the Signer List
 
+**Signed by:** multisig account
+
 ```
 TransactionType: SignerListSet
 Account:         <multisig-account>
-SignerQuorum:    <quorum-threshold>
+SignerQuorum:    <integer — minimum total weight required to authorise>
 SignerEntries:
   - SignerEntry:
       Account:      <signer-address-1>
-      SignerWeight: <weight-1>
+      SignerWeight: <integer weight>
   - SignerEntry:
       Account:      <signer-address-2>
-      SignerWeight: <weight-2>
+      SignerWeight: <integer weight>
   ...
 ```
 
-This creates a `SignerList` ledger object on the multisig account. The account can no longer submit transactions using its own key alone once `SignerListSet` is in place.
+Creates a `SignerList` ledger object on the multisig account. A transaction is authorised when the combined weight of valid signer signatures meets or exceeds `SignerQuorum`.
 
-### 1.2 Disable the Master Key (optional but typical)
+### 1.2 Disable the Master Key *(optional but typical)*
+
+**Signed by:** multisig account
 
 ```
 TransactionType: AccountSet
 Account:         <multisig-account>
-SetFlag:         4          # asfDisableMaster (lsfDisableMaster = 0x00100000)
+SetFlag:         4    # asfDisableMaster
 ```
 
-Once disabled, the `lsfDisableMaster` flag (`0x00100000`) appears in the account's `Flags` field. The wallet detects this and disables regular submit buttons for the account.
+Sets `lsfDisableMaster` (`0x00100000`) in the account's `Flags`. The account's own private key can no longer authorise transactions; only the signer list can.
 
 To re-enable:
+
 ```
 TransactionType: AccountSet
 Account:         <multisig-account>
 ClearFlag:       4
 ```
 
-### 1.3 Set the Messenger Account
+### 1.3 Register the Messenger Account
+
+**Signed by:** multisig account
 
 ```
 TransactionType: AccountSet
 Account:         <multisig-account>
-MessageKey:      <hex-public-key-of-messenger-account>
+MessageKey:      <33-byte compressed public key of the messenger account, hex-encoded>
 ```
 
-`MessageKey` is a 33-byte compressed public-key hex string (secp256k1: `02`/`03` prefix + 32 bytes, or ed25519: `ED` prefix + 32 bytes). It identifies the trusted messenger account that will dispatch signature requests.
+`MessageKey` records the messenger account's public key on the multisig account's ledger entry. Signers use this to verify that a dispatch genuinely originates from the authorised messenger. The field accepts secp256k1 keys (`02`/`03` prefix) and ed25519 keys (`ED` prefix).
 
-**Local storage:** the wallet persists the messenger-account address in `chrome.storage.local` under key `messengerLink_<multisig-account-address>`.
+> **Note:** When Permission Delegation (XLS-75) is available, the messenger account will no longer be required; messenger functions can instead be delegated directly to another account.
 
 ---
 
-## Phase 2 — Dispatch ("Send for Multisig")
+## Phase 2 — Dispatch
 
-### 2.1 Prepare the Transaction
+### 2.1 The Unsigned Transaction
 
-The original transaction (e.g. a `Payment`) is prepared as follows:
+The transaction to be authorised is prepared with the following fields set before encoding:
 
-1. `autofill` is called to obtain network fields (`Fee`, `Sequence`).
-2. `Fee` is overridden to meet the multisig minimum: `(N + 1) × base_fee` where N is the number of signers.
-3. `LastLedgerSequence` is set to `ledger_current_index + ledger_buffer` (user-configurable, default 20).
-4. `SigningPubKey` is set to `''` (empty string, the canonical XRPL multisig marker).
-5. The transaction is encoded to hex using `ripple-binary-codec encode()`.
+| Field | Value |
+|---|---|
+| `Fee` | At least `(N + 1) × base_fee`, where N is the number of signers |
+| `Sequence` | The multisig account's current on-ledger sequence, **or** `0` if a ticket is used |
+| `TicketSequence` | The chosen ticket's sequence number *(only when using a ticket)* |
+| `LastLedgerSequence` | Current ledger index plus a configurable expiry window |
+| `SigningPubKey` | `""` (empty string — canonical XRPL multisig marker) |
 
-**Optional — Ticket:** If the user selects a ticket from the dropdown, `Sequence` is set to `0` and `TicketSequence` is set to the chosen ticket's sequence number.
+The transaction is then binary-encoded to a hex string. This hex blob is what signers will sign and what is ultimately submitted to the ledger.
 
-### 2.2 Create the MPT Issuance
+### 2.2 Publish the Unsigned Transaction via MPT Issuance
+
+**Signed by:** messenger account
 
 ```
 TransactionType:  MPTokenIssuanceCreate
 Account:          <messenger-account>
-MPTokenMetadata:  <hex-encoded JSON — see below>
+MPTokenMetadata:  <hex — see metadata schema below>
 Memos:
   - Memo:
-      MemoType: 5458                  # hex("TX")
-      MemoData: <unsigned-tx-hex>     # the encoded tx from step 2.1
+      MemoType: 5458              # hex("TX")
+      MemoData: <unsigned-tx-hex> # hex blob from step 2.1
 ```
 
-**MPT Metadata JSON (UTF-8 encoded, then hex):**
+The unsigned transaction blob is stored in `MemoData`. The `MPTokenMetadata` field carries a UTF-8 JSON document (hex-encoded) with the following schema:
 
 ```json
 {
@@ -104,72 +125,73 @@ Memos:
   "ac": "other",
   "as": "other",
   "ai": {
-    "hash":             "<hash-of-unsigned-tx>",
-    "transaction_type": "<e.g. Payment>"
+    "hash":             "<SHA-512-half of the unsigned tx hex>",
+    "transaction_type": "<TransactionType string, e.g. Payment>"
   }
 }
 ```
 
-`ai.hash` is computed as `SHA-512-half` of the encoded transaction bytes (same algorithm as XRPL transaction hashing). `ai.transaction_type` is the human-readable `TransactionType` string.
+`ai.hash` uses the same SHA-512-half algorithm as standard XRPL transaction hashing.
 
-The `MPTokenIssuanceCreate` transaction is signed by the **messenger account**. On success, `meta.mpt_issuance_id` contains the new issuance ID (e.g. 48-character hex string).
+On validation, `meta.mpt_issuance_id` contains the 48-character hex issuance ID.
 
-### 2.3 Create Credentials for Each Signer
+### 2.3 Notify Each Signer via Credential
 
-For each signer in the `SignerList`:
+**Signed by:** messenger account  
+**One transaction per signer, submitted sequentially**
 
 ```
 TransactionType: CredentialCreate
-Account:         <messenger-account>         # issuer
-Subject:         <signer-address>            # recipient
-CredentialType:  4D554C5449534947<mpt-id>    # hex("MULTISIG") + mptIssuanceId
+Account:         <messenger-account>
+Subject:         <signer-address>
+CredentialType:  4D554C5449534947<mpt-issuance-id>
 URI:             <mpt-issuance-id>
 ```
 
-**CredentialType format:** `4D554C5449534947` (hex of `"MULTISIG"`) concatenated with the 48-character `mptIssuanceId`. Total: 64 hex characters = 32 bytes. This makes each dispatch's credentials unique and directly traceable to their MPT.
+**CredentialType** is `4D554C5449534947` (hex of `"MULTISIG"`) concatenated with the full 48-character `mpt-issuance-id` — 64 hex characters (32 bytes) total. This makes each dispatch's credentials unique and directly traceable to their MPT.
 
-Each `CredentialCreate` is signed by the **messenger account**, one per signer, submitted sequentially. Because `submitAndWait` is used, the account sequence increments correctly between calls.
+**URI** holds the `mpt-issuance-id` so the signer can retrieve the MPT and its transaction data.
 
 ---
 
-## Phase 3 — Signing (Signer Side)
+## Phase 3 — Signing
 
-### 3.1 Discover Incoming Signature Requests
+### 3.1 Locate the Unsigned Transaction
 
-The signer's wallet detects pending signature requests by fetching `account_objects` for the signer's account and filtering for `Credential` objects whose `CredentialType` starts with `4D554C5449534947`.
+To retrieve the transaction:
+
+1. Fetch the MPT node via `ledger_entry { mpt_issuance: credential.URI }`.
+2. The MPT node's `PreviousTxnID` is the hash of the `MPTokenIssuanceCreate` transaction.
+3. Fetch that transaction. `Memos[0].Memo.MemoData` (where `MemoType = 5458`) is the unsigned transaction hex blob.
+4. Binary-decode the blob to recover the transaction JSON.
 
 ### 3.2 Verify the Sender
 
-For each credential:
+The signer verifies that the dispatch originates from the authorised messenger:
 
-1. Fetch `ledger_entry { mpt_issuance: credential.URI }` to get the MPT node.
-2. Read `node.PreviousTxnID` (the `MPTokenIssuanceCreate` transaction hash).
-3. Fetch that transaction and decode `Memos[0].Memo.MemoData` (hex) with `ripple-binary-codec decode()` to recover the original unsigned transaction JSON.
-4. Fetch `account_info` for `decodedTx.Account` (the multisig account).
-5. Derive the XRPL address from `account_data.MessageKey` using `deriveAddress(publicKey)`.
-6. Compare to `credential.Issuer` (the messenger account address).
+1. Fetch `account_info` for `decodedTx.Account` (the multisig account).
+2. Derive the XRPL address from `account_data.MessageKey` (the registered messenger public key).
+3. Compare the derived address to `credential.Issuer`.
 
-**Result:**
-- Match → ● **Sender Verified** (green)
-- Mismatch or missing `MessageKey` → ● **Sender Failed Verification** (red) — Sign button disabled
+If they match, the dispatch is **sender-verified**. If they differ or `MessageKey` is absent, the dispatch should be rejected.
 
-### 3.3 Create a Partial Multisig Signature
+### 3.3 Produce a Partial Multisig Signature
 
-The signing uses `encodeForMultisigning(txJson, signerAddress)` from `ripple-binary-codec`, which applies the XRPL multisig signing prefix (`0x534D5400`) and appends the signer's account ID bytes. This is distinct from `encodeForSigning` (single-signer, prefix `0x53545800`).
+The signer signs the **multisig-encoded** form of the transaction. The multisig encoding prepends the prefix `0x534D5400` and appends the signer's 20-byte account ID to the transaction bytes before hashing. This is distinct from the single-signer encoding (prefix `0x53545800`).
 
-```javascript
-const encoded = encodeForMultisigning(decodedTxJson, state.activeAccount);
-const sig     = keypairsSign(encoded, wallet.privateKey).toUpperCase();
-const pubKey  = wallet.publicKey;
-```
+The output is a pair:
+- **`SigningPubKey`** — the signer's compressed public key (hex)
+- **`TxnSignature`** — the signature over the multisig-encoded bytes (hex)
 
-### 3.4 Accept the Credential (with Signature)
+### 3.4 Accept the Credential
+
+**Signed by:** signer account
 
 ```
 TransactionType: CredentialAccept
 Account:         <signer-account>
 Issuer:          <messenger-account>
-CredentialType:  4D554C5449534947<mpt-id>    # same full type as the credential
+CredentialType:  4D554C5449534947<mpt-issuance-id>
 Memos:
   - Memo:
       MemoType: 5369676E696E675075624B6579   # hex("SigningPubKey")
@@ -179,83 +201,72 @@ Memos:
       MemoData: <partial-signature-hex>
 ```
 
-The `CredentialAccept` is signed by the **signer's own account** (their master key). On submission, the credential's `lsfAccepted` flag (`0x00010000`) is set on the ledger object, and `credential.PreviousTxnID` is updated to the hash of this `CredentialAccept` transaction.
+On validation, the credential's `lsfAccepted` flag (`0x00010000`) is set and `credential.PreviousTxnID` is updated to the hash of this `CredentialAccept` transaction.
 
 ---
 
-## Phase 4 — Submission (Dispatcher Side)
+## Phase 4 — Submission
 
-### 4.1 Assess Quorum Progress
+### 4.1 Assess Quorum
 
-For each signer in the `SignerList`, the wallet calls:
+For each signer in the `SignerList`, retrieve their credential via `ledger_entry`:
 
 ```
-ledger_entry {
-  credential: {
-    subject:         <signer-address>,
-    issuer:          <messenger-account>,
-    credential_type: 4D554C5449534947<mpt-id>
-  }
+credential: {
+  subject:         <signer-address>
+  issuer:          <messenger-account>
+  credential_type: 4D554C5449534947<mpt-issuance-id>
 }
 ```
 
-If the credential exists and `Flags & 0x00010000` (lsfAccepted), the signer's weight is added to `currentWeight`. The transaction is ready to submit when `currentWeight >= SignerQuorum`.
+If `credential.Flags & 0x00010000` (`lsfAccepted`) is set, the signer has provided a signature. Sum the weights of all accepted signers. Submission is possible when `currentWeight >= SignerQuorum`.
 
-### 4.2 Collect Partial Signatures
+### 4.2 Collect Signatures
 
-For each accepted signer's credential, fetch the `CredentialAccept` transaction via `credential.PreviousTxnID`:
+For each accepted credential, retrieve the `CredentialAccept` transaction via `credential.PreviousTxnID`. Extract:
+
+- `Memos[n].Memo.MemoData` where `MemoType = 5369676E696E675075624B6579` → `SigningPubKey`
+- `Memos[n].Memo.MemoData` where `MemoType = 546F6E5369676E6174757265` → `TxnSignature`
+
+### 4.3 Assemble and Submit
+
+Build the final transaction by adding a `Signers` array to the decoded unsigned transaction. XRPL requires signers to be sorted in **ascending order by 20-byte account ID**:
 
 ```
-{ command: 'tx', transaction: credential.PreviousTxnID }
+Signers:
+  - Signer:
+      Account:        <signer-address>
+      SigningPubKey:  <hex>
+      TxnSignature:   <hex>
+  - Signer:
+      ...   # sorted ascending by account ID bytes
 ```
 
-Extract from `result.tx_json.Memos`:
-- `MemoType == hex("SigningPubKey")` → `pubKey`
-- `MemoType == hex("TxnSignature")` → `sig`
-
-### 4.3 Build and Submit the Multisigned Transaction
-
-Assemble the `Signers` array. XRPL requires signers to be sorted in **ascending order by account ID** (20-byte account ID derived from address):
-
-```javascript
-const Signers = signerData
-  .map(s => ({ Signer: { Account: s.address, SigningPubKey: s.pubKey, TxnSignature: s.sig } }))
-  .sort((a, b) => Buffer.compare(
-    Buffer.from(decodeAccountID(a.Signer.Account)),
-    Buffer.from(decodeAccountID(b.Signer.Account))
-  ));
-```
-
-Build the final transaction:
-
-```javascript
-const finalTx = { ...decodedTxJson, Signers };
-const tx_blob = encode(finalTx);
-await client.submitAndWait(tx_blob);
-```
-
-The `finalTx` retains `SigningPubKey: ''` and `Sequence: N` (or `Sequence: 0` + `TicketSequence: T` if a ticket was used) from the original dispatch encoding.
+Binary-encode the assembled transaction and submit. `SigningPubKey` remains `""` at the top level.
 
 ---
 
 ## Phase 5 — Cleanup
 
-On successful submission (`tesSUCCESS`), the messenger account revokes credentials and destroys the MPT.
+On successful transaction submission, the messenger account revokes all credentials and destroys the MPT.
 
 ### 5.1 Revoke Credentials
 
-Before attempting deletion, the wallet queries each signer's credential with `ledger_entry` to confirm existence (avoids unnecessary failed transactions). For each existing credential:
+**Signed by:** messenger account  
+**One transaction per signer**
 
 ```
 TransactionType: CredentialDelete
 Account:         <messenger-account>
 Subject:         <signer-address>
-CredentialType:  4D554C5449534947<mpt-id>
+CredentialType:  4D554C5449534947<mpt-issuance-id>
 ```
 
-Signed by the **messenger account**. `tecNO_ENTRY` (credential already gone) is treated as success.
+The issuer may delete credentials regardless of whether they have been accepted.
 
 ### 5.2 Destroy the MPT Issuance
+
+**Signed by:** messenger account
 
 ```
 TransactionType:    MPTokenIssuanceDestroy
@@ -263,64 +274,51 @@ Account:            <messenger-account>
 MPTokenIssuanceID:  <mpt-issuance-id>
 ```
 
-Signed by the **messenger account**. Succeeds because no tokens were distributed (outstanding balance is zero).
+Succeeds because no tokens were ever distributed (outstanding balance is zero).
 
 ---
 
 ## Cancellation
 
-If the multisig process is abandoned (before submission), the same cleanup is performed:
-- `CredentialDelete` for all signers that have an outstanding credential
-- `MPTokenIssuanceDestroy`
+If the process is abandoned before submission, the same cleanup applies — `CredentialDelete` for each signer followed by `MPTokenIssuanceDestroy`.
 
 ---
 
-## Fee Model
+## Ledger Objects
 
-| Transaction | Signatory | Fee |
+| Object | Owned by | Created by | Destroyed by | Purpose |
+|---|---|---|---|---|
+| `SignerList` | Multisig account | `SignerListSet` | `SignerListSet` (empty entries) | Defines authorised signers and quorum |
+| `MPTokenIssuance` | Messenger account | `MPTokenIssuanceCreate` | `MPTokenIssuanceDestroy` | Holds the unsigned transaction blob and dispatch metadata |
+| `Credential` | Signer account (subject) | `CredentialCreate` | `CredentialDelete` | Notifies signer; carries their partial signature on acceptance |
+| `Ticket` | Multisig account | `TicketCreate` | consumed on use | Allows dispatch with `Sequence: 0` for out-of-order execution |
+
+---
+
+## Fee Requirements
+
+| Transaction | Signatory | Minimum fee |
 |---|---|---|
 | `SignerListSet` | Multisig account | standard |
-| `AccountSet` (disable/enable master, set MessageKey) | Multisig account | standard |
+| `AccountSet` | Multisig account | standard |
 | `MPTokenIssuanceCreate` | Messenger account | standard |
-| `CredentialCreate` × N | Messenger account | standard × N |
+| `CredentialCreate` × N | Messenger account | standard |
 | `CredentialAccept` | Signer account | standard |
-| Multisigned transaction | Submitted as blob | `(N + 1) × base_fee` |
-| `CredentialDelete` × N | Messenger account | standard × N |
+| Multisigned transaction | — | `(N + 1) × base_fee` where N = number of signing signers |
+| `CredentialDelete` × N | Messenger account | standard |
 | `MPTokenIssuanceDestroy` | Messenger account | standard |
 
-The multisigned transaction fee minimum is `(N + 1) × base_fee` where N is the number of actual signers providing signatures.
-
 ---
 
-## Local Storage Keys
+## Field Reference
 
-| Key | Value | Purpose |
+| Field / Value | Hex | Description |
 |---|---|---|
-| `messengerLink_<address>` | messenger account address | Maps multisig account → messenger account |
-
----
-
-## Object Summary
-
-| XRPL Object | Owner | Purpose |
-|---|---|---|
-| `SignerList` | Multisig account | Defines quorum and signer weights |
-| `MPTokenIssuance` | Messenger account | Carries encoded unsigned transaction in creation memo |
-| `Credential` | Subject (signer) | Signals pending signature request; carries partial signature on accept |
-| `Ticket` | Multisig account | Optional: allows out-of-sequence transaction dispatch |
-
----
-
-## Encoding Constants
-
-| Value | Hex | Notes |
-|---|---|---|
-| `"TX"` (MemoType) | `5458` | Identifies the transaction blob memo |
-| `"SigningPubKey"` (MemoType) | `5369676E696E675075624B6579` | Signer's public key in CredentialAccept |
-| `"TxnSignature"` (MemoType) | `546F6E5369676E6174757265` | Partial signature in CredentialAccept |
-| `"MULTISIG"` (CredentialType prefix) | `4D554C5449534947` | Always prepended to mptIssuanceId |
-| `asfDisableMaster` | `4` | AccountSet SetFlag/ClearFlag value |
-| `lsfDisableMaster` | `0x00100000` | Account Flags bitmask |
-| `lsfAccepted` (Credential) | `0x00010000` | Credential Flags bitmask |
-| Multisig signing prefix | `0x534D5400` | Applied by `encodeForMultisigning` |
-| Single-sig signing prefix | `0x53545800` | Applied by `encodeForSigning` |
+| `MemoType: "TX"` | `5458` | Identifies the unsigned transaction blob in the MPT creation memo |
+| `MemoType: "SigningPubKey"` | `5369676E696E675075624B6579` | Signer's public key in `CredentialAccept` |
+| `MemoType: "TxnSignature"` | `546F6E5369676E6174757265` | Partial signature in `CredentialAccept` |
+| `CredentialType` prefix `"MULTISIG"` | `4D554C5449534947` | Prepended to `mpt-issuance-id` to form the full 32-byte credential type |
+| `asfDisableMaster` | `4` | `AccountSet` flag value to disable/enable the master key |
+| `lsfDisableMaster` | `0x00100000` | `Flags` bitmask on account ledger entry |
+| `lsfAccepted` | `0x00010000` | `Flags` bitmask on `Credential` ledger entry |
+| Multisig signing prefix | `0x534D5400` | Prepended to transaction bytes before multisig hashing |
