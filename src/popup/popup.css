@@ -2672,3 +2672,171 @@ details[open] .review-json-summary::before {
   max-width: 200px;
   width: 100%;
 }
+
+/* ===== MULTISIGN ===== */
+.multisign-nav-card { cursor: pointer; user-select: none; }
+.multisign-nav-card:hover { border-color: var(--accent); }
+.multisign-nav-chevron { font-size: 16px; color: var(--text-3); }
+
+.ms-loading { text-align: center; color: var(--text-3); font-size: 13px; padding: 20px 0; }
+
+.ms-empty-msg { font-size: 12px; color: var(--text-3); text-align: center; padding: 8px 0 4px; }
+
+.ms-quorum-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.ms-quorum-label { font-size: 11px; color: var(--text-3); }
+.ms-quorum-value { font-size: 16px; font-weight: 700; }
+
+.ms-signer-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 0; border-bottom: 1px solid var(--surface-2);
+}
+.ms-signer-item:last-child { border-bottom: none; }
+.ms-signer-name { font-size: 12px; font-weight: 500; }
+.ms-signer-addr { font-family: 'SF Mono', monospace; font-size: 9px; color: var(--text-3); margin-top: 1px; }
+.ms-signer-weight-badge {
+  font-size: 10px; font-weight: 600;
+  background: var(--accent-dim); color: var(--accent);
+  border: 1px solid rgba(99,102,241,0.2);
+  border-radius: var(--radius-xs); padding: 2px 7px; flex-shrink: 0;
+}
+
+/* Form card */
+.ms-form-card { border-color: var(--accent); }
+.ms-field-row { margin-bottom: 10px; }
+.ms-field-label { font-size: 10px; color: var(--text-3); margin-bottom: 4px; font-weight: 500; display: block; }
+.ms-quorum-input { width: 80px; }
+
+/* Signer row */
+.ms-signer-row { display: flex; gap: 5px; align-items: flex-end; margin-bottom: 8px; }
+.ms-signer-addr-wrap { flex: 1; display: flex; }
+.ms-signer-addr-wrap .input-field { border-radius: var(--radius-xs) 0 0 var(--radius-xs); border-right: none; flex: 1; }
+.ms-picker-btn {
+  height: 32px; width: 28px; flex-shrink: 0;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  color: var(--accent); font-size: 13px;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.ms-picker-btn:hover { background: var(--accent-dim); }
+.ms-signer-weight-wrap { width: 58px; }
+.ms-remove-btn {
+  width: 28px; height: 32px; flex-shrink: 0;
+  background: transparent; border: 1px solid rgba(239,68,68,0.3);
+  border-radius: var(--radius-xs); color: #ef4444; font-size: 13px;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  margin-bottom: 1px;
+}
+.ms-remove-btn:hover { background: rgba(239,68,68,0.08); }
+.ms-remove-btn:disabled { opacity: 0.3; cursor: default; }
+
+.ms-add-signer-btn {
+  width: 100%; font-size: 11px; color: var(--accent);
+  background: transparent; border: 1px dashed rgba(99,102,241,0.35);
+  border-radius: var(--radius-xs); padding: 6px 10px;
+  cursor: pointer; text-align: center; margin-bottom: 10px;
+}
+.ms-add-signer-btn:hover { background: var(--accent-dim); }
+
+/* Master key card */
+.ms-master-status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.ms-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.ms-status-dot.active { background: var(--success); box-shadow: 0 0 5px var(--success); }
+.ms-status-dot.disabled { background: #ef4444; box-shadow: 0 0 5px rgba(239,68,68,0.4); }
+.ms-status-text { font-size: 12px; color: var(--text-2); }
+.ms-master-key-btn.danger { border: 1px solid rgba(239,68,68,0.35); color: #ef4444; background: transparent; }
+.ms-master-key-btn.danger:hover { background: rgba(239,68,68,0.08); }
+.ms-master-key-btn.reenable { border: 1px solid rgba(16,185,129,0.35); color: var(--success); background: transparent; }
+.ms-master-key-btn.reenable:hover { background: var(--success-dim); }
+.ms-messenger-current { font-size: 11px; color: var(--text-2); margin-bottom: 8px; }
+.ms-ticket-count { font-size: 12px; color: var(--text-2); margin-bottom: 8px; }
+.ms-ticket-create-row { display: flex; gap: 8px; align-items: center; }
+.ms-ticket-input { width: 72px; text-align: right; padding: 6px 8px; }
+.ms-info-icon { font-size: 11px; color: var(--text-3); margin-left: 4px; cursor: default; }
+.ms-nav-summary { font-size: 11px; color: var(--text-3); margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ms-nav-badge { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 10px; }
+.ms-nav-badge.ready { background: rgba(16,185,129,0.15); color: var(--success); }
+.ms-nav-badge.awaiting { background: var(--accent-dim); color: var(--accent); }
+
+/* Multisig dispatch view */
+.ms-dispatch-section-label { font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin: 10px 0 6px; }
+.ms-dispatch-signer-list { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 4px; }
+.ms-dispatch-signer-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.ms-dispatch-signer-row:last-child { border-bottom: none; }
+.ms-dispatch-signer-name { font-size: 12px; font-weight: 500; }
+.ms-dispatch-signer-addr { font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-3); margin-top: 1px; }
+.ms-dispatch-signer-status { font-size: 12px; min-width: 90px; text-align: right; color: var(--text-3); }
+.ms-dispatch-signer-status.success { color: var(--success); }
+.ms-dispatch-signer-status.error { color: #ef4444; font-size: 11px; }
+.ms-dispatch-summary { font-size: 12px; color: var(--text-2); text-align: center; padding: 10px 0 4px; }
+.ms-dispatch-nft-status { font-size: 11px; color: var(--text-2); margin-top: 6px; padding: 6px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xs); }
+.ms-dispatch-nft-status.success { color: var(--success); border-color: rgba(16,185,129,0.3); }
+.ms-dispatch-nft-status.error { color: #ef4444; border-color: rgba(239,68,68,0.3); }
+
+/* Sent list */
+.ms-sent-list { }
+.ms-sent-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.ms-sent-item:last-child { border-bottom: none; }
+.ms-sent-item:hover { background: var(--surface-2); }
+.ms-sent-item-label { font-size: 12px; font-weight: 500; }
+.ms-sent-item-hash { font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-3); margin-top: 1px; }
+.ms-sent-item-chevron { color: var(--text-3); font-size: 16px; line-height: 1; }
+.ms-sent-weight-badge { font-size: 11px; font-weight: 600; min-width: 36px; text-align: right; white-space: nowrap; }
+.ms-sent-weight-badge.met { color: var(--success); }
+.ms-sent-weight-badge.pending { color: var(--text-3); }
+.ms-trxn-weight-met { color: var(--success); font-weight: 600; }
+.ms-trxn-weight-pending { color: var(--text-3); }
+/* Cancel progress */
+.ms-trxn-cancel-progress { margin-top: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.ms-trxn-cancel-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 14px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.ms-trxn-cancel-row:last-child { border-bottom: none; }
+.ms-trxn-cancel-label { color: var(--text-2); flex: 1; margin-right: 8px; }
+.ms-trxn-cancel-status { min-width: 70px; text-align: right; color: var(--text-3); }
+.ms-trxn-cancel-status.success { color: var(--success); }
+.ms-trxn-cancel-status.error { color: #ef4444; font-size: 11px; }
+
+/* Incoming transactions list */
+.ms-incoming-list { }
+.ms-incoming-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.ms-incoming-item:last-child { border-bottom: none; }
+.ms-incoming-item:hover { background: var(--surface-2); }
+.ms-incoming-item-left { flex: 1; }
+.ms-incoming-item-label { font-size: 12px; font-weight: 500; }
+.ms-incoming-item-hash { font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-3); margin-top: 1px; }
+.ms-incoming-item-status { font-size: 11px; white-space: nowrap; }
+.ms-incoming-item-status.signed { color: var(--success); }
+.ms-incoming-item-status.waiting { color: var(--text-3); }
+/* Verification badge */
+.ms-sign-verification { font-size: 12px; font-weight: 500; padding: 8px 12px; border-radius: var(--radius-sm); margin-bottom: 8px; }
+.ms-sign-verification.verified { background: rgba(16,185,129,0.12); color: var(--success); border: 1px solid rgba(16,185,129,0.3); }
+.ms-sign-verification.failed { background: var(--danger-dim); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
+
+/* Picker modal */
+.ms-picker-modal {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0,0,0,0.6);
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.ms-picker-modal.hidden { display: none; }
+.ms-picker-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+  width: 100%; max-height: 60vh;
+  display: flex; flex-direction: column; padding: 14px 12px 0;
+}
+.ms-picker-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.ms-picker-title { font-size: 13px; font-weight: 600; }
+.ms-picker-filter { width: 100%; margin-bottom: 8px; }
+.ms-picker-list { overflow-y: auto; flex: 1; padding-bottom: 12px; }
+.ms-picker-item {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 10px; border-radius: var(--radius-xs); cursor: pointer;
+}
+.ms-picker-item:hover { background: var(--surface-2); }
+.ms-picker-item-name { font-size: 12px; font-weight: 500; }
+.ms-picker-item-addr { font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-3); }

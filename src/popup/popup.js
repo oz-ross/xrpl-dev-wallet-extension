@@ -1,13 +1,13 @@
 import './popup.css';
-import { Client, Wallet, dropsToXrp, xrpToDrops, encodeAccountID, decodeMPTokenMetadata, isValidClassicAddress } from 'xrpl';
+import { Client, Wallet, dropsToXrp, xrpToDrops, encodeAccountID, decodeAccountID, decodeMPTokenMetadata, isValidClassicAddress } from 'xrpl';
 import xrplPkg from 'xrpl/package.json';
 import QRCode from 'qrcode';
 import { getSdkError } from '@walletconnect/utils';
 import { generateMnemonic, validateMnemonic } from 'bip39';
 import TransportWebHID from '@ledgerhq/hw-transport-webhid';
 import Xrp from '@ledgerhq/hw-app-xrp';
-import { encode, encodeForSigning } from 'ripple-binary-codec';
-import { sign as keypairsSign } from 'ripple-keypairs';
+import { encode, encodeForSigning, encodeForMultisigning, decode } from 'ripple-binary-codec';
+import { sign as keypairsSign, deriveAddress } from 'ripple-keypairs';
 import { createHash } from 'crypto';
 
 // ─────────────────────────────────────────────
@@ -197,7 +197,7 @@ const state = {
   pendingLoanPay: null,
 
   // Developer settings persisted to chrome.storage.local
-  devSettings: { printTxJson: false, printWC: false, lockTimeoutSecs: 0, wideMode: false, iouDecimalPrecision: 6 },
+  devSettings: { printTxJson: false, printWC: false, lockTimeoutSecs: 0, wideMode: false, iouDecimalPrecision: 6, multisignEnabled: false },
 
   // Vaults fetched on the vault-deposit screen, keyed by VaultID
   fetchedVaults: new Map(),
@@ -234,14 +234,28 @@ function showView(name) {
   });
   // Close any open account dropdown
   $('account-dropdown')?.classList.add('hidden');
+  // Refresh multisign nav card summary whenever the wallet home screen is shown
+  if (name === 'wallet') refreshMultisignSummary().catch(() => {});
   // Populate raw JSON panel on review screen
   if (name === 'send-review' && state.pendingTxReview?.txJson) {
     $('review-raw-json').textContent = JSON.stringify(state.pendingTxReview.txJson, null, 2);
     $('review-json-details').removeAttribute('open');
   }
   if (name === 'send-review') {
+    if (state.pendingTxReview?.title) {
+      $('review-title').textContent = state.pendingTxReview.title;
+    }
     $('review-fee-value').textContent = '…';
     fetchReviewFee().catch(() => { $('review-fee-value').textContent = '—'; });
+    // Disable submit immediately if we already know master key is disabled; probe will confirm
+    $('send-review-submit-btn').disabled = activeMasterKeyDisabled;
+    $('send-review-submit-btn').title = activeMasterKeyDisabled
+      ? 'Master key is disabled — transactions must be submitted via multisig'
+      : '';
+    probeAccountFlagsForReview().catch(() => {});
+    reviewSignerList = null;
+    $('send-multisig-btn').classList.add('hidden');
+    if (state.devSettings.multisignEnabled) probeSignerListForReview().catch(() => {});
   }
 }
 
@@ -269,6 +283,27 @@ async function fetchReviewFee() {
     } catch {
       $('review-fee-value').textContent = '—';
     }
+  }
+}
+
+async function probeSignerListForReview() {
+  const probeAccount = state.activeAccount;
+  try {
+    await ensureConnected();
+    const resp = await state.client.request({
+      command: 'account_objects',
+      account: probeAccount,
+      ledger_index: 'validated',
+      type: 'signer_list',
+    });
+    if (state.activeAccount !== probeAccount) return;
+    const sl = (resp.result.account_objects ?? []).find(o => o.LedgerEntryType === 'SignerList');
+    reviewSignerList = sl?.SignerEntries ?? [];
+    if (reviewSignerList.length > 0) {
+      $('send-multisig-btn').classList.remove('hidden');
+    }
+  } catch {
+    if (state.activeAccount === probeAccount) reviewSignerList = [];
   }
 }
 
@@ -647,13 +682,99 @@ function getAllAccounts() {
 }
 
 /** True when the active account cannot sign transactions. */
+let activeMasterKeyDisabled = false;  // true when on-chain DisableMaster flag is set
+
 function isActiveAccountReadOnly() {
   if (!state.activeAccount) return true;
+  if (activeMasterKeyDisabled) return true;
   const kr = state.keyrings.find(k =>
     (k.type === 'watch'  && k.address === state.activeAccount) ||
     (k.type === 'ledger' && k.address === state.activeAccount)
   );
   return kr?.type === 'watch';  // ledger CAN sign via device; watch cannot
+}
+
+/** Lightweight probe to populate the multisign nav card summary without opening the Multisign screen. */
+async function refreshMultisignSummary() {
+  if (!state.devSettings.multisignEnabled) return;
+  if (!state.activeAccount || !state.client) return;
+  const summaryEl = $('ms-nav-summary');
+  if (!summaryEl) return;
+  try {
+    await ensureConnected();
+
+    // Parallel: signer list check + all active-account objects (for incoming creds)
+    const [signerResp, allActiveObjs] = await Promise.all([
+      state.client.request({
+        command: 'account_objects',
+        account: state.activeAccount,
+        ledger_index: 'validated',
+        type: 'signer_list',
+      }),
+      fetchAllAccountObjects(state.activeAccount),
+    ]);
+
+    const hasSigner = (signerResp.result.account_objects ?? [])
+      .some(o => o.LedgerEntryType === 'SignerList');
+    const incomingCreds = allActiveObjs.filter(o =>
+      o.LedgerEntryType === 'Credential' &&
+      o.CredentialType?.toUpperCase().startsWith('4D554C5449534947')
+    );
+    const awaitingCount = incomingCreds.filter(c => !(c.Flags & LSF_ACCEPTED)).length;
+
+    // Count dispatched MPTs from the messenger account
+    let activeCount = 0;
+    const messengerAddr = await loadMessengerLink(state.activeAccount);
+    if (messengerAddr) {
+      try {
+        const messengerObjs = await fetchAllAccountObjects(messengerAddr);
+        activeCount = messengerObjs.filter(o => {
+          if (o.LedgerEntryType !== 'MPTokenIssuance') return false;
+          try {
+            return JSON.parse(Buffer.from(o.MPTokenMetadata ?? '', 'hex').toString('utf8'))?.t === 'MS';
+          } catch { return false; }
+        }).length;
+      } catch { /* ignore */ }
+    }
+
+    // Update module-level signer list var so renderMultisignScreen has correct data
+    if (!msSignerList && hasSigner) msSignerList = {}; // sentinel: non-null = activated
+
+    if (hasSigner || activeCount > 0 || awaitingCount > 0) {
+      const parts = [];
+      if (hasSigner) parts.push('Multisig Activated');
+      if (activeCount > 0) parts.push(`${activeCount} active`);
+      if (awaitingCount > 0) {
+        parts.push(`<span class="ms-nav-badge awaiting">${awaitingCount} awaiting signature</span>`);
+      }
+      summaryEl.innerHTML = parts.join(' · ');
+      summaryEl.classList.remove('hidden');
+    } else {
+      summaryEl.classList.add('hidden');
+    }
+  } catch { summaryEl.classList.add('hidden'); }
+}
+
+/** Probe the ledger for the active account's master-key disabled flag and update the send-review submit button. */
+async function probeAccountFlagsForReview() {
+  try {
+    await ensureConnected();
+    const resp = await state.client.request({
+      command: 'account_info',
+      account: state.activeAccount,
+      ledger_index: 'validated',
+    });
+    const flags = resp.result.account_data?.Flags ?? 0;
+    activeMasterKeyDisabled = !!(flags & 0x00100000);
+    const submitBtn = $('send-review-submit-btn');
+    if (activeMasterKeyDisabled) {
+      submitBtn.disabled = true;
+      submitBtn.title = 'Master key is disabled — transactions must be submitted via multisig';
+    } else {
+      if (!submitBtn.title?.includes('Master')) submitBtn.disabled = false;
+      submitBtn.title = '';
+    }
+  } catch { /* ignore — leave button state unchanged */ }
 }
 
 // ─────────────────────────────────────────────
@@ -1169,6 +1290,13 @@ async function executeProjectRemove() {
  */
 async function activateAccount(address) {
   state.activeAccount = address;
+  activeMasterKeyDisabled = false;  // reset; will be refreshed on next probe or loadMultisignData
+  // Reset multisign state so the nav card summary reflects the new account immediately
+  msSignerList   = null;
+  msSentList     = [];
+  msIncomingList = [];
+  const summaryEl = $('ms-nav-summary');
+  if (summaryEl) summaryEl.classList.add('hidden');
   state.wallet = getActiveWallet();
   await updateSessionActiveAccount();
   // Persist the new active account to the vault so it survives a lock/unlock.
@@ -1847,6 +1975,8 @@ function updateWalletUI() {
   $('switcher-addr').textContent  = truncAddr(addr);
 
   renderAccountDropdown(accounts, addr);
+  $('multisign-nav-card').classList.toggle('hidden', !state.devSettings.multisignEnabled);
+  if (state.devSettings.multisignEnabled) refreshMultisignSummary().catch(() => {});
 }
 
 function renderAccountDropdown(accounts, activeAddr) {
@@ -2306,14 +2436,15 @@ function renderCredentials(creds) {
   const card   = $('credential-card');
   const listEl = $('credential-list');
 
-  if (!creds.length) {
+  const visibleCreds = creds.filter(c => !c.CredentialType?.toUpperCase().startsWith('4D554C5449534947'));
+  if (!visibleCreds.length) {
     card.classList.add('hidden');
     listEl.innerHTML = '';
     return;
   }
 
   card.classList.remove('hidden');
-  listEl.innerHTML = creds.map((c, i) => {
+  listEl.innerHTML = visibleCreds.map((c, i) => {
     const typeHex    = c.CredentialType ?? '';
     const typeLabel  = hexToUtf8(typeHex) || typeHex.slice(0, 16);
     const issuer     = c.Issuer ?? '';
@@ -2331,7 +2462,7 @@ function renderCredentials(creds) {
   }).join('');
 
   // Store credentials on the element for click access
-  listEl._credentials = creds;
+  listEl._credentials = visibleCreds;
 }
 
 // ─────────────────────────────────────────────
@@ -4493,6 +4624,286 @@ async function executeReviewedTx() {
 }
 
 // ─────────────────────────────────────────────
+// MULTISIG DISPATCH
+// ─────────────────────────────────────────────
+
+async function openMultisigSendView() {
+  const txJson = state.pendingTxReview?.txJson;
+  if (!txJson || !reviewSignerList?.length) return;
+
+  // Navigate first so error messages are visible in the dispatch view
+  hideAlert('ms-dispatch-error');
+  $('ms-dispatch-confirm-btn').textContent = 'Preparing…';
+  $('ms-dispatch-confirm-btn').disabled = true;
+  $('ms-dispatch-confirm-btn').classList.remove('hidden');
+  $('ms-dispatch-cancel-btn').classList.remove('hidden');
+  $('ms-dispatch-close-btn').classList.add('hidden');
+  $('ms-dispatch-summary').classList.add('hidden');
+  $('ms-dispatch-tx-summary').innerHTML = '';
+  $('ms-dispatch-signer-rows').innerHTML = '';
+  $('ms-dispatch-fee-estimate').textContent = '—';
+  $('ms-dispatch-ledger-buffer').value = '20';
+  $('ms-dispatch-sequence-select').innerHTML = '<option value="next">Loading…</option>';
+  $('ms-dispatch-nft-status').textContent = '';
+  $('ms-dispatch-nft-status').className = 'ms-dispatch-nft-status hidden';
+  showView('multisig-send');
+
+  try {
+    // Load messenger link if not already set (e.g. arriving from a non-multisign flow)
+    if (!msMessengerAddress) {
+      msMessengerAddress = await loadMessengerLink(state.activeAccount);
+    }
+    if (!msMessengerAddress) {
+      throw new Error('No messenger account configured. Set one on the Multisig screen first.');
+    }
+
+    await ensureConnected();
+    const ledgerResp       = await state.client.request({ command: 'ledger_current' });
+    msDispatchCurrentSeq   = Number(ledgerResp.result.ledger_current_index);
+    const filled           = await state.client.autofill({ ...txJson });
+    filled.SigningPubKey   = '';
+    // Multisig fee must be at least (numSigners + 1) × base_fee
+    const baseFeeDrop      = parseInt(filled.Fee ?? '12', 10);
+    const numSigners       = reviewSignerList.length;
+    filled.Fee             = String((numSigners + 1) * baseFeeDrop);
+    // Store for encoding at confirm time — LLS is NOT set here
+    delete filled.LastLedgerSequence;
+    msDispatchFilledTx  = filled;
+    msDispatchTxType    = txJson.TransactionType ?? '';
+
+    // Populate sequence dropdown with autofilled sequence + any tickets
+    const seqSelect = $('ms-dispatch-sequence-select');
+    seqSelect.innerHTML = `<option value="next">Next Sequence: ${filled.Sequence}</option>`;
+    try {
+      const ticketResp = await state.client.request({
+        command: 'account_objects',
+        account: state.activeAccount,
+        ledger_index: 'validated',
+        type: 'ticket',
+      });
+      for (const t of (ticketResp.result.account_objects ?? [])) {
+        const ts = t.TicketSequence;
+        seqSelect.innerHTML += `<option value="ticket:${ts}">Ticket: ${ts}</option>`;
+      }
+    } catch { /* no tickets or error — next sequence only */ }
+
+    await refreshAddressNames();
+    msDispatchSigners = reviewSignerList.map(e => ({
+      address: e.SignerEntry.Account,
+      name: resolveAddrDisplay(e.SignerEntry.Account),
+    }));
+
+    const feeDrops = parseInt(filled.Fee ?? '12', 10);
+    const totalDrops = feeDrops * msDispatchSigners.length;
+    const xrp = (totalDrops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+
+    const updateExpiryDisplay = () => {
+      const buf = Math.max(1, parseInt($('ms-dispatch-ledger-buffer').value, 10) || 20);
+      $('ms-dispatch-fee-estimate').textContent =
+        `~${xrp} XRP (~${totalDrops} drops) · expires ~ledger ${msDispatchCurrentSeq + buf}`;
+    };
+    updateExpiryDisplay();
+    $('ms-dispatch-ledger-buffer').oninput = updateExpiryDisplay;
+
+    $('ms-dispatch-tx-summary').innerHTML = buildTxRows(txJson);
+
+    $('ms-dispatch-signer-rows').innerHTML = msDispatchSigners.map((s, i) => `
+      <div class="ms-dispatch-signer-row">
+        <div class="ms-dispatch-signer-info">
+          <div class="ms-dispatch-signer-name">${esc(s.name)}</div>
+          <div class="ms-dispatch-signer-addr">${esc(truncAddr(s.address))}</div>
+        </div>
+        <div class="ms-dispatch-signer-status" id="ms-dispatch-status-${i}">⋯</div>
+      </div>`).join('');
+
+    $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
+    $('ms-dispatch-confirm-btn').disabled = false;
+  } catch (err) {
+    showAlert('ms-dispatch-error', `Failed to prepare: ${err.message || 'Unknown error'}`);
+    $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
+    $('ms-dispatch-confirm-btn').disabled = true;
+  }
+}
+
+async function signWithAddress(prepared, address) {
+  const wallet = getWalletForAddress(address);
+  if (wallet) {
+    const { tx_blob } = wallet.sign(prepared);
+    return tx_blob;
+  }
+  const ledgerKr = state.keyrings.find(k => k.type === 'ledger' && k.address === address);
+  if (ledgerKr) {
+    const txToSign = { ...prepared, SigningPubKey: ledgerKr.publicKey };
+    delete txToSign.TxnSignature;
+    const txBlob = encode(txToSign);
+    let transport;
+    try {
+      transport = await TransportWebHID.create();
+      const xrpApp = new Xrp(transport);
+      const sig = await xrpApp.signTransaction(ledgerKr.derivationPath, txBlob);
+      txToSign.TxnSignature = sig.toUpperCase();
+      return encode(txToSign);
+    } finally {
+      if (transport) await transport.close().catch(() => {});
+    }
+  }
+  throw new Error(`No signing key available for ${truncAddr(address)}.`);
+}
+
+/** Build the CredentialType hex for a multisig dispatch: hex("MULTISIG") + mptIssuanceId. */
+function multisigCredType(mptIssuanceId) {
+  return '4D554C5449534947' + (mptIssuanceId ?? '').toUpperCase();
+}
+
+async function executeMultisigDispatch() {
+  if (!msDispatchFilledTx || !msDispatchSigners.length) return;
+
+  // Encode the transaction with the user's chosen ledger buffer, fresh at confirm time
+  try {
+    await ensureConnected();
+    const ledgerResp = await state.client.request({ command: 'ledger_current' });
+    const currentSeq = Number(ledgerResp.result.ledger_current_index);
+    const ledgerBuffer = Math.max(1, parseInt($('ms-dispatch-ledger-buffer').value, 10) || 20);
+    msDispatchFilledTx.LastLedgerSequence = currentSeq + ledgerBuffer;
+    // Apply sequence or ticket selection
+    const seqVal = $('ms-dispatch-sequence-select').value;
+    if (seqVal.startsWith('ticket:')) {
+      const ticketSeq = parseInt(seqVal.split(':')[1], 10);
+      msDispatchFilledTx.Sequence       = 0;
+      msDispatchFilledTx.TicketSequence = ticketSeq;
+    } else {
+      delete msDispatchFilledTx.TicketSequence;
+    }
+    msDispatchTxHex = encode(msDispatchFilledTx);
+  } catch (err) {
+    showAlert('ms-dispatch-error', `Failed to prepare transaction: ${err.message || 'Unknown error'}`);
+    return;
+  }
+
+  if (!msDispatchTxHex) return;
+
+  $('ms-dispatch-confirm-btn').disabled = true;
+  $('ms-dispatch-confirm-btn').textContent = 'Creating MPT…';
+  $('ms-dispatch-cancel-btn').classList.add('hidden');
+  hideAlert('ms-dispatch-error');
+  $('ms-dispatch-nft-status').className = 'ms-dispatch-nft-status hidden';
+
+  try {
+    await ensureConnected();
+  } catch (err) {
+    showAlert('ms-dispatch-error', `Connection failed: ${err.message || 'Unknown error'}`);
+    $('ms-dispatch-confirm-btn').disabled = false;
+    $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
+    $('ms-dispatch-cancel-btn').classList.remove('hidden');
+    return;
+  }
+
+  // ── Step 1: Create MPT Issuance ──────────────────────────────────────────
+  const txHash   = computeTxHash(msDispatchTxHex);
+  const mptMeta  = JSON.stringify({
+    t:  'MS',
+    n:  'Multisig',
+    i:  'X',
+    in: 'X',
+    ac: 'other',
+    as: 'other',
+    ai: { hash: txHash, transaction_type: msDispatchTxType },
+  });
+  const mptMetaHex = Buffer.from(mptMeta).toString('hex').toUpperCase();
+
+  let mptIssuanceId;
+  try {
+    const issuanceTx = {
+      TransactionType: 'MPTokenIssuanceCreate',
+      Account: msMessengerAddress,
+      MPTokenMetadata: mptMetaHex,
+      Memos: [{ Memo: { MemoType: '5458', MemoData: msDispatchTxHex } }],
+    };
+    const preparedIssuance = await state.client.autofill(issuanceTx);
+    const issuanceBlob = await signWithAddress(preparedIssuance, msMessengerAddress);
+    const issuanceResp = await state.client.submitAndWait(issuanceBlob);
+    const issuanceResult = issuanceResp.result?.meta?.TransactionResult;
+    if (issuanceResult !== 'tesSUCCESS') {
+      throw new Error(`MPTokenIssuanceCreate failed: ${issuanceResult ?? 'Unknown'}`);
+    }
+    mptIssuanceId = issuanceResp.result.meta?.mpt_issuance_id;
+    if (!mptIssuanceId) throw new Error('mpt_issuance_id not found in response.');
+    const statusEl = $('ms-dispatch-nft-status');
+    statusEl.textContent = `✓ MPT created: ${mptIssuanceId.slice(0, 12)}…`;
+    statusEl.className = 'ms-dispatch-nft-status success';
+  } catch (err) {
+    const statusEl = $('ms-dispatch-nft-status');
+    statusEl.textContent = `✗ MPT creation failed: ${err.message || 'Unknown error'}`;
+    statusEl.className = 'ms-dispatch-nft-status error';
+    showAlert('ms-dispatch-error', `Could not create MPT: ${err.message || 'Unknown error'}`);
+    $('ms-dispatch-confirm-btn').disabled = false;
+    $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
+    $('ms-dispatch-cancel-btn').classList.remove('hidden');
+    return;
+  }
+
+  // ── Step 2: Credential per signer ────────────────────────────────────────
+  $('ms-dispatch-confirm-btn').textContent = 'Sending signature requests…';
+  let successCount = 0;
+  let connectionLost = false;
+
+  for (let i = 0; i < msDispatchSigners.length; i++) {
+    if (connectionLost) break;
+    const signer = msDispatchSigners[i];
+    const statusEl = $(`ms-dispatch-status-${i}`);
+    statusEl.textContent = '…';
+    statusEl.className = 'ms-dispatch-signer-status';
+
+    const credTx = {
+      TransactionType: 'CredentialCreate',
+      Account: msMessengerAddress,
+      Subject: signer.address,
+      CredentialType: multisigCredType(mptIssuanceId),
+      URI: mptIssuanceId,
+    };
+
+    try {
+      const prepared = await state.client.autofill(credTx);
+      const tx_blob = await signWithAddress(prepared, msMessengerAddress);
+      const response = await state.client.submitAndWait(tx_blob);
+      const result = response.result?.meta?.TransactionResult;
+      if (result === 'tesSUCCESS') {
+        statusEl.textContent = '✓ Sent';
+        statusEl.className = 'ms-dispatch-signer-status success';
+        successCount++;
+      } else {
+        statusEl.textContent = `✗ ${result ?? 'Unknown'}`;
+        statusEl.className = 'ms-dispatch-signer-status error';
+      }
+    } catch (err) {
+      const msg = err.message || 'Error';
+      const isConnectionError = msg.toLowerCase().includes('connect') ||
+        msg.toLowerCase().includes('websocket') ||
+        msg.toLowerCase().includes('network');
+      if (isConnectionError) {
+        connectionLost = true;
+        for (let j = i; j < msDispatchSigners.length; j++) {
+          const el = $(`ms-dispatch-status-${j}`);
+          el.textContent = '✗ Connection lost';
+          el.className = 'ms-dispatch-signer-status error';
+        }
+        break;
+      }
+      statusEl.textContent = `✗ ${msg.slice(0, 28)}`;
+      statusEl.className = 'ms-dispatch-signer-status error';
+    }
+  }
+
+  const total = msDispatchSigners.length;
+  $('ms-dispatch-summary').textContent =
+    `${successCount} of ${total} credential${total === 1 ? '' : 's'} sent.`;
+  $('ms-dispatch-summary').classList.remove('hidden');
+  $('ms-dispatch-confirm-btn').classList.add('hidden');
+  $('ms-dispatch-close-btn').classList.remove('hidden');
+  refreshBalance();
+}
+
+// ─────────────────────────────────────────────
 // AUTO-REFRESH
 // ─────────────────────────────────────────────
 
@@ -4506,6 +4917,7 @@ function startAutoRefresh() {
     loadLendingPositions();
     loadPermissionedDomains();
     loadTxHistory();
+    refreshMultisignSummary().catch(() => {});
   }, AUTO_REFRESH_INTERVAL);
 }
 
@@ -5543,6 +5955,1014 @@ $('account-info-refresh-btn').addEventListener('click', () => {
 });
 
 // ─────────────────────────────────────────────
+// MULTISIGN
+// ─────────────────────────────────────────────
+
+let msSignerList        = null;   // fetched SignerList object, or null if none
+let msMasterKeyDisabled = false;
+let msMessengerAddress  = null;   // locally stored messenger account for active account
+let reviewSignerList    = null;   // null=unknown, []=none, [entries]=has signers — for send-review probe
+let msDispatchTxHex     = '';     // autofilled+encoded unsigned tx blob for dispatch
+let msDispatchFilledTx  = null;   // autofilled tx (no LLS), encoded fresh at confirm time
+let msDispatchCurrentSeq = 0;    // current ledger seq at view-open time, for display
+let msDispatchTxType    = '';     // TransactionType of the pending tx, for MPT metadata
+let msDispatchSigners   = [];     // [{ address, name }] for current dispatch
+let msTicketCount       = 0;      // number of Ticket objects owned by active account
+let msSentList          = [];     // MPTokenIssuance objects with t==='MS' from messenger
+let msTrxnDetail        = null;   // { mptObj, decodedTxJson } for currently open detail
+let msCancelCredsDone   = false;  // true after cred revocations complete — skips creds on MPT retry
+let msIncomingList      = [];     // [{ credential, txType, txHash }] — MULTISIG creds for current account
+let msMsSignDetail      = null;   // { credential, decodedTxJson, verified, alreadySigned }
+let msFormState         = { quorum: '', signers: [{ address: '', weight: 1 }] };
+let msFormVisible       = false;  // setup form open in no-setup state
+let msUpdateMode        = false;  // true when editing existing signer list
+let msPickerTargetIdx   = -1;     // signer row index the picker is filling
+
+function openMultisignView() {
+  msSignerList        = null;
+  msMasterKeyDisabled = false;
+  msMessengerAddress  = null;
+  msFormState         = { quorum: '', signers: [{ address: '', weight: 1 }] };
+  msFormVisible       = false;
+  msUpdateMode        = false;
+  $('ms-quorum-input').value = '';
+  $('ms-messenger-card').classList.add('hidden');
+  showView('multisign');
+  loadMultisignData();
+}
+
+async function loadMultisignData() {
+  $('ms-loading').classList.remove('hidden');
+  $('ms-load-error').classList.add('hidden');
+  $('ms-no-setup-card').classList.add('hidden');
+  $('ms-configured-card').classList.add('hidden');
+  $('ms-form-card').classList.add('hidden');
+  $('ms-master-key-card').classList.add('hidden');
+  $('ms-messenger-card').classList.add('hidden');
+  $('ms-ticket-card').classList.add('hidden');
+  $('ms-sent-card').classList.add('hidden');
+  $('ms-incoming-card').classList.add('hidden');
+
+  try {
+    await ensureConnected();
+    const [objResp, infoResp] = await Promise.all([
+      state.client.request({
+        command: 'account_objects',
+        account: state.activeAccount,
+        ledger_index: 'validated',
+        type: 'signer_list',
+      }),
+      state.client.request({
+        command: 'account_info',
+        account: state.activeAccount,
+        ledger_index: 'validated',
+      }),
+    ]);
+
+    const objects = objResp.result.account_objects ?? [];
+    msSignerList = objects.find(o => o.LedgerEntryType === 'SignerList') ?? null;
+
+    const flags = infoResp.result.account_data?.Flags ?? 0;
+    msMasterKeyDisabled      = !!(flags & 0x00100000);
+    activeMasterKeyDisabled  = msMasterKeyDisabled;
+
+    await refreshAddressNames();
+    msMessengerAddress = await loadMessengerLink(state.activeAccount);
+    msSentList = [];
+    if (msMessengerAddress) {
+      try {
+        const allObjs = await fetchAllAccountObjects(msMessengerAddress);
+        const rawMpts = allObjs.filter(o => {
+          if (o.LedgerEntryType !== 'MPTokenIssuance') return false;
+          try {
+            return JSON.parse(Buffer.from(o.MPTokenMetadata ?? '', 'hex').toString('utf8'))?.t === 'MS';
+          } catch { return false; }
+        });
+        msSentList = await Promise.all(rawMpts.map(async mptObj => {
+          let txType = '—', txHash = '—';
+          try {
+            const meta = JSON.parse(Buffer.from(mptObj.MPTokenMetadata ?? '', 'hex').toString('utf8'));
+            txType = meta?.ai?.transaction_type ?? '—';
+            txHash = (meta?.ai?.hash ?? '').slice(0, 8);
+          } catch { /* keep defaults */ }
+          const quorum = msSignerList?.SignerQuorum ?? 0;
+          let signerStatus = [];
+          if (msSignerList && msMessengerAddress) {
+            signerStatus = await Promise.all(
+              (msSignerList.SignerEntries ?? []).map(async e => {
+                const addr   = e.SignerEntry.Account;
+                const weight = e.SignerEntry.SignerWeight;
+                try {
+                  const mptId    = mptObj.MPTokenIssuanceID ?? mptObj.mpt_issuance_id ?? mptObj.index;
+                  const credResp = await state.client.request({
+                    command: 'ledger_entry',
+                    credential: {
+                      subject: addr,
+                      issuer: msMessengerAddress,
+                      credential_type: multisigCredType(mptId),
+                    },
+                    ledger_index: 'validated',
+                  });
+                  const cred     = credResp.result.node ?? {};
+                  const accepted = !!(cred.Flags & LSF_ACCEPTED);
+                  return { address: addr, weight, accepted, prevTxnId: accepted ? cred.PreviousTxnID : null };
+                } catch {
+                  return { address: addr, weight, accepted: false, prevTxnId: null };
+                }
+              })
+            );
+          }
+          const currentWeight = signerStatus
+            .filter(s => s.accepted)
+            .reduce((sum, s) => sum + s.weight, 0);
+          return { mptObj, txType, txHash, currentWeight, quorum, signerStatus };
+        }));
+      } catch { /* silent — sent list is optional */ }
+    }
+    msIncomingList = [];
+    try {
+      const allObjs = await fetchAllAccountObjects(state.activeAccount);
+      const multisigCreds = allObjs
+        .filter(o => o.LedgerEntryType === 'Credential' && o.CredentialType?.toUpperCase().startsWith('4D554C5449534947'));
+      for (const cred of multisigCreds) {
+        try {
+          const mptResp = await state.client.request({
+            command: 'ledger_entry',
+            mpt_issuance: cred.URI,
+            ledger_index: 'validated',
+          });
+          const node = mptResp.result.node ?? {};
+          const meta = JSON.parse(Buffer.from(node.MPTokenMetadata ?? '', 'hex').toString('utf8'));
+          msIncomingList.push({
+            credential: cred,
+            txType: meta?.ai?.transaction_type ?? '—',
+            txHash: (meta?.ai?.hash ?? '').slice(0, 8),
+          });
+        } catch { /* skip this credential */ }
+      }
+    } catch { /* silent — incoming list is optional */ }
+    msTicketCount = 0;
+    try {
+      const ticketResp = await state.client.request({
+        command: 'account_objects',
+        account: state.activeAccount,
+        ledger_index: 'validated',
+        type: 'ticket',
+      });
+      msTicketCount = (ticketResp.result.account_objects ?? []).length;
+    } catch { /* silent */ }
+    $('ms-loading').classList.add('hidden');
+    renderMultisignScreen();
+  } catch (err) {
+    $('ms-loading').classList.add('hidden');
+    showAlert('ms-load-error', `Failed to load: ${err.message}`);
+  }
+}
+
+function renderMultisignScreen() {
+  // ── SignerList card ──
+  if (msUpdateMode) {
+    $('ms-no-setup-card').classList.add('hidden');
+    $('ms-configured-card').classList.add('hidden');
+    $('ms-form-title').textContent = 'Update Signers';
+    $('ms-form-cancel-btn').classList.remove('hidden');
+    $('ms-form-card').classList.remove('hidden');
+  } else if (msSignerList) {
+    $('ms-no-setup-card').classList.add('hidden');
+    $('ms-form-cancel-btn').classList.add('hidden');
+    $('ms-form-card').classList.add('hidden');
+    renderSignerListSummary();
+    $('ms-configured-card').classList.remove('hidden');
+  } else {
+    $('ms-configured-card').classList.add('hidden');
+    $('ms-form-title').textContent = 'Configure Signers';
+    $('ms-form-cancel-btn').classList.add('hidden');
+    $('ms-setup-toggle-btn').textContent = msFormVisible ? '▲ Hide Setup' : 'Setup Multisig';
+    $('ms-form-card').classList.toggle('hidden', !msFormVisible);
+    $('ms-no-setup-card').classList.remove('hidden');
+  }
+  renderMsSignerRows();
+
+  // ── Master Key card ──
+  const dot  = $('ms-master-status-dot');
+  const text = $('ms-master-status-text');
+  const btn  = $('ms-master-key-btn');
+  dot.className   = `ms-status-dot ${msMasterKeyDisabled ? 'disabled' : 'active'}`;
+  text.textContent = msMasterKeyDisabled
+    ? 'Master key is disabled'
+    : 'Master key is active';
+  btn.textContent = msMasterKeyDisabled ? 'Re-enable Master Key' : 'Disable Master Key';
+  btn.className   = `btn btn-full ms-master-key-btn ${msMasterKeyDisabled ? 'reenable' : 'danger'}`;
+  $('ms-master-key-card').classList.remove('hidden');
+
+  // ── Messenger Account card ──
+  const messengerAccounts = getProjectAccounts().filter(a => !a.isWatch);
+  const messengerSelect   = $('ms-messenger-select');
+  messengerSelect.innerHTML = '<option value="">— select account —</option>' +
+    messengerAccounts.map(a =>
+      `<option value="${esc(a.address)}">${esc(a.label || 'Account')} (${esc(truncAddr(a.address))})</option>`
+    ).join('');
+  $('ms-messenger-current').textContent = msMessengerAddress
+    ? `Current: ${resolveAddrDisplay(msMessengerAddress)} (${truncAddr(msMessengerAddress)})`
+    : 'No messenger account set.';
+  hideAlert('ms-messenger-error');
+  $('ms-messenger-card').classList.remove('hidden');
+
+  // ── TRXN SENT card ──
+  const sentListEl = $('ms-sent-list');
+  if (msSentList.length === 0) {
+    $('ms-sent-card').classList.add('hidden');
+  } else {
+    sentListEl.innerHTML = msSentList.map((entry, i) => {
+      const met   = entry.quorum > 0 && entry.currentWeight >= entry.quorum;
+      const badge = entry.quorum > 0
+        ? `<span class="ms-sent-weight-badge ${met ? 'met' : 'pending'}">${entry.currentWeight}/${entry.quorum}</span>`
+        : `<span class="ms-sent-weight-badge pending">—</span>`;
+      return `<div class="ms-sent-item" data-sent-idx="${i}">
+        <div>
+          <div class="ms-sent-item-label">${esc(entry.txType)}</div>
+          <div class="ms-sent-item-hash">${esc(entry.txHash)}…</div>
+        </div>
+        ${badge}
+      </div>`;
+    }).join('');
+    sentListEl.querySelectorAll('.ms-sent-item').forEach(el => {
+      el.addEventListener('click', () => openMsTrxnDetail(+el.dataset.sentIdx));
+    });
+    $('ms-sent-card').classList.remove('hidden');
+  }
+
+  // ── TRXN FOR SIGNATURE card ──
+  const incomingListEl = $('ms-incoming-list');
+  if (msIncomingList.length === 0) {
+    $('ms-incoming-card').classList.add('hidden');
+  } else {
+    incomingListEl.innerHTML = msIncomingList.map((item, i) => {
+      const signed = !!(item.credential.Flags & LSF_ACCEPTED);
+      return `<div class="ms-incoming-item" data-incoming-idx="${i}">
+        <div class="ms-incoming-item-left">
+          <div class="ms-incoming-item-label">${esc(item.txType)}: ${esc(item.txHash)}…</div>
+        </div>
+        <span class="ms-incoming-item-status ${signed ? 'signed' : 'waiting'}">${signed ? '✓ Signed' : '○ Waiting'}</span>
+      </div>`;
+    }).join('');
+    incomingListEl.querySelectorAll('.ms-incoming-item').forEach(el => {
+      el.addEventListener('click', () => openMsSignDetail(+el.dataset.incomingIdx));
+    });
+    $('ms-incoming-card').classList.remove('hidden');
+  }
+
+  // ── Tickets card ──
+  $('ms-ticket-count').textContent = msTicketCount === 0
+    ? 'No tickets owned'
+    : `${msTicketCount} ticket${msTicketCount === 1 ? '' : 's'} owned`;
+  $('ms-ticket-input').value = '1';
+  hideAlert('ms-ticket-error');
+  $('ms-ticket-card').classList.remove('hidden');
+
+  // ── Nav card summary ──
+  const activeCount   = msSentList.length;
+  const readyCount    = msSentList.filter(e => e.quorum > 0 && e.currentWeight >= e.quorum).length;
+  const awaitingCount = msIncomingList.filter(item => !(item.credential.Flags & LSF_ACCEPTED)).length;
+  const summaryEl     = $('ms-nav-summary');
+  if (msSignerList || activeCount > 0 || awaitingCount > 0) {
+    const parts = [];
+    if (msSignerList) parts.push('Multisig Activated');
+    if (activeCount > 0) {
+      const activeText = `${activeCount} active`;
+      const readyBadge = readyCount > 0
+        ? ` <span class="ms-nav-badge ready">${readyCount} ready</span>`
+        : '';
+      parts.push(activeText + readyBadge);
+    }
+    if (awaitingCount > 0) {
+      parts.push(`<span class="ms-nav-badge awaiting">${awaitingCount} awaiting signature</span>`);
+    }
+    summaryEl.innerHTML = parts.join(' · ');
+    summaryEl.classList.remove('hidden');
+  } else {
+    summaryEl.classList.add('hidden');
+  }
+}
+
+// ─────────────────────────────────────────────
+// MULTISIG TRXN DETAIL
+// ─────────────────────────────────────────────
+
+async function openMsTrxnDetail(idx) {
+  const entry = msSentList[idx];
+  if (!entry) return;
+  const mptObj = entry.mptObj;
+  msTrxnDetail = null;
+  msCancelCredsDone = false;
+
+  $('ms-trxn-detail-rows').innerHTML = '';
+  $('ms-trxn-raw-json').textContent = '';
+  $('ms-trxn-json-details').removeAttribute('open');
+  $('ms-trxn-cancel-progress').classList.add('hidden');
+  $('ms-trxn-cancel-progress').innerHTML = '';
+  $('ms-trxn-quorum-card').classList.add('hidden');
+  $('ms-trxn-expired-warn').classList.add('hidden');
+  $('ms-trxn-submit-btn').classList.add('hidden');
+  $('ms-trxn-submit-btn').disabled = true;
+  $('ms-trxn-submit-btn').textContent = 'Submit';
+  hideAlert('ms-trxn-detail-error');
+  $('ms-trxn-cancel-btn').disabled = false;
+  $('ms-trxn-cancel-btn').textContent = 'Cancel Transaction';
+  $('ms-trxn-cancel-btn').classList.remove('hidden');
+  $('ms-trxn-close-btn').disabled = false;
+  $('ms-trxn-close-btn').textContent = 'Close';
+  showView('ms-trxn-detail');
+
+  try {
+    await ensureConnected();
+    const txResp = await state.client.request({
+      command: 'tx',
+      transaction: mptObj.PreviousTxnID,
+    });
+    const memoData = txResp.result?.tx_json?.Memos?.[0]?.Memo?.MemoData ?? '';
+    if (!memoData) throw new Error('No transaction data found in memo.');
+    const decodedTxJson = decode(memoData);
+    msTrxnDetail = { mptObj, decodedTxJson, entry };
+    $('ms-trxn-detail-rows').innerHTML = buildTxRows(decodedTxJson);
+    $('ms-trxn-raw-json').textContent = JSON.stringify(decodedTxJson, null, 2);
+
+    // Quorum card
+    $('ms-trxn-quorum-required').textContent = String(entry.quorum);
+    const weightEl = $('ms-trxn-current-weight');
+    weightEl.textContent = `${entry.currentWeight} / ${entry.quorum}`;
+    weightEl.className   = `tx-value ${entry.quorum > 0 && entry.currentWeight >= entry.quorum ? 'ms-trxn-weight-met' : 'ms-trxn-weight-pending'}`;
+    if (entry.quorum > 0) $('ms-trxn-quorum-card').classList.remove('hidden');
+
+    // Expiry check
+    let expired = false;
+    try {
+      const srvResp   = await state.client.request({ command: 'server_info' });
+      const ledgerSeq = srvResp.result.info?.validated_ledger?.seq ?? 0;
+      if (decodedTxJson.LastLedgerSequence && decodedTxJson.LastLedgerSequence <= ledgerSeq) {
+        expired = true;
+      }
+    } catch { /* assume not expired */ }
+
+    if (expired) {
+      $('ms-trxn-expired-warn').classList.remove('hidden');
+    } else if (entry.quorum > 0 && entry.currentWeight >= entry.quorum) {
+      $('ms-trxn-submit-btn').classList.remove('hidden');
+      $('ms-trxn-submit-btn').disabled = false;
+    }
+  } catch (err) {
+    showAlert('ms-trxn-detail-error', `Failed to load: ${err.message || 'Unknown error'}`);
+    $('ms-trxn-cancel-btn').disabled = true;
+  }
+}
+
+async function cancelMsTrxn() {
+  if (!msTrxnDetail || !msSignerList) {
+    showAlert('ms-trxn-detail-error', 'Signer list not loaded. Return to Multisig screen and try again.');
+    return;
+  }
+
+  $('ms-trxn-cancel-btn').disabled = true;
+  $('ms-trxn-cancel-btn').textContent = 'Cancelling…';
+  $('ms-trxn-close-btn').disabled = true;
+  hideAlert('ms-trxn-detail-error');
+
+  const { mptObj }  = msTrxnDetail;
+  const mptId       = mptObj.MPTokenIssuanceID ?? mptObj.mpt_issuance_id ?? mptObj.index;
+  const credType    = multisigCredType(mptId);
+  const signers     = msSignerList.SignerEntries ?? [];
+  const progressEl  = $('ms-trxn-cancel-progress');
+  progressEl.classList.remove('hidden');
+
+  try {
+    await ensureConnected();
+  } catch (err) {
+    showAlert('ms-trxn-detail-error', `Connection failed: ${err.message || 'Unknown error'}`);
+    $('ms-trxn-cancel-btn').disabled = false;
+    $('ms-trxn-cancel-btn').textContent = msCancelCredsDone ? 'Retry MPT Destroy' : 'Cancel Transaction';
+    $('ms-trxn-close-btn').disabled = false;
+    return;
+  }
+
+  // ── Credential revocations — query ledger first, only act on existing creds ──
+  if (!msCancelCredsDone) {
+    // Find which signers actually have an outstanding credential
+    const existingCredSigners = [];
+    for (const entry of signers) {
+      const addr = entry.SignerEntry.Account;
+      try {
+        await state.client.request({
+          command: 'ledger_entry',
+          credential: {
+            subject: addr,
+            issuer: msMessengerAddress,
+            credential_type: credType,
+          },
+          ledger_index: 'validated',
+        });
+        existingCredSigners.push(addr);
+      } catch { /* credential not found — skip */ }
+    }
+
+    // Build progress rows only for existing credentials + MPT step
+    const credSteps = existingCredSigners.map(addr => ({
+      label: `Revoke: ${resolveAddrDisplay(addr)} (${truncAddr(addr)})`,
+      address: addr,
+    }));
+    progressEl.innerHTML = [
+      ...credSteps.map((s, i) => `<div class="ms-trxn-cancel-row">
+        <span class="ms-trxn-cancel-label">${esc(s.label)}</span>
+        <span class="ms-trxn-cancel-status" id="ms-cancel-status-${i}">…</span>
+      </div>`),
+      `<div class="ms-trxn-cancel-row">
+        <span class="ms-trxn-cancel-label">Destroy MPT issuance</span>
+        <span class="ms-trxn-cancel-status" id="ms-cancel-status-mpt">…</span>
+      </div>`,
+    ].join('');
+
+    for (let i = 0; i < credSteps.length; i++) {
+      const signerAddr = credSteps[i].address;
+      const statusEl   = $(`ms-cancel-status-${i}`);
+      try {
+        const tx = {
+          TransactionType: 'CredentialDelete',
+          Account: msMessengerAddress,
+          Subject: signerAddr,
+          CredentialType: credType,
+        };
+        const prepared = await state.client.autofill(tx);
+        const tx_blob  = await signWithAddress(prepared, msMessengerAddress);
+        const resp     = await state.client.submitAndWait(tx_blob);
+        const result   = resp.result?.meta?.TransactionResult;
+        if (result === 'tesSUCCESS' || result === 'tecNO_ENTRY') {
+          statusEl.textContent = '✓';
+          statusEl.className = 'ms-trxn-cancel-status success';
+        } else {
+          statusEl.textContent = `✗ ${result ?? 'Unknown'}`;
+          statusEl.className = 'ms-trxn-cancel-status error';
+        }
+      } catch (err) {
+        statusEl.textContent = `✗ ${(err.message || 'Error').slice(0, 20)}`;
+        statusEl.className = 'ms-trxn-cancel-status error';
+      }
+    }
+    msCancelCredsDone = true;
+  }
+
+  // ── MPT issuance destroy ─────────────────────────────────────────────────
+  const mptStatusEl = $('ms-cancel-status-mpt');
+  mptStatusEl.textContent = '…';
+  mptStatusEl.className = 'ms-trxn-cancel-status';
+  const mptIssuanceId = mptObj.MPTokenIssuanceID ?? mptObj.mpt_issuance_id ?? mptObj.index;
+  let mptSuccess = false;
+  try {
+    const destroyTx = {
+      TransactionType: 'MPTokenIssuanceDestroy',
+      Account: msMessengerAddress,
+      MPTokenIssuanceID: mptIssuanceId,
+    };
+    const prepared = await state.client.autofill(destroyTx);
+    const tx_blob  = await signWithAddress(prepared, msMessengerAddress);
+    const resp     = await state.client.submitAndWait(tx_blob);
+    const result   = resp.result?.meta?.TransactionResult;
+    if (result === 'tesSUCCESS') {
+      mptStatusEl.textContent = '✓';
+      mptStatusEl.className = 'ms-trxn-cancel-status success';
+      mptSuccess = true;
+    } else {
+      mptStatusEl.textContent = `✗ ${result ?? 'Unknown'}`;
+      mptStatusEl.className = 'ms-trxn-cancel-status error';
+    }
+  } catch (err) {
+    mptStatusEl.textContent = `✗ ${(err.message || 'Error').slice(0, 20)}`;
+    mptStatusEl.className = 'ms-trxn-cancel-status error';
+  }
+
+  if (mptSuccess) {
+    $('ms-trxn-cancel-btn').classList.add('hidden');
+  } else {
+    // Allow retry of MPT destroy without re-running credential revocations
+    $('ms-trxn-cancel-btn').textContent = 'Retry MPT Destroy';
+    $('ms-trxn-cancel-btn').disabled = false;
+    $('ms-trxn-cancel-btn').classList.remove('hidden');
+  }
+  $('ms-trxn-close-btn').disabled = false;
+}
+
+function hexFromMemo(memos, typeName) {
+  const typeHex = Buffer.from(typeName).toString('hex').toUpperCase();
+  const found   = memos.find(m => m.Memo?.MemoType?.toUpperCase() === typeHex);
+  return found?.Memo?.MemoData ?? null;
+}
+
+async function submitMultisigTx() {
+  if (!msTrxnDetail) return;
+
+  const { mptObj, decodedTxJson, entry } = msTrxnDetail;
+  const credType = multisigCredType(mptObj.MPTokenIssuanceID ?? mptObj.mpt_issuance_id ?? mptObj.index);
+  $('ms-trxn-submit-btn').disabled = true;
+  $('ms-trxn-submit-btn').textContent = 'Collecting signatures…';
+  $('ms-trxn-cancel-btn').classList.add('hidden');
+  $('ms-trxn-close-btn').disabled = true;
+  hideAlert('ms-trxn-detail-error');
+
+  try {
+    await ensureConnected();
+
+    // Collect signatures from CredentialAccept tx memos
+    const signerData = [];
+    for (const s of entry.signerStatus.filter(ss => ss.accepted && ss.prevTxnId)) {
+      const txResp = await state.client.request({ command: 'tx', transaction: s.prevTxnId });
+      const memos  = txResp.result?.tx_json?.Memos ?? [];
+      const pubKey = hexFromMemo(memos, 'SigningPubKey');
+      const sig    = hexFromMemo(memos, 'TxnSignature');
+      if (pubKey && sig) signerData.push({ address: s.address, pubKey, sig });
+    }
+
+    if (signerData.length === 0) {
+      throw new Error('No valid signatures found in accepted credentials.');
+    }
+
+    // Build Signers array sorted by account ID ascending (XRPL requirement)
+    const Signers = signerData
+      .map(s => ({ Signer: { Account: s.address, SigningPubKey: s.pubKey, TxnSignature: s.sig } }))
+      .sort((a, b) => Buffer.compare(
+        Buffer.from(decodeAccountID(a.Signer.Account)),
+        Buffer.from(decodeAccountID(b.Signer.Account))
+      ));
+
+    // Submit multisigned transaction
+    $('ms-trxn-submit-btn').textContent = 'Submitting…';
+    const finalTx  = { ...decodedTxJson, Signers };
+    const tx_blob  = encode(finalTx);
+    if (state.devSettings.printTxJson) console.log('[multisig tx before submit]', finalTx);
+    const response = await state.client.submitAndWait(tx_blob);
+    const txResult = response.result?.meta?.TransactionResult;
+    if (txResult !== 'tesSUCCESS') throw new Error(`Transaction failed: ${txResult ?? 'Unknown'}`);
+
+    // Success — clean up credentials + MPT
+    $('ms-trxn-submit-btn').textContent = 'Cleaning up…';
+    $('ms-trxn-cancel-progress').classList.remove('hidden');
+    $('ms-trxn-cancel-progress').innerHTML =
+      `<div class="ms-trxn-cancel-row" style="color:var(--success);font-weight:500">
+        <span>✓ Transaction successfully processed</span>
+       </div>`;
+    const cleanupSteps = [
+      ...entry.signerStatus.map(s => ({
+        label: `Revoke: ${resolveAddrDisplay(s.address)} (${truncAddr(s.address)})`,
+        address: s.address,
+      })),
+      { label: 'Destroy MPT issuance' },
+    ];
+    $('ms-trxn-cancel-progress').innerHTML += cleanupSteps.map((s, i) =>
+      `<div class="ms-trxn-cancel-row">
+        <span class="ms-trxn-cancel-label">${esc(s.label)}</span>
+        <span class="ms-trxn-cancel-status" id="ms-submit-cleanup-${i}">…</span>
+      </div>`
+    ).join('');
+
+    for (let i = 0; i < entry.signerStatus.length; i++) {
+      const addr     = entry.signerStatus[i].address;
+      const statusEl = $(`ms-submit-cleanup-${i}`);
+      try {
+        const credTx   = {
+          TransactionType: 'CredentialDelete',
+          Account: msMessengerAddress,
+          Subject: addr,
+          CredentialType: credType,
+        };
+        const prepared = await state.client.autofill(credTx);
+        const tx_blob  = await signWithAddress(prepared, msMessengerAddress);
+        const resp     = await state.client.submitAndWait(tx_blob);
+        const result   = resp.result?.meta?.TransactionResult;
+        statusEl.textContent = (result === 'tesSUCCESS' || result === 'tecNO_ENTRY') ? '✓' : `✗ ${result ?? 'Unknown'}`;
+        statusEl.className   = (result === 'tesSUCCESS' || result === 'tecNO_ENTRY')
+          ? 'ms-trxn-cancel-status success'
+          : 'ms-trxn-cancel-status error';
+      } catch (err) {
+        statusEl.textContent = `✗ ${(err.message || 'Error').slice(0, 20)}`;
+        statusEl.className   = 'ms-trxn-cancel-status error';
+      }
+    }
+
+    const mptStatusEl   = $(`ms-submit-cleanup-${entry.signerStatus.length}`);
+    const mptIssuanceId = mptObj.MPTokenIssuanceID ?? mptObj.mpt_issuance_id ?? mptObj.index;
+    try {
+      const destroyTx = {
+        TransactionType: 'MPTokenIssuanceDestroy',
+        Account: msMessengerAddress,
+        MPTokenIssuanceID: mptIssuanceId,
+      };
+      const prepared = await state.client.autofill(destroyTx);
+      const tx_blob  = await signWithAddress(prepared, msMessengerAddress);
+      const resp     = await state.client.submitAndWait(tx_blob);
+      const result   = resp.result?.meta?.TransactionResult;
+      mptStatusEl.textContent = result === 'tesSUCCESS' ? '✓' : `✗ ${result ?? 'Unknown'}`;
+      mptStatusEl.className   = result === 'tesSUCCESS'
+        ? 'ms-trxn-cancel-status success'
+        : 'ms-trxn-cancel-status error';
+    } catch (err) {
+      mptStatusEl.textContent = `✗ ${(err.message || 'Error').slice(0, 20)}`;
+      mptStatusEl.className   = 'ms-trxn-cancel-status error';
+    }
+
+    $('ms-trxn-submit-btn').classList.add('hidden');
+    $('ms-trxn-close-btn').disabled = false;
+    $('ms-trxn-close-btn').textContent = 'Done';
+
+  } catch (err) {
+    showAlert('ms-trxn-detail-error', err.message || 'Submission failed.');
+    $('ms-trxn-submit-btn').disabled = false;
+    $('ms-trxn-submit-btn').textContent = 'Submit';
+    $('ms-trxn-cancel-btn').classList.remove('hidden');
+    $('ms-trxn-close-btn').disabled = false;
+  }
+}
+
+// ─────────────────────────────────────────────
+// MULTISIG SIGN INCOMING
+// ─────────────────────────────────────────────
+
+async function openMsSignDetail(idx) {
+  const item = msIncomingList[idx];
+  if (!item) return;
+  msMsSignDetail = null;
+
+  $('ms-sign-from').textContent = '—';
+  $('ms-sign-via').textContent  = '—';
+  $('ms-sign-detail-rows').innerHTML = '';
+  $('ms-sign-raw-json').textContent  = '';
+  $('ms-sign-json-details').removeAttribute('open');
+  $('ms-sign-verification').textContent = '';
+  $('ms-sign-verification').className   = 'ms-sign-verification hidden';
+  hideAlert('ms-sign-detail-error');
+  $('ms-sign-submit-btn').disabled = true;
+  $('ms-sign-submit-btn').textContent = 'Sign Transaction';
+  $('ms-sign-close-btn').disabled = false;
+  showView('ms-sign-detail');
+
+  try {
+    await ensureConnected();
+
+    // Get MPT PreviousTxnID
+    const mptResp = await state.client.request({
+      command: 'ledger_entry',
+      mpt_issuance: item.credential.URI,
+      ledger_index: 'validated',
+    });
+    const mptNode  = mptResp.result.node ?? {};
+    const prevTxId = mptNode.PreviousTxnID;
+    if (!prevTxId) throw new Error('MPT has no PreviousTxnID.');
+
+    // Fetch MPTokenIssuanceCreate tx and decode memo
+    const txResp = await state.client.request({
+      command: 'tx',
+      transaction: prevTxId,
+    });
+    const memoData = txResp.result?.tx_json?.Memos?.[0]?.Memo?.MemoData ?? '';
+    if (!memoData) throw new Error('No transaction data found in memo.');
+    const decodedTxJson = decode(memoData);
+
+    // Populate header
+    const txAccount = decodedTxJson.Account ?? '';
+    const issuer    = item.credential.Issuer ?? '';
+    $('ms-sign-from').textContent = `${resolveAddrDisplay(txAccount)} (${truncAddr(txAccount)})`;
+    $('ms-sign-via').textContent  = `${resolveAddrDisplay(issuer)} (${truncAddr(issuer)})`;
+
+    // Verify MessageKey → derive address → compare to credential Issuer
+    let verified = false;
+    try {
+      const infoResp = await state.client.request({
+        command: 'account_info',
+        account: txAccount,
+        ledger_index: 'validated',
+      });
+      const messageKey = infoResp.result.account_data?.MessageKey ?? '';
+      if (messageKey) verified = (deriveAddress(messageKey) === issuer);
+    } catch { /* treat as unverified */ }
+
+    const verEl = $('ms-sign-verification');
+    if (verified) {
+      verEl.textContent = '● Sender Verified';
+      verEl.className   = 'ms-sign-verification verified';
+    } else {
+      verEl.textContent = '● Sender Failed Verification';
+      verEl.className   = 'ms-sign-verification failed';
+    }
+
+    const alreadySigned = !!(item.credential.Flags & LSF_ACCEPTED);
+    msMsSignDetail = { credential: item.credential, decodedTxJson, verified, alreadySigned };
+
+    $('ms-sign-detail-rows').innerHTML = buildTxRows(decodedTxJson);
+    $('ms-sign-raw-json').textContent  = JSON.stringify(decodedTxJson, null, 2);
+
+    $('ms-sign-submit-btn').disabled =
+      !verified || alreadySigned || isActiveAccountReadOnly();
+  } catch (err) {
+    showAlert('ms-sign-detail-error', `Failed to load: ${err.message || 'Unknown error'}`);
+  }
+}
+
+async function getSignatureForAddress(txJson, address) {
+  const wallet = getWalletForAddress(address);
+  if (wallet) {
+    const sig = keypairsSign(encodeForMultisigning(txJson, address), wallet.privateKey).toUpperCase();
+    return { pubKey: wallet.publicKey, sig };
+  }
+  const ledgerKr = state.keyrings.find(k => k.type === 'ledger' && k.address === address);
+  if (ledgerKr) {
+    throw new Error('Ledger hardware wallets cannot be used as multisig signers in this version.');
+  }
+  throw new Error(`No signing key available for ${truncAddr(address)}.`);
+}
+
+async function signMsTransaction() {
+  if (!msMsSignDetail) return;
+
+  $('ms-sign-submit-btn').disabled = true;
+  $('ms-sign-submit-btn').textContent = 'Signing…';
+  hideAlert('ms-sign-detail-error');
+
+  try {
+    const { credential, decodedTxJson } = msMsSignDetail;
+    const { pubKey, sig } = await getSignatureForAddress(decodedTxJson, state.activeAccount);
+
+    const txJson = {
+      TransactionType: 'CredentialAccept',
+      Account: state.activeAccount,
+      Issuer: credential.Issuer,
+      CredentialType: credential.CredentialType,
+      Memos: [
+        { Memo: {
+          MemoType: Buffer.from('SigningPubKey').toString('hex').toUpperCase(),
+          MemoData: pubKey,
+        }},
+        { Memo: {
+          MemoType: Buffer.from('TxnSignature').toString('hex').toUpperCase(),
+          MemoData: sig,
+        }},
+      ],
+    };
+
+    reviewMultisignTx(txJson, 'Signature submitted.');
+  } catch (err) {
+    showAlert('ms-sign-detail-error', `Signing failed: ${err.message || 'Unknown error'}`);
+    $('ms-sign-submit-btn').disabled = false;
+    $('ms-sign-submit-btn').textContent = 'Sign Transaction';
+  }
+}
+
+function renderSignerListSummary() {
+  $('ms-quorum-display').textContent = msSignerList.SignerQuorum ?? '—';
+  const entries = msSignerList.SignerEntries ?? [];
+  $('ms-signer-list-display').innerHTML = entries.map(e => {
+    const addr    = e.SignerEntry.Account;
+    const weight  = e.SignerEntry.SignerWeight;
+    const display = esc(resolveAddrDisplay(addr));
+    const addrEsc = esc(addr);
+    return `<div class="ms-signer-item">
+      <div>
+        <div class="ms-signer-name">${display}</div>
+        <div class="ms-signer-addr">${addrEsc}</div>
+      </div>
+      <div class="ms-signer-weight-badge">w: ${weight}</div>
+    </div>`;
+  }).join('');
+}
+
+async function openMsPickerModal(signerIdx) {
+  msPickerTargetIdx = signerIdx;
+  $('ms-picker-filter').value = '';
+
+  const accounts = getProjectAccounts();
+  const contacts = await loadAddressBook();
+
+  // Combine, deduplicate by address
+  const seen  = new Set();
+  const items = [];
+  for (const a of accounts) {
+    if (!seen.has(a.address)) {
+      seen.add(a.address);
+      items.push({ name: a.label, address: a.address });
+    }
+  }
+  for (const c of contacts) {
+    if (!seen.has(c.address)) {
+      seen.add(c.address);
+      items.push({ name: c.name, address: c.address });
+    }
+  }
+
+  const renderPickerList = (filter) => {
+    const lower    = filter.toLowerCase();
+    const filtered = items.filter(i =>
+      (i.name ?? '').toLowerCase().includes(lower) || (i.address ?? '').toLowerCase().includes(lower)
+    );
+    $('ms-picker-list').innerHTML = filtered.map(i => `
+      <div class="ms-picker-item" data-address="${esc(i.address)}">
+        <div class="ms-picker-item-name">${esc(i.name)}</div>
+        <div class="ms-picker-item-addr">${esc(i.address)}</div>
+      </div>`).join('') || '<div style="padding:10px;color:var(--text-3);font-size:12px">No matches</div>';
+
+    $('ms-picker-list').querySelectorAll('.ms-picker-item').forEach(el => {
+      el.addEventListener('click', () => {
+        if (msPickerTargetIdx >= 0 && msFormState.signers[msPickerTargetIdx]) {
+          msFormState.signers[msPickerTargetIdx].address = el.dataset.address;
+        }
+        closeMsPickerModal();
+        renderMsSignerRows();
+      });
+    });
+  };
+
+  renderPickerList('');
+  // Property assignment replaces the previous handler on each open (avoids stale-closure accumulation)
+  $('ms-picker-filter').oninput = e => renderPickerList(e.target.value);
+  $('ms-picker-modal').classList.remove('hidden');
+  $('ms-picker-filter').focus();
+}
+
+function closeMsPickerModal() {
+  $('ms-picker-modal').classList.add('hidden');
+  msPickerTargetIdx = -1;
+}
+
+function renderMsSignerRows() {
+  const container = $('ms-signer-rows');
+  container.innerHTML = msFormState.signers.map((s, i) => `
+    <div class="ms-signer-row" data-idx="${i}">
+      <div class="ms-signer-addr-wrap">
+        <input class="input-field ms-addr-input"
+               type="text"
+               placeholder="r… address"
+               value="${esc(s.address)}"
+               data-idx="${i}" />
+        <button class="ms-picker-btn" data-idx="${i}" title="Pick from accounts / address book">⊞</button>
+      </div>
+      <div class="ms-signer-weight-wrap">
+        <input class="input-field ms-weight-input"
+               type="number" min="1" step="1"
+               value="${s.weight}"
+               data-idx="${i}" />
+      </div>
+      <button class="ms-remove-btn" data-idx="${i}"
+              ${msFormState.signers.length <= 1 ? 'disabled' : ''}>✕</button>
+    </div>`).join('');
+
+  // Address input
+  container.querySelectorAll('.ms-addr-input').forEach(el => {
+    el.addEventListener('input', e => {
+      msFormState.signers[+e.target.dataset.idx].address = e.target.value.trim();
+    });
+  });
+  // Weight input
+  container.querySelectorAll('.ms-weight-input').forEach(el => {
+    el.addEventListener('input', e => {
+      const v = parseInt(e.target.value, 10);
+      msFormState.signers[+e.target.dataset.idx].weight = isNaN(v) || v < 1 ? 1 : v;
+      updateMsQuorumWarning();
+    });
+  });
+  // Picker button
+  container.querySelectorAll('.ms-picker-btn').forEach(el => {
+    el.addEventListener('click', () => openMsPickerModal(+el.dataset.idx));
+  });
+  // Remove button
+  container.querySelectorAll('.ms-remove-btn').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = +el.dataset.idx;
+      msFormState.signers.splice(idx, 1);
+      renderMsSignerRows();
+      updateMsQuorumWarning();
+    });
+  });
+}
+
+function updateMsQuorumWarning() {
+  const quorum    = parseInt($('ms-quorum-input').value, 10);
+  const weightSum = msFormState.signers.reduce((s, r) => s + (parseInt(r.weight, 10) || 0), 0);
+  const warn      = !isNaN(quorum) && quorum > 0 && weightSum < quorum;
+  $('ms-quorum-warn').classList.toggle('hidden', !warn);
+}
+
+function validateMsForm() {
+  const quorum = parseInt($('ms-quorum-input').value, 10);
+  if (isNaN(quorum) || quorum < 1) {
+    showAlert('ms-form-error', 'Quorum must be a positive integer.');
+    return false;
+  }
+  if (msFormState.signers.length === 0) {
+    showAlert('ms-form-error', 'Add at least one signer.');
+    return false;
+  }
+  for (const s of msFormState.signers) {
+    if (!s.address || !isValidClassicAddress(s.address)) {
+      showAlert('ms-form-error', `Invalid XRPL address: "${s.address || '(empty)'}"`);
+      return false;
+    }
+    if (!Number.isInteger(s.weight) || s.weight < 1) {
+      showAlert('ms-form-error', 'All signer weights must be positive integers.');
+      return false;
+    }
+  }
+  const addresses = msFormState.signers.map(s => s.address);
+  if (new Set(addresses).size !== addresses.length) {
+    showAlert('ms-form-error', 'Duplicate signer addresses are not allowed.');
+    return false;
+  }
+  $('ms-form-error').classList.add('hidden');
+  return true;
+}
+
+function reviewMultisignTx(txJson, successMsg) {
+  $('send-review-paste-warn').classList.add('hidden');
+  $('send-review-details').innerHTML = buildTxRows(txJson);
+  state.pendingTxReview = { txJson, backView: 'multisign', successMsg, title: 'Review Transaction' };
+  showView('send-review');
+}
+
+function submitSignerListSet() {
+  if (!validateMsForm()) return;
+  const quorum = parseInt($('ms-quorum-input').value, 10);
+  const txJson = {
+    TransactionType: 'SignerListSet',
+    Account: state.activeAccount,
+    SignerQuorum: quorum,
+    SignerEntries: msFormState.signers.map(s => ({
+      SignerEntry: {
+        Account: s.address,
+        SignerWeight: Number(s.weight),
+      },
+    })),
+  };
+  reviewMultisignTx(txJson, 'Signer list updated!');
+}
+
+function submitMasterKeyToggle() {
+  const txJson = {
+    TransactionType: 'AccountSet',
+    Account: state.activeAccount,
+    ...(msMasterKeyDisabled ? { ClearFlag: 4 } : { SetFlag: 4 }),
+  };
+  const msg = msMasterKeyDisabled ? 'Master key re-enabled.' : 'Master key disabled.';
+  reviewMultisignTx(txJson, msg);
+}
+
+function submitTicketCreate() {
+  hideAlert('ms-ticket-error');
+  const count = parseInt($('ms-ticket-input').value, 10);
+  if (!Number.isInteger(count) || count < 1 || count > 250) {
+    showAlert('ms-ticket-error', 'Enter a number between 1 and 250.');
+    return;
+  }
+  const txJson = {
+    TransactionType: 'TicketCreate',
+    Account: state.activeAccount,
+    TicketCount: count,
+  };
+  reviewMultisignTx(txJson, `${count} ticket${count === 1 ? '' : 's'} created.`);
+}
+
+async function loadMessengerLink(address) {
+  const key  = `messengerLink_${address}`;
+  const data = await chrome.storage.local.get(key);
+  return data[key] ?? null;
+}
+
+async function saveMessengerLink(address, messengerAddress) {
+  await chrome.storage.local.set({ [`messengerLink_${address}`]: messengerAddress });
+}
+
+function getPublicKeyForAddress(address) {
+  const wallet = getWalletForAddress(address);
+  if (wallet) return wallet.publicKey;
+  const kr = state.keyrings.find(k => k.type === 'ledger' && k.address === address);
+  return kr?.publicKey ?? null;
+}
+
+async function submitMessengerAccountSet() {
+  hideAlert('ms-messenger-error');
+  const messengerAddress = $('ms-messenger-select').value;
+  if (!messengerAddress) {
+    showAlert('ms-messenger-error', 'Please select a messenger account.');
+    return;
+  }
+  const publicKey = getPublicKeyForAddress(messengerAddress);
+  if (!publicKey) {
+    showAlert('ms-messenger-error', 'Could not derive public key for selected account.');
+    return;
+  }
+  await saveMessengerLink(state.activeAccount, messengerAddress);
+  msMessengerAddress = messengerAddress;
+  const txJson = {
+    TransactionType: 'AccountSet',
+    Account: state.activeAccount,
+    MessageKey: publicKey,
+  };
+  reviewMultisignTx(txJson, 'Messenger key set.');
+}
+
+// ─────────────────────────────────────────────
 // RAW TRANSACTION BUILDER
 // ─────────────────────────────────────────────
 
@@ -6278,6 +7698,15 @@ $('review-copy-json-btn').addEventListener('click', () => {
   });
 });
 
+$('send-multisig-btn').addEventListener('click', () => openMultisigSendView().catch(() => {}));
+$('ms-dispatch-cancel-btn').addEventListener('click', () => showView('send-review'));
+$('ms-dispatch-confirm-btn').addEventListener('click', () => executeMultisigDispatch().catch(() => {}));
+$('ms-dispatch-close-btn').addEventListener('click', () => {
+  const back = state.pendingTxReview?.backView ?? 'wallet';
+  state.pendingTxReview = null;
+  showView(back);
+});
+
 // ─────────────────────────────────────────────
 // BACKGROUND → POPUP  push messages
 // (handles events that arrive while the popup is already open)
@@ -6666,6 +8095,7 @@ async function loadDevSettings() {
   }
   $('dev-print-tx-json').checked    = state.devSettings.printTxJson;
   $('dev-print-wc').checked         = state.devSettings.printWC;
+  $('dev-multisign-enabled').checked = state.devSettings.multisignEnabled;
   $('iou-decimal-precision').value  = state.devSettings.iouDecimalPrecision;
   $('lock-timeout-secs').value      = state.devSettings.lockTimeoutSecs;
   applyWideMode();
@@ -6721,6 +8151,12 @@ $('dev-print-wc').addEventListener('change', async (e) => {
   await saveDevSettings();
 });
 
+$('dev-multisign-enabled').addEventListener('change', e => {
+  state.devSettings.multisignEnabled = e.target.checked;
+  chrome.storage.local.set({ devSettings: state.devSettings });
+  updateWalletUI();
+});
+
 $('iou-decimal-precision').addEventListener('change', async (e) => {
   const val = parseInt(e.target.value, 10);
   state.devSettings.iouDecimalPrecision = isNaN(val) || val < 0 ? 6 : Math.min(val, 20);
@@ -6763,7 +8199,21 @@ function isMainnetNetwork(networkId) {
   return cfg.group === 'mainnet';
 }
 
-function maybeApplyNetworkChange(networkId, manualNetwork) {
+async function maybeApplyNetworkChange(networkId, manualNetwork) {
+  // Block network changes while WalletConnect sessions are active
+  try {
+    const resp = await sendToBackground({ type: 'WC_GET_SESSIONS' });
+    const sessionCount = Object.keys(resp.sessions ?? {}).length;
+    if (sessionCount > 0) {
+      $('network-wc-warn').classList.remove('hidden');
+      $('network-select').value = state.network;
+      return;
+    }
+  } catch {
+    // Background unreachable — allow the change
+  }
+  $('network-wc-warn').classList.add('hidden');
+
   if (isMainnetNetwork(networkId) && !state.mainnetAcknowledged) {
     state.pendingNetworkChange = { network: networkId, manualNetwork };
     $('mainnet-warning-checkbox').checked = false;
@@ -6780,7 +8230,7 @@ $('network-select').addEventListener('change', async (e) => {
   const selected = e.target.value;
   const isManual = selected === 'manual';
   $('network-manual-group').classList.toggle('hidden', !isManual);
-  if (!isManual) maybeApplyNetworkChange(selected, null);
+  if (!isManual) maybeApplyNetworkChange(selected, null).catch(() => {});
 });
 
 $('network-manual-apply-btn').addEventListener('click', async () => {
@@ -6793,7 +8243,7 @@ $('network-manual-apply-btn').addEventListener('click', async () => {
     alert('Invalid URL — must start with wss:// or ws://');
     return;
   }
-  maybeApplyNetworkChange('manual', { wsUrl: ws });
+  maybeApplyNetworkChange('manual', { wsUrl: ws }).catch(() => {});
 });
 
 $('mainnet-warning-checkbox').addEventListener('change', (e) => {
@@ -6816,6 +8266,63 @@ $('mainnet-warning-reject-btn').addEventListener('click', () => {
   populateNetworkSelector();
   showView('settings');
 });
+
+$('multisign-nav-card').addEventListener('click', openMultisignView);
+$('multisign-back-btn').addEventListener('click', () => showView('wallet'));
+
+$('ms-update-btn').addEventListener('click', () => {
+  const entries = msSignerList?.SignerEntries ?? [];
+  msFormState = {
+    quorum: String(msSignerList?.SignerQuorum ?? ''),
+    signers: entries.map(e => ({
+      address: e.SignerEntry.Account,
+      weight:  e.SignerEntry.SignerWeight,
+    })),
+  };
+  if (msFormState.signers.length === 0) {
+    msFormState.signers = [{ address: '', weight: 1 }];
+  }
+  msUpdateMode = true;
+  $('ms-quorum-input').value = msFormState.quorum;
+  renderMultisignScreen();
+});
+
+$('ms-setup-toggle-btn').addEventListener('click', () => {
+  msFormVisible = !msFormVisible;
+  renderMultisignScreen();
+});
+
+$('ms-form-cancel-btn').addEventListener('click', () => {
+  msUpdateMode = false;
+  msFormState  = { quorum: '', signers: [{ address: '', weight: 1 }] };
+  $('ms-quorum-input').value = '';
+  renderMultisignScreen();
+});
+
+$('ms-quorum-input').addEventListener('input', e => {
+  msFormState.quorum = e.target.value;
+  updateMsQuorumWarning();
+});
+
+$('ms-picker-close-btn').addEventListener('click', closeMsPickerModal);
+$('ms-picker-modal').addEventListener('click', e => {
+  if (e.target === $('ms-picker-modal')) closeMsPickerModal();
+});
+
+$('ms-add-signer-btn').addEventListener('click', () => {
+  msFormState.signers.push({ address: '', weight: 1 });
+  renderMsSignerRows();
+});
+
+$('ms-submit-btn').addEventListener('click', submitSignerListSet);
+$('ms-master-key-btn').addEventListener('click', submitMasterKeyToggle);
+$('ms-messenger-btn').addEventListener('click', submitMessengerAccountSet);
+$('ms-ticket-create-btn').addEventListener('click', submitTicketCreate);
+$('ms-trxn-close-btn').addEventListener('click', () => { msTrxnDetail = null; openMultisignView(); });
+$('ms-trxn-cancel-btn').addEventListener('click', () => cancelMsTrxn().catch(() => {}));
+$('ms-trxn-submit-btn').addEventListener('click', () => submitMultisigTx().catch(() => {}));
+$('ms-sign-close-btn').addEventListener('click', () => { msMsSignDetail = null; openMultisignView(); });
+$('ms-sign-submit-btn').addEventListener('click', () => signMsTransaction().catch(() => {}));
 
 // ─────────────────────────────────────────────
 // BOOT

@@ -612,6 +612,15 @@
       <div id="borrower-loan-list"></div>
     </div>
 
+    <!-- Multisign section -->
+    <div id="multisign-nav-card" class="iou-balance-card multisign-nav-card hidden">
+      <div class="iou-balance-header">
+        <span>Multisign</span>
+        <span class="multisign-nav-chevron">›</span>
+      </div>
+      <div id="ms-nav-summary" class="ms-nav-summary hidden"></div>
+    </div>
+
     <!-- WalletConnect section -->
     <div class="section" id="wc-section">
       <div class="section-header">
@@ -772,6 +781,9 @@
           <button id="network-manual-apply-btn" class="btn btn-primary btn-sm" style="width:100%">Connect</button>
         </div>
       </div>
+      <div id="network-wc-warn" class="alert alert-warn hidden" style="margin-top:8px">
+        Disconnect all WalletConnect sessions before changing the network.
+      </div>
     </div>
 
     <div class="settings-section-header">Display</div>
@@ -821,6 +833,17 @@
         <span class="settings-item-label">Delete Current Project</span>
         <span class="settings-item-chevron">›</span>
       </button>
+    </div>
+
+    <div class="settings-section-header">Advanced</div>
+    <div class="settings-list">
+      <div class="settings-item settings-toggle-item">
+        <span class="settings-item-label">Multisign</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="dev-multisign-enabled" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
     </div>
 
     <div class="settings-section-header">Developer Mode</div>
@@ -1254,6 +1277,45 @@
       <button id="send-review-cancel-btn" class="btn btn-ghost">Cancel</button>
       <button id="send-review-submit-btn" class="btn btn-primary">Confirm &amp; Send</button>
     </div>
+    <button id="send-multisig-btn" class="btn btn-outline btn-full hidden" style="margin-top:8px">Send for Multisig</button>
+  </div>
+
+  <!-- ===== MULTISIG SEND / CREDENTIAL DISPATCH ===== -->
+  <div id="view-multisig-send" class="view hidden">
+    <div class="view-header">
+      <h2>Send for Multisig</h2>
+    </div>
+
+    <div id="ms-dispatch-tx-summary" class="tx-card"></div>
+
+    <div class="ms-dispatch-section-label">Signature requests will be sent to:</div>
+    <div id="ms-dispatch-signer-rows" class="ms-dispatch-signer-list"></div>
+
+    <div class="tx-card review-fee-card" style="margin-top:6px">
+      <div class="tx-row">
+        <span class="tx-label">Est. Credential Fees</span>
+        <span id="ms-dispatch-fee-estimate" class="tx-value">—</span>
+      </div>
+      <div class="tx-row">
+        <span class="tx-label">Ledger buffer</span>
+        <input id="ms-dispatch-ledger-buffer" type="number" min="1" step="1" value="20"
+               class="input-field" style="width:72px;text-align:right;padding:4px 8px" />
+      </div>
+      <div class="tx-row">
+        <span class="tx-label">Sequence</span>
+        <select id="ms-dispatch-sequence-select" class="input-field" style="max-width:180px;padding:4px 8px"></select>
+      </div>
+    </div>
+
+    <div id="ms-dispatch-nft-status" class="ms-dispatch-nft-status hidden"></div>
+    <div id="ms-dispatch-error" class="alert alert-error hidden" style="margin-top:8px"></div>
+    <div id="ms-dispatch-summary" class="ms-dispatch-summary hidden"></div>
+
+    <div class="action-row">
+      <button id="ms-dispatch-cancel-btn" class="btn btn-ghost">Cancel</button>
+      <button id="ms-dispatch-confirm-btn" class="btn btn-primary">Confirm &amp; Send for Multisig</button>
+    </div>
+    <button id="ms-dispatch-close-btn" class="btn btn-outline btn-full hidden" style="margin-top:8px">Close</button>
   </div>
 
   <!-- ===== ADD TRUST LINE (IOU) ===== -->
@@ -1467,6 +1529,197 @@
   <div class="dev-warning">
     ⚠ This tool is intended to be used for development purposes only - it has not been formally security tested or audited. It is not recommended for mainnet or valuable keys / seeds!
   </div>
+
+<!-- ===== MULTISIGN ===== -->
+<div id="view-multisign" class="view hidden">
+  <div class="view-header">
+    <button id="multisign-back-btn" class="btn-back">‹</button>
+    <h2>Multisign</h2>
+  </div>
+
+  <div id="ms-loading" class="ms-loading hidden">Loading…</div>
+  <div id="ms-load-error" class="alert alert-error hidden"></div>
+
+  <!-- ── Signer List card ── -->
+  <!-- No-setup state -->
+  <div id="ms-no-setup-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">Signer List</div>
+    <p id="ms-no-setup-msg" class="ms-empty-msg">No Multisig Setup</p>
+    <button id="ms-setup-toggle-btn" class="btn btn-outline btn-full" style="margin-top:10px">
+      Setup Multisig
+    </button>
+  </div>
+
+  <!-- Configured state summary -->
+  <div id="ms-configured-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">
+      <span>Signer List</span>
+      <button id="ms-update-btn" class="btn btn-ghost btn-sm">Update</button>
+    </div>
+    <div class="ms-quorum-row">
+      <span class="ms-quorum-label">Quorum Threshold</span>
+      <span id="ms-quorum-display" class="ms-quorum-value">—</span>
+    </div>
+    <div id="ms-signer-list-display"></div>
+  </div>
+
+  <!-- Configure / Update form -->
+  <div id="ms-form-card" class="iou-balance-card ms-form-card hidden">
+    <div class="iou-balance-header">
+      <span id="ms-form-title">Configure Signers</span>
+      <button id="ms-form-cancel-btn" class="btn btn-ghost btn-sm hidden">Cancel</button>
+    </div>
+
+    <div class="ms-field-row">
+      <label class="ms-field-label" for="ms-quorum-input">Quorum Threshold</label>
+      <input id="ms-quorum-input" class="ms-quorum-input input-field" type="number" min="1" step="1" placeholder="e.g. 2" />
+    </div>
+
+    <div class="ms-field-label" style="margin-bottom:6px">Signers</div>
+    <div id="ms-signer-rows"></div>
+
+    <button id="ms-add-signer-btn" class="ms-add-signer-btn">+ Add Signer</button>
+    <div id="ms-form-error" class="alert alert-error hidden" style="margin-bottom:8px"></div>
+    <div id="ms-quorum-warn" class="alert alert-warn hidden" style="margin-bottom:8px">
+      ⚠ Sum of signer weights is less than quorum threshold.
+    </div>
+    <button id="ms-submit-btn" class="btn btn-primary btn-full">Submit</button>
+  </div>
+
+  <!-- ── Messenger Account card ── -->
+  <div id="ms-messenger-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">
+      Messenger Account
+      <span class="ms-info-icon" title="This XRPL account will be used to send messages (in the form of Credentials) to multisig key accounts">ⓘ</span>
+    </div>
+    <div id="ms-messenger-current" class="ms-messenger-current"></div>
+    <select id="ms-messenger-select" class="input-field" style="width:100%;margin-bottom:8px"></select>
+    <div id="ms-messenger-error" class="alert alert-error hidden" style="margin-bottom:8px"></div>
+    <button id="ms-messenger-btn" class="btn btn-full">Set Messenger Account</button>
+  </div>
+
+  <!-- ── Master Key card ── -->
+  <div id="ms-master-key-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">Master Key</div>
+    <div class="ms-master-status-row">
+      <span id="ms-master-status-dot" class="ms-status-dot"></span>
+      <span id="ms-master-status-text" class="ms-status-text"></span>
+    </div>
+    <button id="ms-master-key-btn" class="btn btn-full ms-master-key-btn">…</button>
+  </div>
+
+  <!-- ── Tickets card ── -->
+  <div id="ms-ticket-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">Tickets</div>
+    <div id="ms-ticket-count" class="ms-ticket-count"></div>
+    <div class="ms-ticket-create-row">
+      <input id="ms-ticket-input" type="number" min="1" max="250" step="1" value="1"
+             class="input-field ms-ticket-input" placeholder="Count" />
+      <button id="ms-ticket-create-btn" class="btn btn-primary btn-sm">Create Tickets</button>
+    </div>
+    <div id="ms-ticket-error" class="alert alert-error hidden" style="margin-top:6px"></div>
+  </div>
+
+  <!-- ── TRXN SENT card ── -->
+  <div id="ms-sent-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">Transactions Gathering Signatures</div>
+    <div id="ms-sent-list" class="ms-sent-list"></div>
+  </div>
+
+  <!-- ── TRXN FOR SIGNATURE card ── -->
+  <div id="ms-incoming-card" class="iou-balance-card hidden">
+    <div class="iou-balance-header">Transactions for Signature</div>
+    <div id="ms-incoming-list" class="ms-incoming-list"></div>
+  </div>
+</div>
+
+<!-- ===== MULTISIG SIGN INCOMING ===== -->
+<div id="view-ms-sign-detail" class="view hidden">
+  <div class="view-header">
+    <h2>Sign Transaction</h2>
+  </div>
+
+  <div class="tx-card" style="margin-bottom:6px">
+    <div class="tx-row">
+      <span class="tx-label">From</span>
+      <span id="ms-sign-from" class="tx-value tx-address">—</span>
+    </div>
+    <div class="tx-row">
+      <span class="tx-label">Via</span>
+      <span id="ms-sign-via" class="tx-value tx-address">—</span>
+    </div>
+  </div>
+
+  <div id="ms-sign-verification" class="ms-sign-verification hidden"></div>
+
+  <div id="ms-sign-detail-rows" class="tx-card"></div>
+
+  <details id="ms-sign-json-details" class="review-json-panel">
+    <summary class="review-json-summary">Raw JSON</summary>
+    <div class="review-json-body">
+      <pre id="ms-sign-raw-json"></pre>
+    </div>
+  </details>
+
+  <div id="ms-sign-detail-error" class="alert alert-error hidden" style="margin-top:8px"></div>
+
+  <div class="action-row" style="margin-top:12px">
+    <button id="ms-sign-close-btn" class="btn btn-ghost">Close</button>
+    <button id="ms-sign-submit-btn" class="btn btn-primary">Sign Transaction</button>
+  </div>
+</div>
+
+<!-- ===== MULTISIG TRANSACTION DETAIL ===== -->
+<div id="view-ms-trxn-detail" class="view hidden">
+  <div class="view-header">
+    <h2>Transaction Details</h2>
+  </div>
+
+  <div id="ms-trxn-detail-rows" class="tx-card"></div>
+
+  <div id="ms-trxn-quorum-card" class="tx-card hidden" style="margin-top:6px">
+    <div class="tx-row">
+      <span class="tx-label">Quorum required</span>
+      <span id="ms-trxn-quorum-required" class="tx-value">—</span>
+    </div>
+    <div class="tx-row">
+      <span class="tx-label">Current weight</span>
+      <span id="ms-trxn-current-weight" class="tx-value">—</span>
+    </div>
+  </div>
+
+  <div id="ms-trxn-expired-warn" class="alert alert-warn hidden" style="margin-top:8px">
+    Transaction has expired and cannot be submitted.
+  </div>
+
+  <details id="ms-trxn-json-details" class="review-json-panel">
+    <summary class="review-json-summary">Raw JSON</summary>
+    <div class="review-json-body">
+      <pre id="ms-trxn-raw-json"></pre>
+    </div>
+  </details>
+
+  <div id="ms-trxn-cancel-progress" class="ms-trxn-cancel-progress hidden"></div>
+  <div id="ms-trxn-detail-error" class="alert alert-error hidden" style="margin-top:8px"></div>
+
+  <div class="action-row" style="margin-top:12px">
+    <button id="ms-trxn-close-btn" class="btn btn-ghost">Close</button>
+    <button id="ms-trxn-cancel-btn" class="btn btn-primary">Cancel Transaction</button>
+    <button id="ms-trxn-submit-btn" class="btn btn-primary hidden">Submit</button>
+  </div>
+</div>
+
+<!-- ===== MULTISIGN PICKER MODAL ===== -->
+<div id="ms-picker-modal" class="ms-picker-modal hidden">
+  <div class="ms-picker-card">
+    <div class="ms-picker-header">
+      <span class="ms-picker-title">Select Address</span>
+      <button id="ms-picker-close-btn" class="btn-icon">✕</button>
+    </div>
+    <input id="ms-picker-filter" class="input-field ms-picker-filter" type="text" placeholder="Filter by name or address…" />
+    <div id="ms-picker-list" class="ms-picker-list"></div>
+  </div>
+</div>
 
 </body>
 </html>
