@@ -318,6 +318,23 @@ function truncAddr(addr) {
   return `${addr.slice(0, 10)}…${addr.slice(-6)}`;
 }
 
+/** Return a clean, user-facing error message for any thrown value. */
+function friendlyError(err) {
+  const msg = err?.message ?? String(err ?? 'Unknown error');
+  // XRPL connection / network errors
+  if (msg.includes('timed out') || msg.includes('connect()') || msg.includes('WebSocket') ||
+      msg.includes('Disconnected') || msg.includes('inaccessible')) {
+    return 'Could not connect to the XRPL network. Please check your connection.';
+  }
+  // WebHID / Ledger hardware errors (DOMException)
+  if (err instanceof DOMException || err?.name === 'NotAllowedError' ||
+      err?.name === 'SecurityError'  || err?.name === 'InvalidStateError') {
+    return 'Ledger device not accessible. Ensure it is connected and unlocked with the XRPL app open.';
+  }
+  // Strip minified JSON noise like {"name":"n"} from xrpl.js error strings
+  return msg.replace(/,?\s*\{[^}]{0,40}\}/g, '').trim() || 'Unknown error';
+}
+
 /** Rebuild the address → name lookup from wallet accounts and address book. */
 async function refreshAddressNames() {
   const map = new Map();
@@ -4719,7 +4736,7 @@ async function openMultisigSendView() {
     $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
     $('ms-dispatch-confirm-btn').disabled = false;
   } catch (err) {
-    showAlert('ms-dispatch-error', `Failed to prepare: ${err.message || 'Unknown error'}`);
+    showAlert('ms-dispatch-error', friendlyError(err));
     $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
     $('ms-dispatch-confirm-btn').disabled = true;
   }
@@ -4743,6 +4760,8 @@ async function signWithAddress(prepared, address) {
       const sig = await xrpApp.signTransaction(ledgerKr.derivationPath, txBlob);
       txToSign.TxnSignature = sig.toUpperCase();
       return encode(txToSign);
+    } catch (err) {
+      throw new Error(friendlyError(err));
     } finally {
       if (transport) await transport.close().catch(() => {});
     }
@@ -4776,7 +4795,7 @@ async function executeMultisigDispatch() {
     }
     msDispatchTxHex = encode(msDispatchFilledTx);
   } catch (err) {
-    showAlert('ms-dispatch-error', `Failed to prepare transaction: ${err.message || 'Unknown error'}`);
+    showAlert('ms-dispatch-error', friendlyError(err));
     return;
   }
 
@@ -4791,7 +4810,7 @@ async function executeMultisigDispatch() {
   try {
     await ensureConnected();
   } catch (err) {
-    showAlert('ms-dispatch-error', `Connection failed: ${err.message || 'Unknown error'}`);
+    showAlert('ms-dispatch-error', friendlyError(err));
     $('ms-dispatch-confirm-btn').disabled = false;
     $('ms-dispatch-confirm-btn').textContent = 'Confirm & Send for Multisig';
     $('ms-dispatch-cancel-btn').classList.remove('hidden');
@@ -5938,7 +5957,7 @@ async function loadAccountInfo() {
       section('Ledger', metaRows);
 
   } catch (err) {
-    $('account-info-body').innerHTML = `<div class="acct-info-error">Failed to load: ${esc(err.message)}</div>`;
+    $('account-info-body').innerHTML = `<div class="acct-info-error">${esc(friendlyError(err))}</div>`;
   }
 }
 
@@ -6115,7 +6134,7 @@ async function loadMultisignData() {
     renderMultisignScreen();
   } catch (err) {
     $('ms-loading').classList.add('hidden');
-    showAlert('ms-load-error', `Failed to load: ${err.message}`);
+    showAlert('ms-load-error', friendlyError(err));
   }
 }
 
@@ -6311,7 +6330,7 @@ async function openMsTrxnDetail(idx) {
       $('ms-trxn-submit-btn').disabled = false;
     }
   } catch (err) {
-    showAlert('ms-trxn-detail-error', `Failed to load: ${err.message || 'Unknown error'}`);
+    showAlert('ms-trxn-detail-error', friendlyError(err));
     $('ms-trxn-cancel-btn').disabled = true;
   }
 }
@@ -6337,7 +6356,7 @@ async function cancelMsTrxn() {
   try {
     await ensureConnected();
   } catch (err) {
-    showAlert('ms-trxn-detail-error', `Connection failed: ${err.message || 'Unknown error'}`);
+    showAlert('ms-trxn-detail-error', friendlyError(err));
     $('ms-trxn-cancel-btn').disabled = false;
     $('ms-trxn-cancel-btn').textContent = msCancelCredsDone ? 'Retry MPT Destroy' : 'Cancel Transaction';
     $('ms-trxn-close-btn').disabled = false;
@@ -6659,7 +6678,7 @@ async function openMsSignDetail(idx) {
     $('ms-sign-submit-btn').disabled =
       !verified || alreadySigned || isActiveAccountReadOnly();
   } catch (err) {
-    showAlert('ms-sign-detail-error', `Failed to load: ${err.message || 'Unknown error'}`);
+    showAlert('ms-sign-detail-error', friendlyError(err));
   }
 }
 
