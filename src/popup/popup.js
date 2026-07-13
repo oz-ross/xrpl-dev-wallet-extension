@@ -3965,13 +3965,21 @@ function reviewSendPayment() {
   $('send-review-paste-warn').classList.toggle('hidden', !destAddress);
 
   // Build partial txJson for the Raw JSON panel
+  let partialAmount;
+  if (pendingSend.type === 'xrp') {
+    partialAmount = String(Math.round(amountNum * 1_000_000));
+  } else if (pendingSend.type === 'mpt') {
+    const scale = pendingSend.assetScale ?? 0;
+    const raw = scale > 0 ? Math.round(amountNum * Math.pow(10, scale)) : Math.round(amountNum);
+    partialAmount = { mpt_issuance_id: pendingSend.mptIssuanceId, value: String(raw) };
+  } else {
+    partialAmount = { currency: pendingSend.currency, issuer: pendingSend.selfIssued ? state.activeAccount : pendingSend.issuer, value: amountStr };
+  }
   const partialTx = {
     TransactionType: 'Payment',
     Account: state.activeAccount,
     Destination: destAddress,
-    Amount: pendingSend.type === 'xrp'
-      ? String(Math.round(parseFloat(amountStr) * 1_000_000))
-      : { currency: pendingSend.currency, issuer: pendingSend.selfIssued ? state.activeAccount : pendingSend.issuer, value: amountStr },
+    Amount: partialAmount,
   };
   if (destTagStr) partialTx.DestinationTag = parseInt(destTagStr, 10);
   state.pendingTxReview = { txJson: partialTx, backView: 'send-payment', successMsg: '' };
