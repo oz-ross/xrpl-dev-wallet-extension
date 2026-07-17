@@ -1024,7 +1024,13 @@ async function signPreparedTx(prepared, signatureTarget = null) {
   }
   const ledgerKr = getActiveLedgerKeyring();
   if (!ledgerKr) {
-    return state.wallet.sign(prepared);
+    // xrpl.js's Wallet.sign() only returns { tx_blob, hash } — no tx_json. The
+    // WalletConnect xrpl_signTransaction/xrpl_signTransactionFor spec requires
+    // the *complete signed transaction* be returned as tx_json (see
+    // https://docs.reown.com/advanced/multichain/rpc-reference/xrpl-rpc), so
+    // decode the blob back into JSON here rather than leaving callers to guess.
+    const signed = state.wallet.sign(prepared);
+    return { ...signed, tx_json: decode(signed.tx_blob) };
   }
   setTxStatus('pending', 'Confirm on Ledger device…');
   const txToSign = { ...prepared, SigningPubKey: ledgerKr.publicKey };
@@ -1037,7 +1043,9 @@ async function signPreparedTx(prepared, signatureTarget = null) {
     const sig     = await xrpApp.signTransaction(ledgerKr.derivationPath, txBlob);
     txToSign.TxnSignature = sig.toUpperCase();
     const tx_blob = encode(txToSign);
-    return { tx_blob, hash: computeTxHash(tx_blob) };
+    // txToSign already *is* the complete signed transaction JSON — no need to
+    // decode what we just encoded.
+    return { tx_blob, hash: computeTxHash(tx_blob), tx_json: txToSign };
   } finally {
     if (transport) await transport.close().catch(() => {});
   }
@@ -5469,12 +5477,15 @@ async function approveTransaction() {
 
       setTxStatus('pending', 'Signing…');
       if (state.devSettings.printTxJson) console.log('[tx json before signing]', prepared);
-      const { tx_blob, hash } = await signPreparedTx(prepared, null);
+      const { tx_blob, hash, tx_json } = await signPreparedTx(prepared, null);
       if (state.devSettings.printTxJson) console.log('[tx json after signing]', { tx_blob: '[redacted]', hash });
 
       if (signOnly) {
+        // Per the xrpl_signTransaction spec, the response must be { tx_json },
+        // not a wallet-internal { tx_blob, hash } shape — dApps are expected to
+        // re-encode tx_json themselves if they need the blob.
         setTxStatus('success', 'Transaction signed!', hash);
-        await respondWc(topic, id, { tx_blob, hash });
+        await respondWc(topic, id, { tx_json });
       } else {
         setTxStatus('pending', 'Submitting to XRPL…');
         const response = await state.client.submitAndWait(tx_blob);
