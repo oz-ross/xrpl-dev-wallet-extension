@@ -1,5 +1,6 @@
 node_modules/
 dist/
+!vendor/mpt-crypto/dist/
 
 .DS_Store
 wallets.txt
