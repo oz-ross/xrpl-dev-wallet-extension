@@ -163,6 +163,7 @@ const state = {
   // Multi-account
   keyrings: [],        // array of decrypted keyring objects
   activeAccount: null, // active r-address
+  elgamalKeys: {},    // { [rAddress]: { pubKey: hex, privKey: hex } } — populated from vault
 
   // Projects — groupings of accounts + per-project address books
   projects: [],          // [{ id, name, accounts: [addr, ...] }]
@@ -523,7 +524,7 @@ async function hasVault() {
  * the raw password never has to be available.
  */
 async function saveVault(passwordOverride) {
-  const payload = { keyrings: state.keyrings, activeAccount: state.activeAccount };
+  const payload = { keyrings: state.keyrings, activeAccount: state.activeAccount, elgamalKeys: state.elgamalKeys };
 
   if (passwordOverride) {
     // Password change or initial vault creation: generate a new salt and derive a
@@ -559,6 +560,7 @@ async function loadAndDecryptVault(password) {
   const payload = await decryptVaultWithKey(key, vault); // throws DOMException on bad password
   state.keyrings      = payload.keyrings ?? [];
   state.activeAccount = payload.activeAccount ?? null;
+  state.elgamalKeys   = payload.elgamalKeys ?? {};
   _vaultKey        = key;
   _sessionPassword = password;
   await persistSession();
@@ -602,6 +604,7 @@ async function restoreFromSession() {
   const payload = await decryptVaultWithKey(key, vault);
   state.keyrings      = payload.keyrings ?? [];
   state.activeAccount = activeAccount;
+  state.elgamalKeys   = payload.elgamalKeys ?? {};
   _vaultKey = key;
   // _sessionPassword intentionally left null — the raw password is not available
   // in a key-restore session.  saveVault() uses _vaultKey for routine re-saves.
@@ -614,6 +617,7 @@ function lockWallet() {
   state.keyrings      = [];
   state.activeAccount = null;
   state.wallet        = null;
+  state.elgamalKeys   = {};
   state.client?.disconnect().catch(() => {});
   state.client = null;
   showView('unlock');
@@ -1140,6 +1144,7 @@ async function executeRemoveAccount() {
   }
   await saveProjects();
 
+  delete state.elgamalKeys[address];
   await saveVault();
   if (_vaultKey) await persistSession();
 
