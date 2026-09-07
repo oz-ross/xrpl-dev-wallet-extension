@@ -2007,6 +2007,9 @@ function updateWalletUI() {
   renderAccountDropdown(accounts, addr);
   $('multisign-nav-card').classList.toggle('hidden', !state.devSettings.multisignEnabled);
   if (state.devSettings.multisignEnabled) refreshMultisignSummary().catch(() => {});
+  const activeAcct = getAllAccounts().find(a => a.address === addr);
+  $('ct-key-btn').classList.toggle('hidden',
+    !state.devSettings.confidentialTransfersEnabled || !!activeAcct?.isWatch);
 }
 
 function renderAccountDropdown(accounts, activeAddr) {
@@ -8469,6 +8472,16 @@ $('ms-sign-submit-btn').addEventListener('click', () => signMsTransaction().catc
     }
   }
 })();
+
+// ─────────────────────────────────────────────
+// CONFIDENTIAL TRANSFERS
+// ─────────────────────────────────────────────
+
+function openConfidentialKeyView() {
+  showView('confidential-key');
+}
+
+$('ct-key-btn').addEventListener('click', openConfidentialKeyView);
 
 // Record the time the popup was closed so the boot sequence can enforce the
 // auto-lock timeout on the next open.  localStorage is used here because it
