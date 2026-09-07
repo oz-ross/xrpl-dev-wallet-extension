@@ -198,7 +198,7 @@ const state = {
   pendingLoanPay: null,
 
   // Developer settings persisted to chrome.storage.local
-  devSettings: { printTxJson: false, printWC: false, lockTimeoutSecs: 0, wideMode: false, iouDecimalPrecision: 6, multisignEnabled: false },
+  devSettings: { printTxJson: false, printWC: false, lockTimeoutSecs: 0, wideMode: false, iouDecimalPrecision: 6, multisignEnabled: false, confidentialTransfersEnabled: false },
 
   // Vaults fetched on the vault-deposit screen, keyed by VaultID
   fetchedVaults: new Map(),
@@ -8139,6 +8139,7 @@ async function loadDevSettings() {
   $('dev-print-tx-json').checked    = state.devSettings.printTxJson;
   $('dev-print-wc').checked         = state.devSettings.printWC;
   $('dev-multisign-enabled').checked = state.devSettings.multisignEnabled;
+  $('dev-ct-enabled').checked = state.devSettings.confidentialTransfersEnabled;
   $('iou-decimal-precision').value  = state.devSettings.iouDecimalPrecision;
   $('lock-timeout-secs').value      = state.devSettings.lockTimeoutSecs;
   applyWideMode();
@@ -8196,6 +8197,12 @@ $('dev-print-wc').addEventListener('change', async (e) => {
 
 $('dev-multisign-enabled').addEventListener('change', e => {
   state.devSettings.multisignEnabled = e.target.checked;
+  chrome.storage.local.set({ devSettings: state.devSettings });
+  updateWalletUI();
+});
+
+$('dev-ct-enabled').addEventListener('change', e => {
+  state.devSettings.confidentialTransfersEnabled = e.target.checked;
   chrome.storage.local.set({ devSettings: state.devSettings });
   updateWalletUI();
 });
