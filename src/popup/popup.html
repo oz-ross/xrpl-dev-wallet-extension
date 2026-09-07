@@ -386,6 +386,72 @@
     </div>
   </div>
 
+  <!-- ===== CONFIDENTIAL TRANSFERS — KEY MANAGEMENT ===== -->
+  <div id="view-confidential-key" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-ct-key-btn" class="btn-back">‹</button>
+      <h2>Confidential Transfers</h2>
+    </div>
+    <div class="remove-acct-card">
+      <div class="remove-acct-name" id="ct-key-acct-name"></div>
+      <div class="remove-acct-addr" id="ct-key-acct-addr"></div>
+    </div>
+
+    <!-- State A: no key generated yet -->
+    <div id="ct-no-key-section">
+      <p class="form-hint" style="padding:14px 14px 0;margin:0">
+        Generate an ElGamal key pair to enable confidential MPT transfers for this account.
+      </p>
+      <div style="padding:14px">
+        <button id="ct-generate-btn" class="btn btn-primary btn-full">Generate Key</button>
+      </div>
+    </div>
+
+    <!-- State B: key exists -->
+    <div id="ct-key-exists-section" class="hidden" style="padding:0 14px">
+      <div class="export-key-label" style="margin-top:14px">Public Key</div>
+      <div class="export-key-box">
+        <span id="ct-pubkey-value" class="export-key-value"></span>
+        <div class="export-key-actions">
+          <button id="ct-pubkey-copy-btn" class="btn-icon" title="Copy">⧉</button>
+        </div>
+      </div>
+
+      <div class="export-key-label" style="margin-top:12px">Private Key</div>
+      <div class="export-key-box">
+        <span class="export-key-value">••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••</span>
+      </div>
+
+      <!-- Reveal controls (hidden after successful reveal) -->
+      <div id="ct-reveal-controls">
+        <div class="alert alert-warn" style="margin-top:14px">
+          Your private key gives full access to your confidential balances. Never share it with anyone.
+        </div>
+        <div class="form-group" style="margin-top:14px">
+          <label for="ct-reveal-password">Confirm Password</label>
+          <div class="input-row">
+            <input type="password" id="ct-reveal-password" placeholder="Your wallet password" autocomplete="current-password" />
+            <button id="toggle-ct-reveal-password-btn" class="btn-icon" title="Show/hide">👁</button>
+          </div>
+        </div>
+        <div id="ct-reveal-error" class="alert alert-error hidden"></div>
+        <button id="ct-reveal-confirm-btn" class="btn btn-outline btn-full" style="margin-top:8px">Reveal Private Key</button>
+      </div>
+
+      <!-- Revealed private key (hidden until password confirmed) -->
+      <div id="ct-privkey-revealed" class="hidden" style="margin-top:12px">
+        <div class="export-key-label">Private Key</div>
+        <div class="export-key-box">
+          <span id="ct-privkey-value" class="export-key-value"></span>
+          <div class="export-key-actions">
+            <button id="ct-privkey-copy-btn" class="btn-icon" title="Copy">⧉</button>
+          </div>
+        </div>
+        <div id="ct-hide-timer" class="export-key-timer"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== RAW TRANSACTION BUILDER ===== -->
   <div id="view-raw-tx" class="view hidden">
     <div class="view-header">
