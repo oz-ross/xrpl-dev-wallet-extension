@@ -2007,9 +2007,8 @@ function updateWalletUI() {
   renderAccountDropdown(accounts, addr);
   $('multisign-nav-card').classList.toggle('hidden', !state.devSettings.multisignEnabled);
   if (state.devSettings.multisignEnabled) refreshMultisignSummary().catch(() => {});
-  const activeAcct = getAllAccounts().find(a => a.address === addr);
   $('ct-key-btn').classList.toggle('hidden',
-    !state.devSettings.confidentialTransfersEnabled || !!activeAcct?.isWatch);
+    !state.devSettings.confidentialTransfersEnabled || !!active?.isWatch);
 }
 
 function renderAccountDropdown(accounts, activeAddr) {
