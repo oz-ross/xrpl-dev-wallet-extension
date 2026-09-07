@@ -636,6 +636,7 @@ async function resetWallet() {
   state.keyrings      = [];
   state.activeAccount = null;
   state.wallet        = null;
+  state.elgamalKeys   = {};
   state.client?.disconnect().catch(() => {});
   state.client = null;
   showView('setup-password');
@@ -8489,7 +8490,7 @@ async function generateElGamalKey() {
   let privKeyBytes;
   do {
     privKeyBytes = crypto.getRandomValues(new Uint8Array(32));
-  } while (!secp256k1.utils.isValidPrivateKey(privKeyBytes));
+  } while (!secp256k1.utils.isValidSecretKey(privKeyBytes));
   const pubKeyBytes = secp256k1.getPublicKey(privKeyBytes, true);
   state.elgamalKeys[addr] = {
     pubKey:  _bytesToUpperHex(pubKeyBytes),
@@ -8501,6 +8502,7 @@ async function generateElGamalKey() {
 }
 
 function renderConfidentialKeyView() {
+  if (_ctHideTimer) { clearInterval(_ctHideTimer); _ctHideTimer = null; }
   const addr   = state.activeAccount;
   const acct   = getAllAccounts().find(a => a.address === addr);
   $('ct-key-acct-name').textContent = acct?.label ?? 'Account';
