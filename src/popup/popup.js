@@ -8477,6 +8477,8 @@ $('ms-sign-submit-btn').addEventListener('click', () => signMsTransaction().catc
 // CONFIDENTIAL TRANSFERS
 // ─────────────────────────────────────────────
 
+let _ctHideTimer = null;
+
 function _bytesToUpperHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
 }
@@ -8523,11 +8525,77 @@ function openConfidentialKeyView() {
   showView('confidential-key');
 }
 
+async function confirmRevealElGamalPrivKey() {
+  hideAlert('ct-reveal-error');
+  const addr = state.activeAccount;
+  if (!addr) return;
+
+  const password = $('ct-reveal-password').value;
+  if (!password) { showAlert('ct-reveal-error', 'Enter your password.'); return; }
+
+  // Always re-verify against the vault — same security posture as export-key.
+  try {
+    const { vault } = await chrome.storage.local.get('vault');
+    await decryptVault(password, vault);
+  } catch {
+    showAlert('ct-reveal-error', 'Incorrect password.');
+    return;
+  }
+
+  const keyPair = state.elgamalKeys[addr];
+  if (!keyPair) return; // shouldn't happen; guard against state race
+
+  // Show the private key
+  $('ct-reveal-controls').classList.add('hidden');
+  $('ct-privkey-value').textContent = keyPair.privKey;
+  $('ct-privkey-revealed').classList.remove('hidden');
+
+  // 60-second auto-hide countdown
+  let secs = 60;
+  $('ct-hide-timer').textContent = `Key hidden in ${secs}s`;
+  if (_ctHideTimer) clearInterval(_ctHideTimer);
+  _ctHideTimer = setInterval(() => {
+    secs--;
+    if (secs <= 0) {
+      clearInterval(_ctHideTimer);
+      _ctHideTimer = null;
+      $('ct-privkey-value').textContent = '';
+      $('ct-privkey-revealed').classList.add('hidden');
+      $('ct-hide-timer').textContent = '';
+      $('ct-reveal-controls').classList.remove('hidden');
+      $('ct-reveal-password').value = '';
+    } else {
+      $('ct-hide-timer').textContent = `Key hidden in ${secs}s`;
+    }
+  }, 1000);
+}
+
 $('ct-key-btn').addEventListener('click', openConfidentialKeyView);
 $('ct-generate-btn').addEventListener('click', () => generateElGamalKey().catch(console.error));
 $('ct-pubkey-copy-btn').addEventListener('click', () => {
   const val = $('ct-pubkey-value').textContent;
   if (val) navigator.clipboard.writeText(val).catch(() => {});
+});
+
+$('ct-reveal-confirm-btn').addEventListener('click', () =>
+  confirmRevealElGamalPrivKey().catch(console.error));
+
+$('toggle-ct-reveal-password-btn').addEventListener('click', () =>
+  togglePasswordVisibility('ct-reveal-password'));
+
+$('ct-reveal-password').addEventListener('keydown', e => {
+  if (e.key === 'Enter') confirmRevealElGamalPrivKey().catch(console.error);
+});
+
+$('ct-privkey-copy-btn').addEventListener('click', () => {
+  const val = $('ct-privkey-value').textContent;
+  if (val) navigator.clipboard.writeText(val).catch(() => {});
+});
+
+$('back-from-ct-key-btn').addEventListener('click', () => {
+  if (_ctHideTimer) { clearInterval(_ctHideTimer); _ctHideTimer = null; }
+  $('ct-privkey-value').textContent = '';
+  showView('wallet');
 });
 
 // Record the time the popup was closed so the boot sequence can enforce the
