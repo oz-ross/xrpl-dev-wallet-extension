@@ -9,6 +9,7 @@ import Xrp from '@ledgerhq/hw-app-xrp';
 import { encode, encodeForSigning, encodeForMultisigning, decode } from 'ripple-binary-codec';
 import { sign as keypairsSign, deriveAddress } from 'ripple-keypairs';
 import { createHash } from 'crypto';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
 
 // ─────────────────────────────────────────────
 // GLOBAL ERROR SUPPRESSION
@@ -8476,11 +8477,58 @@ $('ms-sign-submit-btn').addEventListener('click', () => signMsTransaction().catc
 // CONFIDENTIAL TRANSFERS
 // ─────────────────────────────────────────────
 
+function _bytesToUpperHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+async function generateElGamalKey() {
+  const addr = state.activeAccount;
+  if (!addr) return;
+  let privKeyBytes;
+  do {
+    privKeyBytes = crypto.getRandomValues(new Uint8Array(32));
+  } while (!secp256k1.utils.isValidPrivateKey(privKeyBytes));
+  const pubKeyBytes = secp256k1.getPublicKey(privKeyBytes, true);
+  state.elgamalKeys[addr] = {
+    pubKey:  _bytesToUpperHex(pubKeyBytes),
+    privKey: _bytesToUpperHex(privKeyBytes),
+  };
+  privKeyBytes.fill(0);
+  await saveVault();
+  renderConfidentialKeyView();
+}
+
+function renderConfidentialKeyView() {
+  const addr   = state.activeAccount;
+  const acct   = getAllAccounts().find(a => a.address === addr);
+  $('ct-key-acct-name').textContent = acct?.label ?? 'Account';
+  $('ct-key-acct-addr').textContent = truncAddr(addr ?? '');
+  const keyPair = state.elgamalKeys[addr ?? ''];
+  if (!keyPair) {
+    $('ct-no-key-section').classList.remove('hidden');
+    $('ct-key-exists-section').classList.add('hidden');
+  } else {
+    $('ct-no-key-section').classList.add('hidden');
+    $('ct-key-exists-section').classList.remove('hidden');
+    $('ct-pubkey-value').textContent = keyPair.pubKey;
+    $('ct-reveal-controls').classList.remove('hidden');
+    $('ct-privkey-revealed').classList.add('hidden');
+    $('ct-reveal-password').value = '';
+    hideAlert('ct-reveal-error');
+  }
+}
+
 function openConfidentialKeyView() {
+  renderConfidentialKeyView();
   showView('confidential-key');
 }
 
 $('ct-key-btn').addEventListener('click', openConfidentialKeyView);
+$('ct-generate-btn').addEventListener('click', () => generateElGamalKey().catch(console.error));
+$('ct-pubkey-copy-btn').addEventListener('click', () => {
+  const val = $('ct-pubkey-value').textContent;
+  if (val) navigator.clipboard.writeText(val).catch(() => {});
+});
 
 // Record the time the popup was closed so the boot sequence can enforce the
 // auto-lock timeout on the next open.  localStorage is used here because it
