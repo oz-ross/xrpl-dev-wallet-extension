@@ -451,6 +451,33 @@
     </div>
   </div>
 
+  <!-- ===== CONFIDENTIAL TRANSFERS — INITIAL CONVERSION ===== -->
+  <div id="view-confidential-convert" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-ct-convert-btn" class="btn-back">‹</button>
+      <span>Add Confidentiality</span>
+    </div>
+    <div class="view-content">
+      <div id="ct-convert-token-name" class="account-name"></div>
+      <div id="ct-convert-issuer" class="account-address"></div>
+
+      <div class="field-group">
+        <label class="field-label">Public balance</label>
+        <div id="ct-convert-public-balance" class="field-value"></div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label" for="ct-convert-amount">Initial conversion amount</label>
+        <input type="number" id="ct-convert-amount" class="text-input" value="0" min="0" step="any" />
+        <p class="field-hint">Enter 0 to opt-in without converting any balance.</p>
+      </div>
+
+      <div id="ct-convert-error" class="alert alert-error hidden"></div>
+
+      <button id="ct-convert-btn" class="btn-primary">Convert</button>
+    </div>
+  </div>
+
   <!-- ===== RAW TRANSACTION BUILDER ===== -->
   <div id="view-raw-tx" class="view hidden">
     <div class="view-header">
