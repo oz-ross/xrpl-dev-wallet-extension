@@ -10,6 +10,13 @@ import { encode, encodeForSigning, encodeForMultisigning, decode } from 'ripple-
 import { sign as keypairsSign, deriveAddress } from 'ripple-keypairs';
 import { createHash } from 'crypto';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
+import {
+  generateBlindingFactor,
+  encryptAmount,
+  decryptAmount,
+  getConvertContextHash,
+  getConvertProof,
+} from '@xrplf/mpt-crypto';
 
 // ─────────────────────────────────────────────
 // GLOBAL ERROR SUPPRESSION
@@ -2371,9 +2378,11 @@ async function fetchMptIssuanceInfo(issuanceId) {
 
     const outstandingAmount = node.OutstandingAmount ?? '0';
     const domainId = node.DomainID ?? null;
-    return { ticker, assetScale, outstandingAmount, vaultInfo, domainId };
+    const issuerEncryptionKey = node.IssuerEncryptionKey ?? null;
+    const auditorEncryptionKey = node.AuditorEncryptionKey ?? null;
+    return { ticker, assetScale, outstandingAmount, vaultInfo, domainId, issuerEncryptionKey, auditorEncryptionKey };
   } catch {
-    return { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null, domainId: null };
+    return { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null, domainId: null, issuerEncryptionKey: null, auditorEncryptionKey: null };
   }
 }
 
