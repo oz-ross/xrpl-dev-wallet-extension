@@ -8588,6 +8588,10 @@ $('ms-sign-submit-btn').addEventListener('click', () => signMsTransaction().catc
 // ─────────────────────────────────────────────
 
 let _ctHideTimer = null;
+let _ctConvertIssuanceId   = null;
+let _ctConvertIssuerEncKey  = null;
+let _ctConvertAuditorEncKey = null;
+let _ctConvertAssetScale    = 0;
 
 function _bytesToUpperHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
@@ -8709,8 +8713,104 @@ $('back-from-ct-key-btn').addEventListener('click', () => {
   showView('wallet');
 });
 
-// eslint-disable-next-line no-unused-vars
-function openConfidentialConvertView(rowEl) { /* Task 4 */ }
+function openConfidentialConvertView(rowEl) {
+  _ctConvertIssuanceId    = rowEl.dataset.mptId;
+  _ctConvertIssuerEncKey  = rowEl.dataset.issuerEncKey;
+  _ctConvertAuditorEncKey = rowEl.dataset.auditorEncKey || null;
+  _ctConvertAssetScale    = parseInt(rowEl.dataset.assetScale ?? '0', 10);
+
+  const display  = rowEl.dataset.display ?? _ctConvertIssuanceId.slice(0, 8) + '…';
+  const balance  = rowEl.dataset.balance ?? '0';
+  const issuerEl = rowEl.querySelector('.mpt-issuer');
+
+  $('ct-convert-token-name').textContent    = display;
+  $('ct-convert-issuer').textContent        = issuerEl?.textContent ?? '';
+  $('ct-convert-public-balance').textContent = balance;
+  $('ct-convert-amount').value              = '0';
+  hideAlert('ct-convert-error');
+  showView('confidential-convert');
+}
+
+async function confirmConfidentialConvert() {
+  const issuanceId   = _ctConvertIssuanceId;
+  const issuerEncKey = _ctConvertIssuerEncKey;
+  const auditorEncKey = _ctConvertAuditorEncKey;
+  const assetScale   = _ctConvertAssetScale;
+  const account      = state.activeAccount;
+  const ctKey        = state.elgamalKeys[account];
+
+  if (!issuanceId || !issuerEncKey || !ctKey) {
+    showAlert('ct-convert-error', 'Missing required data. Please try again.');
+    return;
+  }
+
+  const rawInput = parseFloat($('ct-convert-amount').value) || 0;
+  if (rawInput < 0) {
+    showAlert('ct-convert-error', 'Amount must be 0 or greater.');
+    return;
+  }
+  const amount = BigInt(assetScale > 0
+    ? Math.round(rawInput * Math.pow(10, assetScale))
+    : Math.round(rawInput));
+
+  $('ct-convert-btn').disabled = true;
+  hideAlert('ct-convert-error');
+
+  try {
+    // 1. Get current sequence number for context hash
+    const acctResp = await state.client.request({
+      command: 'account_info',
+      account,
+      ledger_index: 'validated',
+    });
+    const sequence = acctResp.result.account_data.Sequence;
+
+    // 2. Generate blinding factor and encrypt for all participants
+    const bf               = await generateBlindingFactor();
+    const holderEncrypted  = await encryptAmount(amount, ctKey.pubKey, bf);
+    const issuerEncrypted  = await encryptAmount(amount, issuerEncKey, bf);
+    const auditorEncrypted = auditorEncKey
+      ? await encryptAmount(amount, auditorEncKey, bf)
+      : null;
+
+    // 3. Compute context hash and ZK proof
+    const contextHash = await getConvertContextHash(account, issuanceId, sequence);
+    const zkProof     = await getConvertProof(ctKey.pubKey, ctKey.privKey, contextHash);
+
+    // 4. Build transaction
+    const txJson = {
+      TransactionType: 'ConfidentialMPTConvert',
+      Account: account,
+      MPTokenIssuanceID: issuanceId,
+      MPTAmount: String(amount),
+      BlindingFactor: bf,
+      HolderEncryptedAmount: holderEncrypted,
+      IssuerEncryptedAmount: issuerEncrypted,
+      HolderEncryptionKey: ctKey.pubKey,
+      ZKProof: zkProof,
+      Sequence: sequence,
+      ...(auditorEncrypted ? { AuditorEncryptedAmount: auditorEncrypted } : {}),
+    };
+
+    // 5. Autofill (adds Fee; Sequence already set so autofill leaves it)
+    const prepared = await state.client.autofill(txJson);
+
+    // 6. Sign and submit
+    const { tx_blob } = await signPreparedTx(prepared);
+    await state.client.submitAndWait(tx_blob);
+
+    showView('wallet');
+    await loadMptBalances();
+  } catch (err) {
+    showAlert('ct-convert-error', err.message || 'Conversion failed. Please try again.');
+  } finally {
+    $('ct-convert-btn').disabled = false;
+  }
+}
+
+$('ct-convert-btn').addEventListener('click', () => confirmConfidentialConvert().catch(console.error));
+
+$('back-from-ct-convert-btn').addEventListener('click', () => showView('wallet'));
 
 // Record the time the popup was closed so the boot sequence can enforce the
 // auto-lock timeout on the next open.  localStorage is used here because it
