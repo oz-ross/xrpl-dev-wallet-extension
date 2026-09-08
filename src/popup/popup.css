@@ -2840,3 +2840,15 @@ details[open] .review-json-summary::before {
 .ms-picker-item:hover { background: var(--surface-2); }
 .ms-picker-item-name { font-size: 12px; font-weight: 500; }
 .ms-picker-item-addr { font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-3); }
+
+/* Confidential Transfer sub-balances */
+.ct-sub-balances {
+  width: 100%;
+  padding-left: 1.2rem;
+  font-size: 0.82em;
+  color: var(--text-secondary, #888);
+}
+.ct-sub-row {
+  padding: 1px 0;
+  font-family: monospace;
+}

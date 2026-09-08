@@ -3138,19 +3138,21 @@ function renderLoanItem(loan, asset, opts = {}) {
     </div>`;
 }
 
-function renderMptBalances(objects, issuanceMap = new Map(), issuances = []) {
+async function renderMptBalances(objects, issuanceMap = new Map(), issuances = []) {
   const listEl = $('mpt-balance-list');
   const held   = objects.filter(o => o.LedgerEntryType === 'MPToken');
 
   if (!held.length && !issuances.length) { listEl.innerHTML = ''; return; }
   const explorerMpt = getNetworkConfig().explorerMpt;
 
-  const heldHtml = held.map(obj => {
+  const heldHtml = [];
+  for (const obj of held) {
     const issuanceId = obj.MPTokenIssuanceID ?? '';
-    const { ticker, assetScale } = issuanceMap.get(issuanceId) ?? { ticker: null, assetScale: 0 };
+    const info       = issuanceMap.get(issuanceId) ?? {};
+    const { ticker, assetScale } = info;
     const raw         = obj.MPTAmount ? parseInt(obj.MPTAmount, 10) : 0;
     const scaled      = assetScale > 0 ? raw / Math.pow(10, assetScale) : raw;
-    const amount      = scaled.toLocaleString(undefined, { maximumFractionDigits: assetScale });
+    const amount      = scaled.toLocaleString(undefined, { maximumFractionDigits: assetScale ?? 0 });
     const shortId     = issuanceId.length >= 12
       ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
       : issuanceId;
@@ -3158,21 +3160,95 @@ function renderMptBalances(objects, issuanceMap = new Map(), issuances = []) {
     const issuer        = issuerFromMptIssuanceId(issuanceId);
     const issuerDisplay = issuer ? resolveAddrDisplay(issuer) : (issuanceId.slice(8, 16) + '…');
     const href          = `${explorerMpt}${issuanceId}`;
-    return `
-      <div class="mpt-balance-item"
-           data-send-type="mpt"
-           data-mpt-id="${esc(issuanceId)}"
-           data-asset-scale="${assetScale}"
-           data-balance="${esc(amount)}"
-           data-display="${esc(displayName)}">
-        <div class="mpt-token-info">
-          <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
-          <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
-        </div>
-        <div class="mpt-balance-amount">${esc(amount)}</div>
-        <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
-      </div>`;
-  });
+
+    // CT state:
+    // A: no wallet ElGamal key → unchanged
+    // B: wallet key exists, issuance has IssuerEncryptionKey, but MPToken has no HolderEncryptionKey
+    // C: MPToken has HolderEncryptionKey (confidential balance exists)
+    const ctWalletKey  = state.elgamalKeys[state.activeAccount];
+    const holderEncKey = obj.HolderEncryptionKey ?? null;
+    const ctState = !ctWalletKey
+      ? 'A'
+      : holderEncKey
+        ? 'C'
+        : info.issuerEncryptionKey
+          ? 'B'
+          : 'A';
+
+    if (ctState === 'C') {
+      const RANGE_HIGH = BigInt(10 ** 9);
+      const privKeyHex = ctWalletKey.privKey;
+
+      const [spendable, inbox] = await Promise.all([
+        obj.ConfidentialBalanceSpending
+          ? decryptAmount(obj.ConfidentialBalanceSpending, privKeyHex, RANGE_HIGH).catch(() => null)
+          : Promise.resolve(0n),
+        obj.ConfidentialBalanceInbox
+          ? decryptAmount(obj.ConfidentialBalanceInbox, privKeyHex, RANGE_HIGH).catch(() => null)
+          : Promise.resolve(0n),
+      ]);
+
+      const scale   = info.assetScale ?? 0;
+      const divisor = scale > 0 ? 10 ** scale : 1;
+      const fmtRaw  = (v) => v === null ? '[encrypted]' : (Number(v) / divisor).toFixed(scale);
+
+      const publicRaw = parseInt(obj.MPTAmount ?? '0', 10);
+      const hasNull   = spendable === null || inbox === null;
+
+      const totalDisplay = hasNull
+        ? `~${(publicRaw / divisor + (spendable !== null ? Number(spendable) / divisor : 0) + (inbox !== null ? Number(inbox) / divisor : 0)).toFixed(scale)}`
+        : ((publicRaw / divisor) + Number(spendable) / divisor + Number(inbox) / divisor).toFixed(scale);
+
+      const subBalancesHtml = `
+        <div class="ct-sub-balances hidden">
+          <div class="ct-sub-row">├ Public: ${(publicRaw / divisor).toFixed(scale)}</div>
+          <div class="ct-sub-row">├ Confidential (spendable): ${fmtRaw(spendable)}</div>
+          <div class="ct-sub-row">└ Confidential (inbox): ${fmtRaw(inbox)}</div>
+        </div>`;
+
+      heldHtml.push(`
+        <div class="mpt-balance-item"
+             data-send-type="mpt"
+             data-mpt-id="${esc(issuanceId)}"
+             data-asset-scale="${assetScale ?? 0}"
+             data-balance="${esc(amount)}"
+             data-display="${esc(displayName)}">
+          <button class="btn-icon ct-expand-btn" aria-expanded="false">▶</button>
+          <div class="mpt-token-info">
+            <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
+            <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
+          </div>
+          <span class="mpt-balance-amount">Total: ${totalDisplay}</span>
+          <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
+          ${subBalancesHtml}
+        </div>`);
+    } else {
+      // State A or B
+      const ctButton = ctState === 'B'
+        ? `<button class="btn-icon ct-add-confidentiality-btn" title="Add confidentiality">⛨ Add Confidentiality</button>`
+        : '';
+      const extraAttrs = ctState === 'B'
+        ? `data-issuer-enc-key="${esc(info.issuerEncryptionKey ?? '')}" data-auditor-enc-key="${esc(info.auditorEncryptionKey ?? '')}"`
+        : '';
+
+      heldHtml.push(`
+        <div class="mpt-balance-item"
+             data-send-type="mpt"
+             data-mpt-id="${esc(issuanceId)}"
+             data-asset-scale="${assetScale ?? 0}"
+             data-balance="${esc(amount)}"
+             data-display="${esc(displayName)}"
+             ${extraAttrs}>
+          <div class="mpt-token-info">
+            <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
+            <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
+          </div>
+          <div class="mpt-balance-amount">${esc(amount)}</div>
+          <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
+          ${ctButton}
+        </div>`);
+    }
+  }
 
   const issuedHtml = issuances.map(obj => {
     const issuanceId   = obj.MPTokenIssuanceID ?? obj.index ?? '';
@@ -7538,6 +7614,7 @@ $('iou-balance-list').addEventListener('click', (e) => {
 
 $('mpt-balance-list').addEventListener('click', (e) => {
   if (e.target.closest('.token-explorer-link')) return;
+  if (e.target.closest('.ct-expand-btn') || e.target.closest('.ct-add-confidentiality-btn')) return;
   const item = e.target.closest('[data-send-type]');
   if (!item) return;
   openSendPayment('mpt', {
@@ -7546,6 +7623,29 @@ $('mpt-balance-list').addEventListener('click', (e) => {
     mptIssuanceId:  item.dataset.mptId,
     assetScale:     parseInt(item.dataset.assetScale, 10) || 0,
   });
+});
+
+// CT delegation: expand toggle and add-confidentiality button
+$('mpt-balance-list').addEventListener('click', (e) => {
+  // Expand/collapse toggle
+  const expandBtn = e.target.closest('.ct-expand-btn');
+  if (expandBtn) {
+    const row = expandBtn.closest('.mpt-balance-item');
+    const sub = row.querySelector('.ct-sub-balances');
+    const expanded = expandBtn.getAttribute('aria-expanded') === 'true';
+    expandBtn.setAttribute('aria-expanded', String(!expanded));
+    expandBtn.textContent = expanded ? '▶' : '▼';
+    sub.classList.toggle('hidden', expanded);
+    return;
+  }
+
+  // Add Confidentiality button
+  const ctBtn = e.target.closest('.ct-add-confidentiality-btn');
+  if (ctBtn) {
+    const row = ctBtn.closest('.mpt-balance-item');
+    openConfidentialConvertView(row);
+    return;
+  }
 });
 
 $('amm-balance-list').addEventListener('click', (e) => {
@@ -8608,6 +8708,9 @@ $('back-from-ct-key-btn').addEventListener('click', () => {
   $('ct-privkey-value').textContent = '';
   showView('wallet');
 });
+
+// eslint-disable-next-line no-unused-vars
+function openConfidentialConvertView(rowEl) { /* Task 4 */ }
 
 // Record the time the popup was closed so the boot sequence can enforce the
 // auto-lock timeout on the next open.  localStorage is used here because it
