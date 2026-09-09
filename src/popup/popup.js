@@ -1,5 +1,5 @@
 import './popup.css';
-import { Client, Wallet, dropsToXrp, xrpToDrops, encodeAccountID, decodeAccountID, decodeMPTokenMetadata, isValidClassicAddress } from 'xrpl';
+import { Client, Wallet, dropsToXrp, xrpToDrops, encodeAccountID, decodeAccountID, decodeMPTokenMetadata, isValidClassicAddress, prepareConfidentialConvert, prepareConfidentialConvertBack, prepareConfidentialMergeInbox, prepareConfidentialSend } from 'xrpl';
 import xrplPkg from 'xrpl/package.json';
 import QRCode from 'qrcode';
 import { getSdkError } from '@walletconnect/utils';
@@ -10,13 +10,7 @@ import { encode, encodeForSigning, encodeForMultisigning, decode } from 'ripple-
 import { sign as keypairsSign, deriveAddress } from 'ripple-keypairs';
 import { createHash } from 'crypto';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
-import {
-  generateBlindingFactor,
-  encryptAmount,
-  decryptAmount,
-  getConvertContextHash,
-  getConvertProof,
-} from '@xrplf/mpt-crypto';
+import { decryptAmount } from '@xrplf/mpt-crypto';
 
 // ─────────────────────────────────────────────
 // GLOBAL ERROR SUPPRESSION
@@ -2380,9 +2374,10 @@ async function fetchMptIssuanceInfo(issuanceId) {
     const domainId = node.DomainID ?? null;
     const issuerEncryptionKey = node.IssuerEncryptionKey ?? null;
     const auditorEncryptionKey = node.AuditorEncryptionKey ?? null;
-    return { ticker, assetScale, outstandingAmount, vaultInfo, domainId, issuerEncryptionKey, auditorEncryptionKey };
+    const confidentialOutstandingAmount = node.ConfidentialOutstandingAmount ?? null;
+    return { ticker, assetScale, outstandingAmount, vaultInfo, domainId, issuerEncryptionKey, auditorEncryptionKey, confidentialOutstandingAmount };
   } catch {
-    return { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null, domainId: null, issuerEncryptionKey: null, auditorEncryptionKey: null };
+    return { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null, domainId: null, issuerEncryptionKey: null, auditorEncryptionKey: null, confidentialOutstandingAmount: null };
   }
 }
 
@@ -2430,14 +2425,14 @@ async function loadMptBalances() {
     const vaultObjects   = objects.filter((_, i) =>  infos[i]?.vaultInfo);
 
     const issuances = allObjects.filter(o => o.LedgerEntryType === 'MPTokenIssuance');
-    renderMptBalances(regularObjects, issuanceMap, issuances);
+    await renderMptBalances(regularObjects, issuanceMap, issuances);
     renderVaultBalances(vaultObjects, issuanceMap);
   } catch (err) {
     if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
-      renderMptBalances([]);
+      await renderMptBalances([]);
       renderVaultBalances([]);
     } else {
-      renderMptBalances([], new Map());
+      await renderMptBalances([], new Map());
       renderVaultBalances([], new Map());
       console.error('[mpt balances]', err);
     }
@@ -3140,6 +3135,7 @@ function renderLoanItem(loan, asset, opts = {}) {
 
 async function renderMptBalances(objects, issuanceMap = new Map(), issuances = []) {
   const listEl = $('mpt-balance-list');
+  const myGen  = ++_mptRenderGeneration;
   const held   = objects.filter(o => o.LedgerEntryType === 'MPToken');
 
   if (!held.length && !issuances.length) { listEl.innerHTML = ''; return; }
@@ -3176,17 +3172,29 @@ async function renderMptBalances(objects, issuanceMap = new Map(), issuances = [
           : 'A';
 
     if (ctState === 'C') {
-      const RANGE_HIGH = BigInt(10 ** 9);
       const privKeyHex = ctWalletKey.privKey;
+      const keyMatches = holderEncKey === ctWalletKey.pubKey;
+      // Use issuance's confidential outstanding as the tight search bound (linear cost).
+      // Fall back to 10^7 raw units (~30s worst case) for dev-wallet amounts if absent.
+      const RANGE_HIGH = info.confidentialOutstandingAmount
+        ? BigInt(info.confidentialOutstandingAmount)
+        : BigInt(10 ** 7);
 
-      const [spendable, inbox] = await Promise.all([
-        obj.ConfidentialBalanceSpending
-          ? decryptAmount(obj.ConfidentialBalanceSpending, privKeyHex, RANGE_HIGH).catch(() => null)
-          : Promise.resolve(0n),
-        obj.ConfidentialBalanceInbox
-          ? decryptAmount(obj.ConfidentialBalanceInbox, privKeyHex, RANGE_HIGH).catch(() => null)
-          : Promise.resolve(0n),
-      ]);
+      let spendable, inbox;
+      if (keyMatches) {
+        [spendable, inbox] = await Promise.all([
+          obj.ConfidentialBalanceSpending
+            ? decryptAmount(obj.ConfidentialBalanceSpending, privKeyHex, RANGE_HIGH).catch(() => null)
+            : Promise.resolve(0n),
+          obj.ConfidentialBalanceInbox
+            ? decryptAmount(obj.ConfidentialBalanceInbox, privKeyHex, RANGE_HIGH).catch(() => null)
+            : Promise.resolve(0n),
+        ]);
+      } else {
+        spendable = null;
+        inbox = null;
+      }
+      if (myGen !== _mptRenderGeneration) return;
 
       const scale   = info.assetScale ?? 0;
       const divisor = scale > 0 ? 10 ** scale : 1;
@@ -3201,35 +3209,36 @@ async function renderMptBalances(objects, issuanceMap = new Map(), issuances = [
 
       const subBalancesHtml = `
         <div class="ct-sub-balances hidden">
-          <div class="ct-sub-row">├ Public: ${(publicRaw / divisor).toFixed(scale)}</div>
-          <div class="ct-sub-row">├ Confidential (spendable): ${fmtRaw(spendable)}</div>
-          <div class="ct-sub-row">└ Confidential (inbox): ${fmtRaw(inbox)}</div>
+          <div class="ct-sub-row"><span>├ Public</span><span>${(publicRaw / divisor).toFixed(scale)}</span></div>
+          <div class="ct-sub-row"><span>├ Confidential (spendable)</span><span>${fmtRaw(spendable)}</span></div>
+          <div class="ct-sub-row"><span>└ Confidential (inbox)</span><span>${fmtRaw(inbox)}</span></div>
         </div>`;
 
       heldHtml.push(`
         <div class="mpt-balance-item"
              data-send-type="mpt"
+             data-ct-state="C"
              data-mpt-id="${esc(issuanceId)}"
              data-asset-scale="${assetScale ?? 0}"
              data-balance="${esc(amount)}"
-             data-display="${esc(displayName)}">
-          <button class="btn-icon ct-expand-btn" aria-expanded="false">▶</button>
+             data-display="${esc(displayName)}"
+             data-spendable-raw="${spendable !== null ? String(spendable) : ''}"
+             data-inbox-raw="${inbox !== null ? String(inbox) : ''}">
           <div class="mpt-token-info">
             <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
+            <button class="btn-icon ct-expand-btn" aria-expanded="false" title="Expand confidential balances"></button>
             <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
           </div>
-          <span class="mpt-balance-amount">Total: ${totalDisplay}</span>
+          <span class="mpt-balance-amount">${totalDisplay}</span>
           <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
           ${subBalancesHtml}
         </div>`);
     } else {
       // State A or B
       const ctButton = ctState === 'B'
-        ? `<button class="btn-icon ct-add-confidentiality-btn" title="Add confidentiality">⛨ Add Confidentiality</button>`
+        ? `<button class="btn-icon ct-add-confidentiality-btn" title="Add confidentiality">⛨</button>`
         : '';
-      const extraAttrs = ctState === 'B'
-        ? `data-issuer-enc-key="${esc(info.issuerEncryptionKey ?? '')}" data-auditor-enc-key="${esc(info.auditorEncryptionKey ?? '')}"`
-        : '';
+      const extraAttrs = '';
 
       heldHtml.push(`
         <div class="mpt-balance-item"
@@ -3241,11 +3250,11 @@ async function renderMptBalances(objects, issuanceMap = new Map(), issuances = [
              ${extraAttrs}>
           <div class="mpt-token-info">
             <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
+            ${ctButton}
             <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
           </div>
           <div class="mpt-balance-amount">${esc(amount)}</div>
           <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
-          ${ctButton}
         </div>`);
     }
   }
@@ -3280,6 +3289,7 @@ async function renderMptBalances(objects, issuanceMap = new Map(), issuances = [
       </div>`;
   });
 
+  if (myGen !== _mptRenderGeneration) return;
   listEl.innerHTML = [...heldHtml, ...issuedHtml].join('');
 }
 
@@ -7614,9 +7624,13 @@ $('iou-balance-list').addEventListener('click', (e) => {
 
 $('mpt-balance-list').addEventListener('click', (e) => {
   if (e.target.closest('.token-explorer-link')) return;
-  if (e.target.closest('.ct-expand-btn') || e.target.closest('.ct-add-confidentiality-btn')) return;
+  if (e.target.closest('.ct-expand-btn') || e.target.closest('.ct-add-confidentiality-btn') || e.target.closest('.ct-sub-balances')) return;
   const item = e.target.closest('[data-send-type]');
   if (!item) return;
+  if (item.dataset.ctState === 'C') {
+    openCtActionMenu(item, e);
+    return;
+  }
   openSendPayment('mpt', {
     displayName:    item.dataset.display,
     balance:        item.dataset.balance,
@@ -7634,7 +7648,6 @@ $('mpt-balance-list').addEventListener('click', (e) => {
     const sub = row.querySelector('.ct-sub-balances');
     const expanded = expandBtn.getAttribute('aria-expanded') === 'true';
     expandBtn.setAttribute('aria-expanded', String(!expanded));
-    expandBtn.textContent = expanded ? '▶' : '▼';
     sub.classList.toggle('hidden', expanded);
     return;
   }
@@ -8588,10 +8601,17 @@ $('ms-sign-submit-btn').addEventListener('click', () => signMsTransaction().catc
 // ─────────────────────────────────────────────
 
 let _ctHideTimer = null;
+let _mptRenderGeneration = 0;
 let _ctConvertIssuanceId   = null;
-let _ctConvertIssuerEncKey  = null;
-let _ctConvertAuditorEncKey = null;
 let _ctConvertAssetScale    = 0;
+
+let _ctActionIssuanceId     = null;
+let _ctActionAssetScale     = 0;
+let _ctActionDisplayName    = null;
+let _ctActionIssuerDisplay  = null;
+let _ctActionSpendableAmt   = null;
+let _ctActionInboxAmt       = null;
+let _ctActionPublicBalance  = null;
 
 function _bytesToUpperHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
@@ -8714,9 +8734,9 @@ $('back-from-ct-key-btn').addEventListener('click', () => {
 });
 
 function openConfidentialConvertView(rowEl) {
+  $('ct-convert-view-title').textContent = 'Add Confidentiality';
+
   _ctConvertIssuanceId    = rowEl.dataset.mptId;
-  _ctConvertIssuerEncKey  = rowEl.dataset.issuerEncKey;
-  _ctConvertAuditorEncKey = rowEl.dataset.auditorEncKey || null;
   _ctConvertAssetScale    = parseInt(rowEl.dataset.assetScale ?? '0', 10);
 
   const display  = rowEl.dataset.display ?? _ctConvertIssuanceId.slice(0, 8) + '…';
@@ -8732,85 +8752,367 @@ function openConfidentialConvertView(rowEl) {
 }
 
 async function confirmConfidentialConvert() {
-  const issuanceId   = _ctConvertIssuanceId;
-  const issuerEncKey = _ctConvertIssuerEncKey;
-  const auditorEncKey = _ctConvertAuditorEncKey;
-  const assetScale   = _ctConvertAssetScale;
-  const account      = state.activeAccount;
-  const ctKey        = state.elgamalKeys[account];
+  const issuanceId = _ctConvertIssuanceId;
+  const assetScale = _ctConvertAssetScale;
+  const account    = state.activeAccount;
 
-  if (!issuanceId || !issuerEncKey || !ctKey) {
-    showAlert('ct-convert-error', 'Missing required data. Please try again.');
+  const rawInput = parseFloat($('ct-convert-amount').value);
+  if (!isFinite(rawInput) || rawInput < 0) {
+    showAlert('ct-convert-error', 'Please enter a valid amount.');
     return;
   }
 
-  const rawInput = parseFloat($('ct-convert-amount').value) || 0;
-  if (rawInput < 0) {
-    showAlert('ct-convert-error', 'Amount must be 0 or greater.');
+  const ctKey = state.elgamalKeys[account];
+  if (!ctKey?.pubKey) {
+    showAlert('ct-convert-error', 'No confidential key found for this account.');
     return;
   }
-  const amount = BigInt(assetScale > 0
-    ? Math.round(rawInput * Math.pow(10, assetScale))
-    : Math.round(rawInput));
 
-  $('ct-convert-btn').disabled = true;
+  const btn = $('ct-convert-btn');
+  btn.disabled = true;
+  btn.textContent = 'Preparing…';
   hideAlert('ct-convert-error');
 
   try {
-    // 1. Get current sequence number for context hash
-    const acctResp = await state.client.request({
-      command: 'account_info',
+    const amount = BigInt(assetScale > 0
+      ? Math.round(rawInput * Math.pow(10, assetScale))
+      : Math.round(rawInput));
+
+    const txJson = await prepareConfidentialConvert(state.client, {
       account,
-      ledger_index: 'validated',
+      mptIssuanceID: issuanceId,
+      amount,
+      holderKeypair: { privateKey: ctKey.privKey, publicKey: ctKey.pubKey },
     });
-    const sequence = acctResp.result.account_data.Sequence;
 
-    // 2. Generate blinding factor and encrypt for all participants
-    const bf               = await generateBlindingFactor();
-    const holderEncrypted  = await encryptAmount(amount, ctKey.pubKey, bf);
-    const issuerEncrypted  = await encryptAmount(amount, issuerEncKey, bf);
-    const auditorEncrypted = auditorEncKey
-      ? await encryptAmount(amount, auditorEncKey, bf)
-      : null;
+    const displayName  = $('ct-convert-token-name').textContent;
+    const issuerAddr   = $('ct-convert-issuer').textContent;
+    const amountDisplay = assetScale > 0
+      ? rawInput.toLocaleString(undefined, { maximumFractionDigits: assetScale })
+      : String(rawInput);
 
-    // 3. Compute context hash and ZK proof
-    const contextHash = await getConvertContextHash(account, issuanceId, sequence);
-    const zkProof     = await getConvertProof(ctKey.pubKey, ctKey.privKey, contextHash);
+    const row = (label, value, cls = '') =>
+      `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
 
-    // 4. Build transaction
-    const txJson = {
-      TransactionType: 'ConfidentialMPTConvert',
-      Account: account,
-      MPTokenIssuanceID: issuanceId,
-      MPTAmount: String(amount),
-      BlindingFactor: bf,
-      HolderEncryptedAmount: holderEncrypted,
-      IssuerEncryptedAmount: issuerEncrypted,
-      HolderEncryptionKey: ctKey.pubKey,
-      ZKProof: zkProof,
-      Sequence: sequence,
-      ...(auditorEncrypted ? { AuditorEncryptedAmount: auditorEncrypted } : {}),
+    $('send-review-details').innerHTML = [
+      row('Type', 'Confidential Convert', 'tx-type'),
+      row('Token', esc(displayName)),
+      row('Issuer', `<span title="${esc(issuerAddr)}">${esc(truncAddr(issuerAddr))}</span>`, 'tx-address'),
+      row('Amount', rawInput === 0 ? '0 (opt-in only)' : esc(amountDisplay)),
+      row('From', `<span title="${esc(account)}">${esc(truncAddr(account))}</span>`, 'tx-address'),
+    ].join('');
+
+    state.pendingTxReview = {
+      txJson,
+      backView: 'confidential-convert',
+      successMsg: 'Confidential conversion submitted!',
+      title: 'Review Convert Transaction',
     };
-
-    // 5. Autofill (adds Fee; Sequence already set so autofill leaves it)
-    const prepared = await state.client.autofill(txJson);
-
-    // 6. Sign and submit
-    const { tx_blob } = await signPreparedTx(prepared);
-    await state.client.submitAndWait(tx_blob);
-
-    showView('wallet');
-    await loadMptBalances();
+    showView('send-review');
   } catch (err) {
     showAlert('ct-convert-error', err.message || 'Conversion failed. Please try again.');
   } finally {
-    $('ct-convert-btn').disabled = false;
+    btn.disabled = false;
+    btn.textContent = 'Convert';
   }
 }
 
 $('ct-convert-btn').addEventListener('click', () => confirmConfidentialConvert().catch(console.error));
 
 $('back-from-ct-convert-btn').addEventListener('click', () => showView('wallet'));
+
+function openCtActionMenu(rowEl, e) {
+  _ctActionIssuanceId     = rowEl.dataset.mptId;
+  _ctActionAssetScale     = parseInt(rowEl.dataset.assetScale ?? '0', 10);
+  _ctActionDisplayName    = rowEl.dataset.display ?? _ctActionIssuanceId.slice(0, 8) + '…';
+  _ctActionPublicBalance  = rowEl.dataset.balance ?? '0';
+  _ctActionSpendableAmt   = rowEl.dataset.spendableRaw ? BigInt(rowEl.dataset.spendableRaw) : null;
+  _ctActionInboxAmt       = rowEl.dataset.inboxRaw     ? BigInt(rowEl.dataset.inboxRaw)     : null;
+
+  const issuerEl = rowEl.querySelector('.mpt-issuer');
+  _ctActionIssuerDisplay = issuerEl?.textContent ?? '';
+
+  const menu = $('ct-action-menu');
+  menu.classList.remove('hidden');
+
+  setTimeout(() => {
+    document.addEventListener('click', closeCtActionMenu, { capture: true, once: true });
+  }, 0);
+}
+
+function closeCtActionMenu() {
+  $('ct-action-menu').classList.add('hidden');
+}
+
+$('ct-action-menu').addEventListener('click', (e) => {
+  const btn = e.target.closest('.ct-action-item');
+  if (!btn) return;
+  closeCtActionMenu();
+  const action = btn.dataset.action;
+  if (action === 'send-public') {
+    openSendPayment('mpt', {
+      displayName:   _ctActionDisplayName,
+      balance:       _ctActionPublicBalance,
+      mptIssuanceId: _ctActionIssuanceId,
+      assetScale:    _ctActionAssetScale,
+    });
+  } else if (action === 'send-confidential') {
+    openCtSendConfidentialView();
+  } else if (action === 'convert') {
+    openCtAdditionalConvertView();
+  } else if (action === 'merge-inbox') {
+    openCtMergeInboxView();
+  } else if (action === 'convert-back') {
+    openCtConvertBackView();
+  }
+});
+
+function openCtAdditionalConvertView() {
+  _ctConvertIssuanceId    = _ctActionIssuanceId;
+  _ctConvertAssetScale    = _ctActionAssetScale;
+
+  $('ct-convert-view-title').textContent       = 'Convert';
+  $('ct-convert-token-name').textContent       = _ctActionDisplayName;
+  $('ct-convert-issuer').textContent           = _ctActionIssuerDisplay;
+  $('ct-convert-public-balance').textContent   = _ctActionPublicBalance ?? '0';
+  $('ct-convert-amount').value                 = '0';
+  hideAlert('ct-convert-error');
+  showView('confidential-convert');
+}
+
+function openCtMergeInboxView() {
+  const scale = _ctActionAssetScale;
+  const divisor = scale > 0 ? Math.pow(10, scale) : 1;
+  const inboxDisplay = _ctActionInboxAmt !== null
+    ? (Number(_ctActionInboxAmt) / divisor).toFixed(scale)
+    : '[encrypted]';
+
+  $('ct-merge-token-name').textContent    = _ctActionDisplayName;
+  $('ct-merge-issuer').textContent        = _ctActionIssuerDisplay;
+  $('ct-merge-inbox-balance').textContent = inboxDisplay;
+  hideAlert('ct-merge-error');
+  showView('ct-merge-inbox');
+}
+
+async function confirmCtMergeInbox() {
+  const issuanceId = _ctActionIssuanceId;
+  const account    = state.activeAccount;
+  if (!issuanceId) { showAlert('ct-merge-error', 'Missing issuance data.'); return; }
+
+  const btn = $('ct-merge-btn');
+  btn.disabled = true;
+  btn.textContent = 'Preparing…';
+  hideAlert('ct-merge-error');
+
+  try {
+    const txJson = await prepareConfidentialMergeInbox(state.client, {
+      account,
+      mptIssuanceID: issuanceId,
+    });
+
+    const row = (label, value, cls = '') =>
+      `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+    $('send-review-details').innerHTML = [
+      row('Type', 'Merge Inbox', 'tx-type'),
+      row('Token', esc(_ctActionDisplayName)),
+      row('Issuer', `<span title="${esc(_ctActionIssuerDisplay)}">${esc(truncAddr(_ctActionIssuerDisplay))}</span>`, 'tx-address'),
+      row('From', `<span title="${esc(account)}">${esc(truncAddr(account))}</span>`, 'tx-address'),
+    ].join('');
+
+    state.pendingTxReview = {
+      txJson,
+      backView: 'ct-merge-inbox',
+      successMsg: 'Inbox merged successfully!',
+      title: 'Review Merge Inbox',
+    };
+    showView('send-review');
+  } catch (err) {
+    showAlert('ct-merge-error', err.message || 'Failed to prepare transaction.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Review Merge';
+  }
+}
+
+$('ct-merge-btn').addEventListener('click', () => confirmCtMergeInbox().catch(console.error));
+$('back-from-ct-merge-btn').addEventListener('click', () => showView('wallet'));
+
+function openCtConvertBackView() {
+  const scale = _ctActionAssetScale;
+  const divisor = scale > 0 ? Math.pow(10, scale) : 1;
+  const spendableDisplay = _ctActionSpendableAmt !== null
+    ? (Number(_ctActionSpendableAmt) / divisor).toFixed(scale)
+    : '[encrypted]';
+
+  $('ct-convert-back-token-name').textContent = _ctActionDisplayName;
+  $('ct-convert-back-issuer').textContent     = _ctActionIssuerDisplay;
+  $('ct-convert-back-spendable').textContent  = spendableDisplay;
+  $('ct-convert-back-amount').value           = '0';
+  hideAlert('ct-convert-back-error');
+  showView('ct-convert-back');
+}
+
+async function confirmCtConvertBack() {
+  const issuanceId = _ctActionIssuanceId;
+  const account    = state.activeAccount;
+  const assetScale = _ctActionAssetScale;
+
+  const rawInput = parseFloat($('ct-convert-back-amount').value);
+  if (!isFinite(rawInput) || rawInput <= 0) {
+    showAlert('ct-convert-back-error', 'Please enter a valid amount.');
+    return;
+  }
+
+  const ctKey = state.elgamalKeys[account];
+  if (!ctKey?.privKey) {
+    showAlert('ct-convert-back-error', 'No confidential key found for this account.');
+    return;
+  }
+
+  const btn = $('ct-convert-back-btn');
+  btn.disabled = true;
+  btn.textContent = 'Preparing…';
+  hideAlert('ct-convert-back-error');
+
+  try {
+    const amount = BigInt(assetScale > 0
+      ? Math.round(rawInput * Math.pow(10, assetScale))
+      : Math.round(rawInput));
+
+    const txJson = await prepareConfidentialConvertBack(state.client, {
+      account,
+      mptIssuanceID: issuanceId,
+      amount,
+      holderKeypair: { privateKey: ctKey.privKey, publicKey: ctKey.pubKey },
+    });
+
+    const amountDisplay = assetScale > 0
+      ? rawInput.toLocaleString(undefined, { maximumFractionDigits: assetScale })
+      : String(rawInput);
+
+    const row = (label, value, cls = '') =>
+      `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+    $('send-review-details').innerHTML = [
+      row('Type', 'Convert Back', 'tx-type'),
+      row('Token', esc(_ctActionDisplayName)),
+      row('Amount', esc(amountDisplay)),
+      row('From', `<span title="${esc(account)}">${esc(truncAddr(account))}</span>`, 'tx-address'),
+    ].join('');
+
+    state.pendingTxReview = {
+      txJson,
+      backView: 'ct-convert-back',
+      successMsg: 'Convert back submitted!',
+      title: 'Review Convert Back',
+    };
+    showView('send-review');
+  } catch (err) {
+    showAlert('ct-convert-back-error', err.message || 'Failed to prepare transaction.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Review Convert Back';
+  }
+}
+
+$('ct-convert-back-btn').addEventListener('click', () => confirmCtConvertBack().catch(console.error));
+$('back-from-ct-convert-back-btn').addEventListener('click', () => showView('wallet'));
+
+async function openCtSendConfidentialView() {
+  const scale = _ctActionAssetScale;
+  const divisor = scale > 0 ? Math.pow(10, scale) : 1;
+  const spendableDisplay = _ctActionSpendableAmt !== null
+    ? (Number(_ctActionSpendableAmt) / divisor).toFixed(scale)
+    : '[encrypted]';
+
+  $('ct-send-conf-token-name').textContent = _ctActionDisplayName;
+  $('ct-send-conf-issuer').textContent     = _ctActionIssuerDisplay;
+  $('ct-send-conf-spendable').textContent  = spendableDisplay;
+  $('ct-send-conf-amount').value           = '0';
+  hideAlert('ct-send-conf-error');
+
+  await populateAddressPicker($('ct-send-conf-recipient'));
+  handlePickerChange($('ct-send-conf-recipient'), $('ct-send-conf-manual-group'));
+
+  showView('ct-send-confidential');
+}
+
+async function confirmCtSendConfidential() {
+  const issuanceId = _ctActionIssuanceId;
+  const account    = state.activeAccount;
+  const assetScale = _ctActionAssetScale;
+
+  const destination = getPickerAddress($('ct-send-conf-recipient'), $('ct-send-conf-destination'));
+  if (!isValidClassicAddress(destination)) {
+    showAlert('ct-send-conf-error', 'Please enter a valid XRPL destination address.');
+    return;
+  }
+
+  const rawInput = parseFloat($('ct-send-conf-amount').value);
+  if (!isFinite(rawInput) || rawInput <= 0) {
+    showAlert('ct-send-conf-error', 'Please enter a valid amount.');
+    return;
+  }
+
+  const ctKey = state.elgamalKeys[account];
+  if (!ctKey?.privKey) {
+    showAlert('ct-send-conf-error', 'No confidential key found for this account.');
+    return;
+  }
+
+  const btn = $('ct-send-conf-btn');
+  btn.disabled = true;
+  btn.textContent = 'Preparing…';
+  hideAlert('ct-send-conf-error');
+
+  try {
+    const amount = BigInt(assetScale > 0
+      ? Math.round(rawInput * Math.pow(10, assetScale))
+      : Math.round(rawInput));
+
+    const txJson = await prepareConfidentialSend(state.client, {
+      account,
+      destination,
+      mptIssuanceID: issuanceId,
+      amount,
+      senderKeypair: { privateKey: ctKey.privKey, publicKey: ctKey.pubKey },
+    });
+
+    const amountDisplay = assetScale > 0
+      ? rawInput.toLocaleString(undefined, { maximumFractionDigits: assetScale })
+      : String(rawInput);
+
+    const row = (label, value, cls = '') =>
+      `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+    $('send-review-details').innerHTML = [
+      row('Type', 'Confidential Send', 'tx-type'),
+      row('Token', esc(_ctActionDisplayName)),
+      row('Amount', esc(amountDisplay)),
+      row('To', `<span title="${esc(destination)}">${esc(truncAddr(destination))}</span>`, 'tx-address'),
+      row('From', `<span title="${esc(account)}">${esc(truncAddr(account))}</span>`, 'tx-address'),
+    ].join('');
+
+    state.pendingTxReview = {
+      txJson,
+      backView: 'ct-send-confidential',
+      successMsg: 'Confidential send submitted!',
+      title: 'Review Confidential Send',
+    };
+    showView('send-review');
+  } catch (err) {
+    showAlert('ct-send-conf-error', err.message || 'Failed to prepare transaction.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Review Send';
+  }
+}
+
+$('ct-send-conf-recipient').addEventListener('change', () =>
+  handlePickerChange($('ct-send-conf-recipient'), $('ct-send-conf-manual-group')));
+$('ct-send-conf-btn').addEventListener('click', () => confirmCtSendConfidential().catch(console.error));
+$('back-from-ct-send-conf-btn').addEventListener('click', () => showView('wallet'));
 
 // Record the time the popup was closed so the boot sequence can enforce the
 // auto-lock timeout on the next open.  localStorage is used here because it

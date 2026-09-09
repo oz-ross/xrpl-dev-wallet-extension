@@ -864,6 +864,7 @@ a.tx-history-item:hover {
 /* ===== MPT BALANCES ===== */
 .mpt-balance-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -874,9 +875,11 @@ a.tx-history-item:hover {
 
 .mpt-token-info {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
+  flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 
 .mpt-id {
@@ -896,6 +899,8 @@ a.tx-history-item:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: default;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .mpt-balance-amount {
@@ -2841,14 +2846,72 @@ details[open] .review-json-summary::before {
 .ms-picker-item-name { font-size: 12px; font-weight: 500; }
 .ms-picker-item-addr { font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-3); }
 
+/* Confidential expand button — shield icon with embedded directional indicator */
+.ct-expand-btn {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+.ct-expand-btn::before {
+  content: '⛨';
+}
+.ct-expand-btn::after {
+  content: '▶';
+  font-size: 0.42em;
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  line-height: 1;
+  color: var(--text-2);
+}
+.ct-expand-btn[aria-expanded="true"]::after {
+  content: '▼';
+}
+
 /* Confidential Transfer sub-balances */
 .ct-sub-balances {
-  width: 100%;
+  flex-basis: 100%;
   padding-left: 1.2rem;
   font-size: 0.82em;
-  color: var(--text-secondary, #888);
+  color: var(--text-3);
 }
 .ct-sub-row {
+  display: flex;
+  justify-content: space-between;
   padding: 1px 0;
   font-family: monospace;
+}
+.ct-action-menu {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  z-index: 200;
+  min-width: 170px;
+  padding: 4px 0;
+}
+.ct-action-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 9px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.2;
+}
+.ct-action-item:hover {
+  background: var(--surface-3, var(--surface));
 }
