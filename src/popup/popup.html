@@ -1488,6 +1488,132 @@
     <button id="mpt-review-btn" class="btn btn-primary btn-full" style="margin-top:6px">Review</button>
   </div>
 
+  <!-- ===== CREATE MPT ===== -->
+  <div id="view-create-mpt" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-create-mpt-btn" class="btn-back">‹</button>
+      <h2>Create MPT</h2>
+    </div>
+
+    <div class="form-group">
+      <label for="create-mpt-asset-scale">Asset Scale <span class="label-optional">(0–255, default 0 = integer token)</span></label>
+      <input type="number" id="create-mpt-asset-scale" min="0" max="255" value="0" />
+    </div>
+
+    <div class="form-group">
+      <label for="create-mpt-max-amount">Maximum Amount <span class="label-optional">(optional — leave blank for uncapped)</span></label>
+      <input type="text" id="create-mpt-max-amount" placeholder="e.g. 1000000000" autocomplete="off" spellcheck="false" />
+    </div>
+
+    <div class="form-group">
+      <label for="create-mpt-transfer-fee">Transfer Fee <span class="label-optional">(optional — 0–50000 thousandths of 1%, requires Can Transfer)</span></label>
+      <input type="number" id="create-mpt-transfer-fee" min="0" max="50000" placeholder="e.g. 1000 = 1%" autocomplete="off" />
+    </div>
+
+    <div class="form-group">
+      <label>Flags <span class="label-optional">(immutable after creation)</span></label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-transfer" />
+        <span>Can Transfer (enable peer-to-peer transfers)</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-clawback" />
+        <span>Can Clawback (issuer can reclaim tokens)</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-require-auth" />
+        <span>Require Auth (issuer must authorize each holder)</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-lock" />
+        <span>Can Lock (issuer can freeze individual balances)</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-escrow" />
+        <span>Can Escrow (allow in escrow transactions)</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-trade" />
+        <span>Can Trade (allow AMM/DEX trading)</span>
+      </label>
+    </div>
+
+    <div class="form-group">
+      <label>Metadata <span class="label-optional">(optional)</span></label>
+      <div class="create-mpt-meta-toggle">
+        <button id="create-mpt-meta-structured-btn" class="create-mpt-meta-toggle-btn active">Structured</button>
+        <button id="create-mpt-meta-raw-btn" class="create-mpt-meta-toggle-btn">Raw Hex</button>
+      </div>
+
+      <div id="create-mpt-meta-structured">
+        <div class="form-group">
+          <label for="create-mpt-ticker">Ticker <span class="label-optional">(A-Z 0-9, max 6 chars)</span></label>
+          <input type="text" id="create-mpt-ticker" maxlength="6" placeholder="e.g. MYTKN" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-name">Name <span class="label-optional">(optional)</span></label>
+          <input type="text" id="create-mpt-name" placeholder="e.g. My Token" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-issuer-name">Issuer Name <span class="label-optional">(optional)</span></label>
+          <input type="text" id="create-mpt-issuer-name" placeholder="e.g. Acme Corp" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-asset-class">Asset Class <span class="label-optional">(optional)</span></label>
+          <select id="create-mpt-asset-class">
+            <option value="">— select —</option>
+            <option value="rwa">rwa</option>
+            <option value="memes">memes</option>
+            <option value="wrapped">wrapped</option>
+            <option value="gaming">gaming</option>
+            <option value="defi">defi</option>
+            <option value="other">other</option>
+          </select>
+        </div>
+        <div id="create-mpt-asset-subclass-row" class="form-group hidden">
+          <label for="create-mpt-asset-subclass">Asset Subclass <span class="label-optional">(required for rwa)</span></label>
+          <select id="create-mpt-asset-subclass">
+            <option value="">— select —</option>
+            <option value="stablecoin">stablecoin</option>
+            <option value="commodity">commodity</option>
+            <option value="real_estate">real_estate</option>
+            <option value="private_credit">private_credit</option>
+            <option value="equity">equity</option>
+            <option value="treasury">treasury</option>
+            <option value="other">other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-icon">Icon URL <span class="label-optional">(optional)</span></label>
+          <input type="text" id="create-mpt-icon" placeholder="https://example.com/icon.png" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-desc">Description <span class="label-optional">(optional)</span></label>
+          <textarea id="create-mpt-desc" placeholder="Token description…"></textarea>
+        </div>
+        <div class="form-group">
+          <label>URIs <span class="label-optional">(optional — website, whitepaper, etc.)</span></label>
+          <div id="create-mpt-uris-list"></div>
+          <button id="create-mpt-add-uri-btn" class="btn btn-outline btn-full" style="margin-top:4px">+ Add URI</button>
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-additional-info">Additional Info <span class="label-optional">(optional — JSON object or plain string)</span></label>
+          <textarea id="create-mpt-additional-info" placeholder='{"key": "value"}'></textarea>
+        </div>
+      </div>
+
+      <div id="create-mpt-meta-raw" class="hidden">
+        <div class="form-group" style="margin-top:8px">
+          <label for="create-mpt-meta-hex">Metadata Hex</label>
+          <textarea id="create-mpt-meta-hex" placeholder="Uppercase hex string…" style="font-family: monospace; min-height: 80px"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div id="create-mpt-error" class="alert alert-error hidden"></div>
+    <button id="create-mpt-review-btn" class="btn btn-primary btn-full" style="margin-top:8px">Review →</button>
+  </div>
+
   <!-- ===== VAULT DEPOSIT ===== -->
   <div id="view-vault-deposit" class="view hidden">
     <div class="view-header">

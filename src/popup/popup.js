@@ -1,5 +1,5 @@
 import './popup.css';
-import { Client, Wallet, dropsToXrp, xrpToDrops, encodeAccountID, decodeAccountID, decodeMPTokenMetadata, isValidClassicAddress, prepareConfidentialConvert, prepareConfidentialConvertBack, prepareConfidentialMergeInbox, prepareConfidentialSend } from 'xrpl';
+import { Client, Wallet, dropsToXrp, xrpToDrops, encodeAccountID, decodeAccountID, decodeMPTokenMetadata, encodeMPTokenMetadata, isValidClassicAddress, prepareConfidentialConvert, prepareConfidentialConvertBack, prepareConfidentialMergeInbox, prepareConfidentialSend } from 'xrpl';
 import xrplPkg from 'xrpl/package.json';
 import QRCode from 'qrcode';
 import { getSdkError } from '@walletconnect/utils';
@@ -4245,6 +4245,197 @@ async function openAuthMpt() {
   showView('auth-mpt');
 }
 
+// ─────────────────────────────────────────────
+// CREATE MPT
+// ─────────────────────────────────────────────
+
+function openCreateMptView() {
+  // Reset all fields
+  $('create-mpt-asset-scale').value        = '0';
+  $('create-mpt-max-amount').value         = '';
+  $('create-mpt-transfer-fee').value       = '';
+  $('create-mpt-flag-transfer').checked    = false;
+  $('create-mpt-flag-clawback').checked    = false;
+  $('create-mpt-flag-require-auth').checked = false;
+  $('create-mpt-flag-lock').checked        = false;
+  $('create-mpt-flag-escrow').checked      = false;
+  $('create-mpt-flag-trade').checked       = false;
+  $('create-mpt-ticker').value             = '';
+  $('create-mpt-name').value               = '';
+  $('create-mpt-issuer-name').value        = '';
+  $('create-mpt-asset-class').value        = '';
+  $('create-mpt-asset-subclass').value     = '';
+  $('create-mpt-asset-subclass-row').classList.add('hidden');
+  $('create-mpt-icon').value               = '';
+  $('create-mpt-desc').value               = '';
+  $('create-mpt-uris-list').innerHTML      = '';
+  $('create-mpt-additional-info').value    = '';
+  $('create-mpt-meta-hex').value           = '';
+  hideAlert('create-mpt-error');
+  // Reset metadata mode to structured
+  _createMptMetaMode = 'structured';
+  $('create-mpt-meta-structured').classList.remove('hidden');
+  $('create-mpt-meta-raw').classList.add('hidden');
+  $('create-mpt-meta-structured-btn').classList.add('active');
+  $('create-mpt-meta-raw-btn').classList.remove('active');
+  showView('create-mpt');
+}
+
+function addMptUri() {
+  const list = $('create-mpt-uris-list');
+  const row  = document.createElement('div');
+  row.className = 'create-mpt-uri-row';
+  row.innerHTML = `
+    <input type="text" class="uri-field"    placeholder="URI"      autocomplete="off" />
+    <input type="text" class="uri-category" placeholder="Category" autocomplete="off" />
+    <input type="text" class="uri-title"    placeholder="Title"    autocomplete="off" />
+    <button class="uri-remove-btn" title="Remove">✕</button>
+  `;
+  row.querySelector('.uri-remove-btn').addEventListener('click', () => row.remove());
+  list.appendChild(row);
+}
+
+function switchMptMetaMode(mode) {
+  if (mode === _createMptMetaMode) return;
+  if (mode === 'raw') {
+    // Serialize current structured state into the raw textarea before switching
+    const hex = buildMptMetadataHex();
+    $('create-mpt-meta-hex').value = hex ?? '';
+    $('create-mpt-meta-structured').classList.add('hidden');
+    $('create-mpt-meta-raw').classList.remove('hidden');
+    $('create-mpt-meta-structured-btn').classList.remove('active');
+    $('create-mpt-meta-raw-btn').classList.add('active');
+  } else {
+    // Switch back to structured — retain structured field values, don't parse raw
+    $('create-mpt-meta-raw').classList.add('hidden');
+    $('create-mpt-meta-structured').classList.remove('hidden');
+    $('create-mpt-meta-raw-btn').classList.remove('active');
+    $('create-mpt-meta-structured-btn').classList.add('active');
+  }
+  _createMptMetaMode = mode;
+}
+
+function buildMptMetadataHex() {
+  if (_createMptMetaMode === 'raw') {
+    return $('create-mpt-meta-hex').value.trim();
+  }
+  const obj = {};
+  const ticker = $('create-mpt-ticker').value.trim().toUpperCase();
+  if (ticker) obj.ticker = ticker;
+  const name = $('create-mpt-name').value.trim();
+  if (name) obj.name = name;
+  const issuerName = $('create-mpt-issuer-name').value.trim();
+  if (issuerName) obj.issuer_name = issuerName;
+  const assetClass = $('create-mpt-asset-class').value;
+  if (assetClass) obj.asset_class = assetClass;
+  const assetSubclass = $('create-mpt-asset-subclass').value;
+  if (assetSubclass) obj.asset_subclass = assetSubclass;
+  const icon = $('create-mpt-icon').value.trim();
+  if (icon) obj.icon = icon;
+  const desc = $('create-mpt-desc').value.trim();
+  if (desc) obj.desc = desc;
+  const uriRows = $('create-mpt-uris-list').querySelectorAll('.create-mpt-uri-row');
+  const uris = [];
+  for (const row of uriRows) {
+    const uri      = row.querySelector('.uri-field').value.trim();
+    const category = row.querySelector('.uri-category').value.trim();
+    const title    = row.querySelector('.uri-title').value.trim();
+    if (uri || category || title) {
+      uris.push({ uri, category, title });
+    }
+  }
+  if (uris.length > 0) obj.uris = uris;
+  const additionalInfoRaw = $('create-mpt-additional-info').value.trim();
+  if (additionalInfoRaw) {
+    try {
+      obj.additional_info = JSON.parse(additionalInfoRaw);
+    } catch {
+      obj.additional_info = additionalInfoRaw;
+    }
+  }
+  if (Object.keys(obj).length === 0) return '';
+  try {
+    return encodeMPTokenMetadata(obj);
+  } catch (err) {
+    showAlert('create-mpt-error', `Metadata error: ${err.message || 'Invalid metadata'}`);
+    return null;
+  }
+}
+
+function openCreateMptReview() {
+  hideAlert('create-mpt-error');
+
+  // Asset Scale
+  const assetScale = parseInt($('create-mpt-asset-scale').value, 10);
+  if (isNaN(assetScale) || assetScale < 0 || assetScale > 255) {
+    showAlert('create-mpt-error', 'Asset Scale must be an integer 0–255.');
+    return;
+  }
+
+  // Maximum Amount (optional)
+  const maxAmountRaw = $('create-mpt-max-amount').value.trim();
+  let maximumAmount = null;
+  if (maxAmountRaw) {
+    if (!/^\d+$/.test(maxAmountRaw)) {
+      showAlert('create-mpt-error', 'Maximum Amount must be a positive integer.');
+      return;
+    }
+    const maxAmt = BigInt(maxAmountRaw);
+    if (maxAmt <= 0n || maxAmt > BigInt('9223372036854775807')) {
+      showAlert('create-mpt-error', 'Maximum Amount must be between 1 and 9223372036854775807.');
+      return;
+    }
+    maximumAmount = maxAmountRaw;
+  }
+
+  // Transfer Fee (optional)
+  const transferFeeRaw = $('create-mpt-transfer-fee').value.trim();
+  let transferFee = null;
+  if (transferFeeRaw !== '') {
+    transferFee = parseInt(transferFeeRaw, 10);
+    if (isNaN(transferFee) || transferFee < 0 || transferFee > 50000) {
+      showAlert('create-mpt-error', 'Transfer Fee must be an integer 0–50000 (thousandths of 1%).');
+      return;
+    }
+  }
+
+  // Flags
+  let flags = 0;
+  if ($('create-mpt-flag-transfer').checked)     flags |= 0x0020; // tfMPTCanTransfer
+  if ($('create-mpt-flag-clawback').checked)     flags |= 0x0040; // tfMPTCanClawback
+  if ($('create-mpt-flag-require-auth').checked) flags |= 0x0004; // tfMPTRequireAuth
+  if ($('create-mpt-flag-lock').checked)         flags |= 0x0002; // tfMPTCanLock
+  if ($('create-mpt-flag-escrow').checked)       flags |= 0x0008; // tfMPTCanEscrow
+  if ($('create-mpt-flag-trade').checked)        flags |= 0x0010; // tfMPTCanTrade
+
+  // Cross-validation: TransferFee requires tfMPTCanTransfer
+  if (transferFee !== null && transferFee > 0 && !(flags & 0x0020)) {
+    showAlert('create-mpt-error', 'Transfer Fee requires the "Can Transfer" flag to be enabled.');
+    return;
+  }
+
+  // Metadata
+  const metadataHex = buildMptMetadataHex();
+  if (metadataHex === null) return; // error already shown in buildMptMetadataHex
+  if (metadataHex && metadataHex.length / 2 > 1024) {
+    showAlert('create-mpt-error', 'Metadata exceeds 1024 bytes.');
+    return;
+  }
+
+  const ticker = $('create-mpt-ticker').value.trim().toUpperCase();
+  const name   = $('create-mpt-name').value.trim();
+  _createMptPending = {
+    assetScale,
+    maximumAmount,
+    transferFee,
+    flags,
+    metadataHex,
+    displayName: ticker || name || 'MPT',
+  };
+
+  openCreateMptReviewView();
+}
+
 async function fetchAndPopulateMpts() {
   $('mpt-error').classList.add('hidden');
 
@@ -7803,6 +7994,21 @@ $('mpt-issuance-select').addEventListener('change', handleMptIssuanceChange);
 $('mpt-review-btn').addEventListener('click', reviewMptAuthorize);
 
 // ─────────────────────────────────────────────
+// EVENT LISTENERS — Create MPT
+// ─────────────────────────────────────────────
+
+$('back-from-create-mpt-btn').addEventListener('click', () => showView('wallet'));
+$('create-mpt-asset-class').addEventListener('change', () => {
+  const isRwa = $('create-mpt-asset-class').value === 'rwa';
+  $('create-mpt-asset-subclass-row').classList.toggle('hidden', !isRwa);
+  if (!isRwa) $('create-mpt-asset-subclass').value = '';
+});
+$('create-mpt-meta-structured-btn').addEventListener('click', () => switchMptMetaMode('structured'));
+$('create-mpt-meta-raw-btn').addEventListener('click', () => switchMptMetaMode('raw'));
+$('create-mpt-add-uri-btn').addEventListener('click', addMptUri);
+$('create-mpt-review-btn').addEventListener('click', openCreateMptReview);
+
+// ─────────────────────────────────────────────
 // EVENT LISTENERS — Vault deposit (onboarding)
 // ─────────────────────────────────────────────
 
@@ -8616,6 +8822,8 @@ $('ms-sign-submit-btn').addEventListener('click', () => signMsTransaction().catc
 
 let _ctHideTimer = null;
 let _mptRenderGeneration = 0;
+let _createMptPending  = null; // { assetScale, maximumAmount, transferFee, flags, metadataHex, displayName }
+let _createMptMetaMode = 'structured'; // 'structured' | 'raw'
 let _ctConvertIssuanceId   = null;
 let _ctConvertAssetScale    = 0;
 

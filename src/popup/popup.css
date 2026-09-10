@@ -2951,3 +2951,55 @@ details[open] .review-json-summary::before {
 .ct-action-item:hover {
   background: var(--surface-3, var(--surface));
 }
+
+/* ── Create MPT form ────────────────────────── */
+.create-mpt-meta-toggle {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.create-mpt-meta-toggle-btn {
+  flex: 1;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.create-mpt-meta-toggle-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.create-mpt-uri-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.create-mpt-uri-row input {
+  min-width: 0;
+}
+
+.uri-remove-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 4px;
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.uri-remove-btn:hover { color: var(--danger); }
