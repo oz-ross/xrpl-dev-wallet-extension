@@ -818,6 +818,42 @@ a.tx-history-item:hover {
   margin-left: auto;
 }
 
+/* ── MPT add dropdown ───────────────────────── */
+.mpt-add-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.mpt-add-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  z-index: 200;
+  min-width: 130px;
+  padding: 4px 0;
+  white-space: nowrap;
+}
+
+.mpt-add-dropdown-item {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 8px 14px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.mpt-add-dropdown-item:hover { background: var(--surface-2); }
+
 .iou-balance-item {
   display: flex;
   align-items: center;

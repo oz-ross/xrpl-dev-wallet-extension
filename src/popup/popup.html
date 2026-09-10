@@ -669,7 +669,13 @@
     <div id="mpt-balance-card" class="iou-balance-card">
       <div class="iou-balance-header">
         <span>MPT Balances</span>
-        <button id="add-mpt-btn" class="btn-icon btn-header-action" title="Add MPT">＋</button>
+        <div class="mpt-add-wrapper">
+          <button id="add-mpt-btn" class="btn-icon btn-header-action" title="MPT actions">＋</button>
+          <div id="mpt-add-dropdown" class="mpt-add-dropdown hidden">
+            <button class="mpt-add-dropdown-item" id="mpt-dropdown-add">Add MPT</button>
+            <button class="mpt-add-dropdown-item" id="mpt-dropdown-create">Create MPT</button>
+          </div>
+        </div>
       </div>
       <div id="mpt-balance-list"></div>
     </div>

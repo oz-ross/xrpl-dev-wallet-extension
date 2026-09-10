@@ -7777,7 +7777,19 @@ $('trust-review-btn').addEventListener('click', reviewTrustSet);
 // EVENT LISTENERS — Add MPT
 // ─────────────────────────────────────────────
 
-$('add-mpt-btn').addEventListener('click', openAuthMpt);
+function openMptAddDropdown() {
+  $('mpt-add-dropdown').classList.remove('hidden');
+  setTimeout(() => {
+    document.addEventListener('click', closeMptAddDropdown, { capture: true, once: true });
+  }, 0);
+}
+function closeMptAddDropdown() {
+  $('mpt-add-dropdown').classList.add('hidden');
+}
+
+$('add-mpt-btn').addEventListener('click', e => { e.stopPropagation(); openMptAddDropdown(); });
+$('mpt-dropdown-add').addEventListener('click', () => { closeMptAddDropdown(); openAuthMpt(); });
+$('mpt-dropdown-create').addEventListener('click', () => { closeMptAddDropdown(); openCreateMptView(); });
 
 $('back-from-auth-mpt-btn').addEventListener('click', () => showView('wallet'));
 
