@@ -4437,6 +4437,88 @@ function openCreateMptReview() {
   openCreateMptReviewView();
 }
 
+function openCreateMptReviewView() {
+  const p = _createMptPending;
+  $('create-mpt-review-name').textContent  = p.displayName;
+  $('create-mpt-review-scale').textContent = String(p.assetScale);
+  $('create-mpt-review-max').textContent   = p.maximumAmount ?? 'Uncapped';
+  $('create-mpt-review-fee').textContent   = p.transferFee !== null
+    ? `${(p.transferFee / 1000).toFixed(3)}%`
+    : 'None';
+
+  const flagNames = [];
+  if (p.flags & 0x0020) flagNames.push('Can Transfer');
+  if (p.flags & 0x0040) flagNames.push('Can Clawback');
+  if (p.flags & 0x0004) flagNames.push('Require Auth');
+  if (p.flags & 0x0002) flagNames.push('Can Lock');
+  if (p.flags & 0x0008) flagNames.push('Can Escrow');
+  if (p.flags & 0x0010) flagNames.push('Can Trade');
+  $('create-mpt-review-flags').textContent = flagNames.length > 0
+    ? flagNames.join(', ')
+    : 'None';
+
+  if (p.metadataHex) {
+    const byteLen = p.metadataHex.length / 2;
+    const preview = p.metadataHex.length > 32
+      ? p.metadataHex.slice(0, 32) + '…'
+      : p.metadataHex;
+    $('create-mpt-review-meta').textContent = `${preview} (${byteLen} bytes)`;
+  } else {
+    $('create-mpt-review-meta').textContent = 'None';
+  }
+
+  hideAlert('create-mpt-review-error');
+  $('create-mpt-confirm-btn').disabled    = false;
+  $('create-mpt-confirm-btn').textContent = 'Create MPT';
+  showView('create-mpt-review');
+}
+
+async function confirmCreateMpt() {
+  const btn = $('create-mpt-confirm-btn');
+  btn.disabled    = true;
+  btn.textContent = 'Creating…';
+  hideAlert('create-mpt-review-error');
+
+  try {
+    await ensureConnected();
+    const p  = _createMptPending;
+    const tx = {
+      TransactionType: 'MPTokenIssuanceCreate',
+      Account: state.activeAccount,
+    };
+    if (p.assetScale !== 0)    tx.AssetScale     = p.assetScale;
+    if (p.maximumAmount)        tx.MaximumAmount   = p.maximumAmount;
+    if (p.transferFee !== null) tx.TransferFee     = p.transferFee;
+    if (p.flags !== 0)          tx.Flags           = p.flags;
+    if (p.metadataHex)          tx.MPTokenMetadata = p.metadataHex;
+
+    const prepared  = await state.client.autofill(tx);
+    const tx_blob   = await signWithAddress(prepared, state.activeAccount);
+    const resp      = await state.client.submitAndWait(tx_blob);
+    const txResult  = resp.result?.meta?.TransactionResult;
+
+    if (txResult !== 'tesSUCCESS') {
+      throw new Error(txResult ?? 'Unknown error');
+    }
+
+    const issuanceId = resp.result.meta?.mpt_issuance_id ?? '(ID unavailable)';
+    const alertEl    = $('create-mpt-review-error');
+    alertEl.textContent = `MPT created: ${issuanceId}`;
+    alertEl.className   = 'alert alert-success';
+    alertEl.classList.remove('hidden');
+
+    setTimeout(() => {
+      alertEl.className = 'alert alert-error hidden';
+      showView('wallet');
+      loadMptBalances();
+    }, 2000);
+  } catch (err) {
+    showAlert('create-mpt-review-error', `Failed: ${err.message || 'Unknown error'}`);
+    btn.disabled    = false;
+    btn.textContent = 'Create MPT';
+  }
+}
+
 async function fetchAndPopulateMpts() {
   $('mpt-error').classList.add('hidden');
 
@@ -8008,6 +8090,8 @@ $('create-mpt-meta-structured-btn').addEventListener('click', () => switchMptMet
 $('create-mpt-meta-raw-btn').addEventListener('click', () => switchMptMetaMode('raw'));
 $('create-mpt-add-uri-btn').addEventListener('click', addMptUri);
 $('create-mpt-review-btn').addEventListener('click', openCreateMptReview);
+$('back-from-create-mpt-review-btn').addEventListener('click', () => showView('create-mpt'));
+$('create-mpt-confirm-btn').addEventListener('click', confirmCreateMpt);
 
 // ─────────────────────────────────────────────
 // EVENT LISTENERS — Vault deposit (onboarding)
