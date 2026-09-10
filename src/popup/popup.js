@@ -4272,7 +4272,8 @@ function openCreateMptView() {
   $('create-mpt-additional-info').value    = '';
   $('create-mpt-meta-hex').value           = '';
   hideAlert('create-mpt-error');
-  // Reset metadata mode to structured
+  // Reset state vars
+  _createMptPending  = null;
   _createMptMetaMode = 'structured';
   $('create-mpt-meta-structured').classList.remove('hidden');
   $('create-mpt-meta-raw').classList.add('hidden');
