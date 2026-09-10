@@ -4415,9 +4415,28 @@ function openCreateMptReview() {
     return;
   }
 
+  // Structured metadata field validation
+  if (_createMptMetaMode === 'structured') {
+    const ticker = $('create-mpt-ticker').value.trim();
+    if (ticker && !/^[A-Z0-9]{1,6}$/.test(ticker.toUpperCase())) {
+      showAlert('create-mpt-error', 'Ticker must be 1–6 characters, letters and digits only (A-Z 0-9).');
+      return;
+    }
+    if ($('create-mpt-asset-class').value === 'rwa' && !$('create-mpt-asset-subclass').value) {
+      showAlert('create-mpt-error', 'Asset Subclass is required when Asset Class is "rwa".');
+      return;
+    }
+  }
+
   // Metadata
   const metadataHex = buildMptMetadataHex();
   if (metadataHex === null) return; // error already shown in buildMptMetadataHex
+  if (metadataHex && _createMptMetaMode === 'raw') {
+    if (metadataHex.length % 2 !== 0 || !/^[0-9A-Fa-f]+$/.test(metadataHex)) {
+      showAlert('create-mpt-error', 'Metadata hex must be a valid even-length hexadecimal string.');
+      return;
+    }
+  }
   if (metadataHex && metadataHex.length / 2 > 1024) {
     showAlert('create-mpt-error', 'Metadata exceeds 1024 bytes.');
     return;
@@ -4513,7 +4532,7 @@ async function confirmCreateMpt() {
       loadMptBalances();
     }, 2000);
   } catch (err) {
-    showAlert('create-mpt-review-error', `Failed: ${err.message || 'Unknown error'}`);
+    showAlert('create-mpt-review-error', `Failed: ${friendlyError(err)}`);
     btn.disabled    = false;
     btn.textContent = 'Create MPT';
   }
@@ -8054,14 +8073,21 @@ $('trust-review-btn').addEventListener('click', reviewTrustSet);
 function openMptAddDropdown() {
   $('mpt-add-dropdown').classList.remove('hidden');
   setTimeout(() => {
-    document.addEventListener('click', closeMptAddDropdown, { capture: true, once: true });
+    document.addEventListener('click', closeMptAddDropdown, { once: true });
   }, 0);
 }
 function closeMptAddDropdown() {
   $('mpt-add-dropdown').classList.add('hidden');
 }
 
-$('add-mpt-btn').addEventListener('click', e => { e.stopPropagation(); openMptAddDropdown(); });
+$('add-mpt-btn').addEventListener('click', e => {
+  e.stopPropagation();
+  if ($('mpt-add-dropdown').classList.contains('hidden')) {
+    openMptAddDropdown();
+  } else {
+    closeMptAddDropdown();
+  }
+});
 $('mpt-dropdown-add').addEventListener('click', () => { closeMptAddDropdown(); openAuthMpt(); });
 $('mpt-dropdown-create').addEventListener('click', () => { closeMptAddDropdown(); openCreateMptView(); });
 
