@@ -4486,10 +4486,50 @@ function openCreateMptReviewView() {
     $('create-mpt-review-meta').textContent = 'None';
   }
 
+  // Build the pre-autofill TX for display
+  const displayTx = { TransactionType: 'MPTokenIssuanceCreate', Account: state.activeAccount };
+  if (p.assetScale !== 0)    displayTx.AssetScale      = p.assetScale;
+  if (p.maximumAmount)        displayTx.MaximumAmount   = p.maximumAmount;
+  if (p.transferFee !== null) displayTx.TransferFee     = p.transferFee;
+  if (p.flags !== 0)          displayTx.Flags           = p.flags;
+  if (p.metadataHex)          displayTx.MPTokenMetadata = p.metadataHex;
+
+  $('create-mpt-review-raw-json').textContent = JSON.stringify(displayTx, null, 2);
+  $('create-mpt-review-json-details').removeAttribute('open');
+  $('create-mpt-review-network-fee').textContent = '…';
+
   hideAlert('create-mpt-review-error');
   $('create-mpt-confirm-btn').disabled    = false;
   $('create-mpt-confirm-btn').textContent = 'Create MPT';
   showView('create-mpt-review');
+
+  fetchCreateMptFee(displayTx).catch(() => {
+    $('create-mpt-review-network-fee').textContent = '—';
+  });
+}
+
+async function fetchCreateMptFee(tx) {
+  if (!state.client?.isConnected()) {
+    $('create-mpt-review-network-fee').textContent = '—';
+    return;
+  }
+  try {
+    const copy = { ...tx };
+    delete copy.Fee;
+    const filled = await state.client.autofill(copy);
+    const drops = parseInt(filled.Fee ?? '12', 10);
+    const xrp = (drops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+    $('create-mpt-review-network-fee').textContent = `${xrp} XRP (${drops} drops)`;
+  } catch {
+    try {
+      const resp = await state.client.request({ command: 'fee' });
+      const drops = parseInt(resp.result.drops.open_ledger_fee ?? '12', 10);
+      const xrp = (drops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+      $('create-mpt-review-network-fee').textContent = `${xrp} XRP (${drops} drops)`;
+    } catch {
+      $('create-mpt-review-network-fee').textContent = '—';
+    }
+  }
 }
 
 async function confirmCreateMpt() {
@@ -8117,6 +8157,9 @@ $('create-mpt-meta-raw-btn').addEventListener('click', () => switchMptMetaMode('
 $('create-mpt-add-uri-btn').addEventListener('click', addMptUri);
 $('create-mpt-review-btn').addEventListener('click', openCreateMptReview);
 $('back-from-create-mpt-review-btn').addEventListener('click', () => showView('create-mpt'));
+$('create-mpt-review-copy-json-btn').addEventListener('click', () => {
+  navigator.clipboard.writeText($('create-mpt-review-raw-json').textContent).catch(() => {});
+});
 $('create-mpt-confirm-btn').addEventListener('click', confirmCreateMpt);
 
 // ─────────────────────────────────────────────
