@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# WARNING: Running this script will OVERWRITE the locally-patched WASM in
+# vendor/mpt-crypto/wasm/ with the upstream build from xrpl.js main, which
+# does NOT include Baby-Step Giant-Step (BSGS) decryption.
+#
+# The vendored WASM currently carries a local patch that adds _mpt_bsgs_init
+# and _mpt_decrypt_amount_bsgs — built from XRPLF/mpt-crypto@main (which
+# includes PR #130: BSGS DLP solver) with a custom bsgs_wasm.c wrapper.
+# This was compiled locally using Emscripten 6.0.8 because the upstream
+# xrpl.js JS layer has not yet wired up the BSGS C functions.
+#
+# Once xrpl.js exposes decryptAmountBsgs natively, this script can be run
+# again to sync from upstream. Until then, do NOT run this script or you
+# will lose BSGS support and revert to the O(N) linear decryptor.
 set -euo pipefail
 
 REPO_URL="https://github.com/XRPLF/xrpl.js.git"

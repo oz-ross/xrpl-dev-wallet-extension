@@ -3174,8 +3174,10 @@ async function renderMptBalances(objects, issuanceMap = new Map(), issuances = [
     if (ctState === 'C') {
       const privKeyHex = ctWalletKey.privKey;
       const keyMatches = holderEncKey === ctWalletKey.pubKey;
-      // Use issuance's confidential outstanding as the tight search bound (linear cost).
-      // Fall back to 10^7 raw units (~30s worst case) for dev-wallet amounts if absent.
+
+      // Use confidentialOutstandingAmount as a tight upper bound for the linear
+      // search — for devnet amounts this is effectively instant. Falls back to
+      // 10^7 if the issuance field is absent.
       const RANGE_HIGH = info.confidentialOutstandingAmount
         ? BigInt(info.confidentialOutstandingAmount)
         : BigInt(10 ** 7);

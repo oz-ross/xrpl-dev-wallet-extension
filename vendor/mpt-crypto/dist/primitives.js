@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateBlindingFactor = generateBlindingFactor;
 exports.encryptAmount = encryptAmount;
 exports.decryptAmount = decryptAmount;
+exports.decryptAmountBsgs = decryptAmountBsgs;
 exports.getPedersenCommitment = getPedersenCommitment;
 const constants_1 = require("./constants");
 const hex_1 = require("./hex");
@@ -83,6 +84,45 @@ async function decryptAmount(ciphertext, privateKey, rangeHigh) {
         const outPtr = marshaller.alloc(U64_BYTES);
         if (mod._mpt_decrypt_amount(ctPtr, privPtr, outPtr, DECRYPT_RANGE_LOW, rangeHigh) !== 0) {
             throw new Error('mpt_decrypt_amount failed');
+        }
+        return marshaller.readU64(outPtr);
+    });
+}
+// Tracks whether the BSGS baby-step table has been built in the current WASM instance.
+// The table persists for the lifetime of the loaded module (~22 MB, built once per popup session).
+let _bsgsReady = false;
+/**
+ * Decrypt an ElGamal ciphertext using Baby-Step Giant-Step (BSGS).
+ *
+ * Covers amounts up to 2^40 (~1 trillion) in O(sqrt(N)) time, making it
+ * practical for large balances where the linear solver would be too slow.
+ *
+ * On the first call, this builds the BSGS baby-step table (~22 MB, a few
+ * seconds). Subsequent calls within the same popup session are fast.
+ * There is no disk cache in the WASM environment, so the table is rebuilt
+ * each time the extension popup opens.
+ *
+ * @param ciphertext - The 66-byte hex ciphertext (C1 || C2).
+ * @param privateKey - The 32-byte hex ElGamal private key.
+ * @returns The decrypted integer amount.
+ * @throws If inputs are malformed, BSGS init fails, or the amount is out of range.
+ */
+async function decryptAmountBsgs(ciphertext, privateKey) {
+    const ct = (0, hex_1.hexToBytes)(ciphertext, 'ciphertext', constants_1.ELGAMAL_TOTAL_SIZE);
+    const priv = (0, hex_1.hexToBytes)(privateKey, 'privateKey', constants_1.PRIVKEY_SIZE);
+    return (0, runtime_1.withModule)((mod, marshaller) => {
+        if (!_bsgsReady) {
+            if (mod._mpt_bsgs_init() !== 1) {
+                throw new Error('mpt_bsgs_init failed — BSGS table could not be built');
+            }
+            _bsgsReady = true;
+        }
+        const ctPtr = marshaller.allocBytes(ct);
+        const privPtr = marshaller.allocBytes(priv);
+        priv.fill(0);
+        const outPtr = marshaller.alloc(U64_BYTES);
+        if (mod._mpt_decrypt_amount_bsgs(ctPtr, privPtr, outPtr) !== 1) {
+            throw new Error('mpt_decrypt_amount_bsgs failed — amount may be out of range (>2^40)');
         }
         return marshaller.readU64(outPtr);
     });

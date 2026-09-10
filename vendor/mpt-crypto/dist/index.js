@@ -10,7 +10,7 @@
  * confidential operation is actually invoked.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getConfidentialSendProof = exports.getConvertBackProof = exports.getClawbackProof = exports.getConvertProof = exports.getClawbackContextHash = exports.getSendContextHash = exports.getConvertBackContextHash = exports.getConvertContextHash = exports.subtractCiphertexts = exports.addCiphertexts = exports.getPedersenCommitment = exports.decryptAmount = exports.encryptAmount = exports.generateBlindingFactor = exports.loadWasmModule = exports.hexToBytes = exports.bytesToHex = exports.SEND_PROOF_SIZE = exports.CONVERT_BACK_PROOF_SIZE = exports.CLAWBACK_PROOF_SIZE = exports.CONVERT_PROOF_SIZE = exports.ISSUANCE_ID_SIZE = exports.ACCOUNT_ID_SIZE = exports.CONTEXT_HASH_SIZE = exports.PEDERSEN_COMMIT_SIZE = exports.ELGAMAL_TOTAL_SIZE = exports.BLINDING_FACTOR_SIZE = exports.PRIVKEY_SIZE = exports.PUBKEY_SIZE = void 0;
+exports.getConfidentialSendProof = exports.getConvertBackProof = exports.getClawbackProof = exports.getConvertProof = exports.getClawbackContextHash = exports.getSendContextHash = exports.getConvertBackContextHash = exports.getConvertContextHash = exports.subtractCiphertexts = exports.addCiphertexts = exports.getPedersenCommitment = exports.decryptAmountBsgs = exports.decryptAmount = exports.encryptAmount = exports.generateBlindingFactor = exports.loadWasmModule = exports.hexToBytes = exports.bytesToHex = exports.SEND_PROOF_SIZE = exports.CONVERT_BACK_PROOF_SIZE = exports.CLAWBACK_PROOF_SIZE = exports.CONVERT_PROOF_SIZE = exports.ISSUANCE_ID_SIZE = exports.ACCOUNT_ID_SIZE = exports.CONTEXT_HASH_SIZE = exports.PEDERSEN_COMMIT_SIZE = exports.ELGAMAL_TOTAL_SIZE = exports.BLINDING_FACTOR_SIZE = exports.PRIVKEY_SIZE = exports.PUBKEY_SIZE = void 0;
 var constants_1 = require("./constants");
 Object.defineProperty(exports, "PUBKEY_SIZE", { enumerable: true, get: function () { return constants_1.PUBKEY_SIZE; } });
 Object.defineProperty(exports, "PRIVKEY_SIZE", { enumerable: true, get: function () { return constants_1.PRIVKEY_SIZE; } });
@@ -33,6 +33,7 @@ var primitives_1 = require("./primitives");
 Object.defineProperty(exports, "generateBlindingFactor", { enumerable: true, get: function () { return primitives_1.generateBlindingFactor; } });
 Object.defineProperty(exports, "encryptAmount", { enumerable: true, get: function () { return primitives_1.encryptAmount; } });
 Object.defineProperty(exports, "decryptAmount", { enumerable: true, get: function () { return primitives_1.decryptAmount; } });
+Object.defineProperty(exports, "decryptAmountBsgs", { enumerable: true, get: function () { return primitives_1.decryptAmountBsgs; } });
 Object.defineProperty(exports, "getPedersenCommitment", { enumerable: true, get: function () { return primitives_1.getPedersenCommitment; } });
 var homomorphic_1 = require("./homomorphic");
 Object.defineProperty(exports, "addCiphertexts", { enumerable: true, get: function () { return homomorphic_1.addCiphertexts; } });
