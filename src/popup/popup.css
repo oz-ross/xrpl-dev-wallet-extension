@@ -2953,6 +2953,12 @@ details[open] .review-json-summary::before {
 }
 
 /* ── Create MPT form ────────────────────────── */
+#view-create-mpt .label-optional {
+  display: block;
+  font-size: 9.5px;
+  margin-top: 1px;
+}
+
 .create-mpt-meta-toggle {
   display: flex;
   gap: 4px;
