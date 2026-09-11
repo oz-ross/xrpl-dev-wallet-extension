@@ -383,7 +383,10 @@ function resolveAddrDisplay(addr) {
 
 function formatAmount(amount) {
   if (typeof amount === 'string') return `${dropsToXrp(amount)} XRP`;
-  if (amount && typeof amount === 'object') return `${amount.value} ${formatCurrencyCode(amount.currency)}`;
+  if (amount && typeof amount === 'object') {
+    if (amount.mpt_issuance_id) return `${amount.value} units of MPT ${amount.mpt_issuance_id}`
+    return `${amount.value} ${formatCurrencyCode(amount.currency)}`
+  }
   return String(amount);
 }
 
@@ -1043,7 +1046,10 @@ async function signPreparedTx(prepared, signatureTarget = null) {
       const txForSigning = { ...prepared };
       delete txForSigning.TxnSignature;
       delete txForSigning[signatureTarget + 'Signature'];
-      TxnSignature = keypairsSign(encodeForSigning(txForSigning), state.wallet.privateKey).toUpperCase();
+      let messageHex = encodeForSigning(txForSigning);
+      // Lending Protocol v1.1 change - new transaction prefix for counterparty signing "CPT"
+      if(signatureTarget === "Counterparty") messageHex = messageHex.replace(/^535458/,"435054");
+      TxnSignature = keypairsSign(messageHex, state.wallet.privateKey).toUpperCase();
     }
 
     const tx_json = { ...prepared, [signatureTarget + 'Signature']: { SigningPubKey, TxnSignature } };
@@ -3447,6 +3453,14 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
     const issuer        = issuerFromMptIssuanceId(issuanceId);
     const issuerDisplay = issuer ? resolveAddrDisplay(issuer) : (issuanceId.slice(8, 16) + '…');
     const underlying    = vaultInfo?.Asset ? formatPoolAsset(vaultInfo.Asset) : '—';
+
+    const vaultKindNum = vaultInfo?.VaultKind ?? 0;
+    const vaultKind = vaultKindNum === 1 ? 'Closed-ended' : 'Open-ended';
+    const rippleToLocal = (ts) => ts != null
+      ? new Date((ts + XRPL_EPOCH_OFFSET) * 1000).toLocaleString()
+      : null;
+    const subEndDate  = rippleToLocal(vaultInfo?.SubscriptionDate);
+    const windDownDate = rippleToLocal(vaultInfo?.RedemptionDate);
     const fmtAmt        = (v) => (parseFloat(v ?? 0) * holderShare).toLocaleString(undefined, { maximumFractionDigits: 6 });
     const fmtPoolTotal  = (v) => parseFloat(v ?? 0).toLocaleString(undefined, { maximumFractionDigits: 6 });
     const available     = vaultInfo?.AssetsAvailable != null ? fmtAmt(vaultInfo.AssetsAvailable) : null;
@@ -3524,6 +3538,18 @@ function renderVaultBalances(objects, issuanceMap = new Map()) {
             <span class="vault-domain-id" title="${esc(domId)}">${esc(shortDom)}</span>
           </div>`;
         })() : ''}
+        <div class="vault-domain-row">
+          <span class="vault-domain-label">Kind</span>
+          <span class="vault-domain-id">${esc(vaultKind)}</span>
+        </div>
+        ${subEndDate != null ? `<div class="vault-domain-row">
+          <span class="vault-domain-label">Sub End Date</span>
+          <span class="vault-domain-id">${esc(subEndDate)}</span>
+        </div>` : ''}
+        ${windDownDate != null ? `<div class="vault-domain-row">
+          <span class="vault-domain-label">Wind Down Date</span>
+          <span class="vault-domain-id">${esc(windDownDate)}</span>
+        </div>` : ''}
       </div>`;
   }).join('');
 }
