@@ -386,6 +386,96 @@
     </div>
   </div>
 
+  <!-- ===== CONFIDENTIAL TRANSFERS — KEY MANAGEMENT ===== -->
+  <div id="view-confidential-key" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-ct-key-btn" class="btn-back">‹</button>
+      <h2>Confidential Transfers</h2>
+    </div>
+    <div class="remove-acct-card">
+      <div class="remove-acct-name" id="ct-key-acct-name"></div>
+      <div class="remove-acct-addr" id="ct-key-acct-addr"></div>
+    </div>
+
+    <!-- State A: no key generated yet -->
+    <div id="ct-no-key-section">
+      <p class="form-hint" style="padding:14px 14px 0;margin:0">
+        Generate an ElGamal key pair to enable confidential MPT transfers for this account.
+      </p>
+      <div style="padding:14px">
+        <button id="ct-generate-btn" class="btn btn-primary btn-full">Generate Key</button>
+      </div>
+    </div>
+
+    <!-- State B: key exists -->
+    <div id="ct-key-exists-section" class="hidden" style="padding:0 14px">
+      <div class="export-key-label" style="margin-top:14px">Public Key</div>
+      <div class="export-key-box">
+        <span id="ct-pubkey-value" class="export-key-value"></span>
+        <div class="export-key-actions">
+          <button id="ct-pubkey-copy-btn" class="btn-icon" title="Copy">⧉</button>
+        </div>
+      </div>
+
+      <!-- Reveal controls (hidden after successful reveal) -->
+      <div id="ct-reveal-controls">
+        <div class="export-key-label" style="margin-top:12px">Private Key</div>
+        <div class="export-key-box">
+          <span class="export-key-value">••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••</span>
+        </div>
+        <div class="alert alert-warn" style="margin-top:14px">
+          Your private key gives full access to your confidential balances. Never share it with anyone.
+        </div>
+        <div class="form-group" style="margin-top:14px">
+          <label for="ct-reveal-password">Confirm Password</label>
+          <div class="input-row">
+            <input type="password" id="ct-reveal-password" placeholder="Your wallet password" autocomplete="current-password" />
+            <button id="toggle-ct-reveal-password-btn" class="btn-icon" title="Show/hide">👁</button>
+          </div>
+        </div>
+        <div id="ct-reveal-error" class="alert alert-error hidden"></div>
+        <button id="ct-reveal-confirm-btn" class="btn btn-outline btn-full" style="margin-top:8px">Reveal Private Key</button>
+      </div>
+
+      <!-- Revealed private key (hidden until password confirmed) -->
+      <div id="ct-privkey-revealed" class="hidden" style="margin-top:12px">
+        <div class="export-key-label">Private Key</div>
+        <div class="export-key-box">
+          <span id="ct-privkey-value" class="export-key-value"></span>
+          <div class="export-key-actions">
+            <button id="ct-privkey-copy-btn" class="btn-icon" title="Copy">⧉</button>
+          </div>
+        </div>
+        <div id="ct-hide-timer" class="export-key-timer"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== CONFIDENTIAL TRANSFERS — INITIAL CONVERSION ===== -->
+  <div id="view-confidential-convert" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-ct-convert-btn" class="btn-back">‹</button>
+      <span id="ct-convert-view-title">Add Confidentiality</span>
+    </div>
+    <div class="remove-acct-card">
+      <div class="remove-acct-name" id="ct-convert-token-name"></div>
+      <div class="remove-acct-addr" id="ct-convert-issuer"></div>
+    </div>
+    <div style="padding:0 14px">
+      <div class="form-group">
+        <label>Public balance</label>
+        <div id="ct-convert-public-balance"></div>
+      </div>
+      <div class="form-group">
+        <label for="ct-convert-amount">Initial conversion amount</label>
+        <input type="number" id="ct-convert-amount" value="0" min="0" step="any" />
+        <p class="form-hint">Enter 0 to opt-in without converting any balance.</p>
+      </div>
+      <div id="ct-convert-error" class="alert alert-error hidden"></div>
+      <button id="ct-convert-btn" class="btn btn-primary btn-full">Convert</button>
+    </div>
+  </div>
+
   <!-- ===== RAW TRANSACTION BUILDER ===== -->
   <div id="view-raw-tx" class="view hidden">
     <div class="view-header">
@@ -540,6 +630,7 @@
           <button id="qr-btn" class="btn-icon" title="Show QR code">⊞</button>
           <button id="copy-address-btn" class="btn-icon" title="Copy address">⧉</button>
           <a id="account-explorer-link" class="btn-icon" href="#" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
+          <button id="ct-key-btn" class="btn-icon hidden" title="Confidential transfers">⛨</button>
         </div>
       </div>
 
@@ -578,7 +669,14 @@
     <div id="mpt-balance-card" class="iou-balance-card">
       <div class="iou-balance-header">
         <span>MPT Balances</span>
-        <button id="add-mpt-btn" class="btn-icon btn-header-action" title="Add MPT">＋</button>
+        <span id="mpt-decrypt-indicator" class="mpt-decrypt-indicator hidden"><span class="mpt-decrypt-spinner"></span>Decrypting…</span>
+        <div class="mpt-add-wrapper">
+          <button id="add-mpt-btn" class="btn-icon btn-header-action" title="MPT actions">＋</button>
+          <div id="mpt-add-dropdown" class="mpt-add-dropdown hidden">
+            <button class="mpt-add-dropdown-item" id="mpt-dropdown-add">Add MPT</button>
+            <button class="mpt-add-dropdown-item" id="mpt-dropdown-create">Create MPT</button>
+          </div>
+        </div>
       </div>
       <div id="mpt-balance-list"></div>
     </div>
@@ -837,6 +935,13 @@
 
     <div class="settings-section-header">Advanced</div>
     <div class="settings-list">
+      <div class="settings-item settings-toggle-item">
+        <span class="settings-item-label">Confidential Transfers</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="dev-ct-enabled" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
       <div class="settings-item settings-toggle-item">
         <span class="settings-item-label">Multisign</span>
         <label class="toggle-switch">
@@ -1384,6 +1489,231 @@
     <button id="mpt-review-btn" class="btn btn-primary btn-full" style="margin-top:6px">Review</button>
   </div>
 
+  <!-- ===== CREATE MPT ===== -->
+  <div id="view-create-mpt" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-create-mpt-btn" class="btn-back">‹</button>
+      <h2>Create MPT</h2>
+    </div>
+
+    <div class="form-group">
+      <label for="create-mpt-asset-scale">Asset Scale <span class="label-optional">(0–255, default 0 = integer token)</span></label>
+      <input type="number" id="create-mpt-asset-scale" min="0" max="255" value="0" />
+    </div>
+
+    <div class="form-group">
+      <label for="create-mpt-max-amount">Maximum Amount <span class="label-optional">(optional — leave blank for uncapped)</span></label>
+      <input type="text" id="create-mpt-max-amount" placeholder="e.g. 1000000000" autocomplete="off" spellcheck="false" />
+    </div>
+
+    <div class="form-group">
+      <label for="create-mpt-transfer-fee">Transfer Fee <span class="label-optional">(optional — 0–50000 thousandths of 1%, requires Can Transfer)</span></label>
+      <input type="number" id="create-mpt-transfer-fee" min="0" max="50000" placeholder="e.g. 1000 = 1%" autocomplete="off" />
+    </div>
+
+    <div class="form-group">
+      <label>Flags <span class="label-optional">(immutable after creation)</span></label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-transfer" />
+        <span>Can Transfer (enable peer-to-peer transfers)</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-clawback" />
+        <span>Can Clawback (issuer can reclaim tokens)</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-require-auth" />
+        <span>Require Auth (issuer must authorize each holder)</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-lock" />
+        <span>Can Lock (issuer can freeze individual balances)</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-escrow" />
+        <span>Can Escrow (allow in escrow transactions)</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-trade" />
+        <span>Can Trade (allow AMM/DEX trading)</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-confidential" />
+        <span>Can Hold Confidential Balances (enable Confidential Transfers)</span>
+      </label>
+    </div>
+
+    <div class="form-group">
+      <label>Metadata <span class="label-optional">(optional)</span></label>
+      <div class="create-mpt-meta-toggle">
+        <button id="create-mpt-meta-structured-btn" class="create-mpt-meta-toggle-btn active">Structured</button>
+        <button id="create-mpt-meta-raw-btn" class="create-mpt-meta-toggle-btn">Raw Hex</button>
+      </div>
+
+      <div id="create-mpt-meta-structured">
+        <div class="form-group">
+          <label for="create-mpt-ticker">Ticker <span class="label-optional">(A-Z 0-9, max 6 chars)</span></label>
+          <input type="text" id="create-mpt-ticker" maxlength="6" placeholder="e.g. MYTKN" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-name">Name <span class="label-optional">(optional)</span></label>
+          <input type="text" id="create-mpt-name" placeholder="e.g. My Token" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-issuer-name">Issuer Name <span class="label-optional">(optional)</span></label>
+          <input type="text" id="create-mpt-issuer-name" placeholder="e.g. Acme Corp" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-asset-class">Asset Class <span class="label-optional">(optional)</span></label>
+          <select id="create-mpt-asset-class">
+            <option value="">— select —</option>
+            <option value="rwa">rwa</option>
+            <option value="memes">memes</option>
+            <option value="wrapped">wrapped</option>
+            <option value="gaming">gaming</option>
+            <option value="defi">defi</option>
+            <option value="other">other</option>
+          </select>
+        </div>
+        <div id="create-mpt-asset-subclass-row" class="form-group hidden">
+          <label for="create-mpt-asset-subclass">Asset Subclass <span class="label-optional">(required for rwa)</span></label>
+          <select id="create-mpt-asset-subclass">
+            <option value="">— select —</option>
+            <option value="stablecoin">stablecoin</option>
+            <option value="commodity">commodity</option>
+            <option value="real_estate">real_estate</option>
+            <option value="private_credit">private_credit</option>
+            <option value="equity">equity</option>
+            <option value="treasury">treasury</option>
+            <option value="other">other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-icon">Icon URL <span class="label-optional">(optional)</span></label>
+          <input type="text" id="create-mpt-icon" placeholder="https://example.com/icon.png" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-desc">Description <span class="label-optional">(optional)</span></label>
+          <textarea id="create-mpt-desc" placeholder="Token description…"></textarea>
+        </div>
+        <div class="form-group">
+          <label>URIs <span class="label-optional">(optional — website, whitepaper, etc.)</span></label>
+          <div id="create-mpt-uris-list"></div>
+          <button id="create-mpt-add-uri-btn" class="btn btn-outline btn-full" style="margin-top:4px">+ Add URI</button>
+        </div>
+        <div class="form-group">
+          <label for="create-mpt-additional-info">Additional Info <span class="label-optional">(optional — JSON object or plain string)</span></label>
+          <textarea id="create-mpt-additional-info" placeholder='{"key": "value"}'></textarea>
+        </div>
+      </div>
+
+      <div id="create-mpt-meta-raw" class="hidden">
+        <div class="form-group" style="margin-top:8px">
+          <label for="create-mpt-meta-hex">Metadata Hex</label>
+          <textarea id="create-mpt-meta-hex" placeholder="Uppercase hex string…" style="font-family: monospace; min-height: 80px"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div id="create-mpt-error" class="alert alert-error hidden"></div>
+    <button id="create-mpt-review-btn" class="btn btn-primary btn-full" style="margin-top:8px">Review →</button>
+  </div>
+
+  <!-- ===== CREATE MPT REVIEW ===== -->
+  <div id="view-create-mpt-review" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-create-mpt-review-btn" class="btn-back">‹</button>
+      <h2>Review: Create MPT</h2>
+    </div>
+
+    <div class="detail-card">
+      <div class="detail-row">
+        <span class="detail-label">Token</span>
+        <span id="create-mpt-review-name" class="detail-value"></span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Scale</span>
+        <span id="create-mpt-review-scale" class="detail-value"></span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Max</span>
+        <span id="create-mpt-review-max" class="detail-value"></span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Fee</span>
+        <span id="create-mpt-review-fee" class="detail-value"></span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Flags</span>
+        <span id="create-mpt-review-flags" class="detail-value"></span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Metadata</span>
+        <span id="create-mpt-review-meta" class="detail-value detail-break"></span>
+      </div>
+    </div>
+
+    <div class="detail-card" style="margin-top:6px">
+      <div class="detail-row">
+        <span class="detail-label">Network Fee</span>
+        <span id="create-mpt-review-network-fee" class="detail-value">—</span>
+      </div>
+    </div>
+
+    <details id="create-mpt-review-json-details" class="review-json-panel">
+      <summary class="review-json-summary">Raw JSON</summary>
+      <div class="review-json-body">
+        <pre id="create-mpt-review-raw-json"></pre>
+        <button id="create-mpt-review-copy-json-btn" class="btn btn-ghost review-json-copy">Copy</button>
+      </div>
+    </details>
+
+    <div id="create-mpt-review-error" class="alert alert-error hidden"></div>
+    <button id="create-mpt-confirm-btn" class="btn btn-primary btn-full" style="margin-top:8px">Create MPT</button>
+  </div>
+
+  <!-- ===== ENABLE CONFIDENTIAL TRANSFERS ===== -->
+  <div id="view-enable-ct" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-enable-ct-btn" class="btn-back">‹</button>
+      <h2>Enable Confidential Transfers</h2>
+    </div>
+
+    <div class="detail-card">
+      <div class="detail-row">
+        <span class="detail-label">Issuance</span>
+        <span id="enable-ct-issuance-id" class="detail-value detail-addr detail-break"></span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Issuer Key</span>
+        <span id="enable-ct-issuer-key" class="detail-value detail-addr detail-break"></span>
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-top:10px">
+      <label for="enable-ct-auditor-key">Auditor Key <span class="label-optional">(optional — 66 hex chars)</span></label>
+      <input type="text" id="enable-ct-auditor-key" placeholder="03…" maxlength="66" autocomplete="off" spellcheck="false" />
+    </div>
+
+    <div class="detail-card" style="margin-top:6px">
+      <div class="detail-row">
+        <span class="detail-label">Network Fee</span>
+        <span id="enable-ct-network-fee" class="detail-value">—</span>
+      </div>
+    </div>
+
+    <details id="enable-ct-json-details" class="review-json-panel">
+      <summary class="review-json-summary">Raw JSON</summary>
+      <div class="review-json-body">
+        <pre id="enable-ct-raw-json"></pre>
+        <button id="enable-ct-copy-json-btn" class="btn btn-ghost review-json-copy">Copy</button>
+      </div>
+    </details>
+
+    <div id="enable-ct-error" class="alert alert-error hidden"></div>
+    <button id="enable-ct-confirm-btn" class="btn btn-primary btn-full" style="margin-top:8px">Enable CT</button>
+  </div>
+
   <!-- ===== VAULT DEPOSIT ===== -->
   <div id="view-vault-deposit" class="view hidden">
     <div class="view-header">
@@ -1709,6 +2039,83 @@
   </div>
 </div>
 
+<!-- ===== CONFIDENTIAL TRANSFERS — MERGE INBOX ===== -->
+<div id="view-ct-merge-inbox" class="view hidden">
+  <div class="view-header">
+    <button id="back-from-ct-merge-btn" class="btn-back">‹</button>
+    <span>Merge Inbox</span>
+  </div>
+  <div class="remove-acct-card">
+    <div class="remove-acct-name" id="ct-merge-token-name"></div>
+    <div class="remove-acct-addr" id="ct-merge-issuer"></div>
+  </div>
+  <div style="padding:0 14px">
+    <div class="form-group">
+      <label>Confidential inbox balance</label>
+      <div id="ct-merge-inbox-balance"></div>
+    </div>
+    <p class="form-hint">Merges your inbox balance into your spendable balance.</p>
+    <div id="ct-merge-error" class="alert alert-error hidden"></div>
+    <button id="ct-merge-btn" class="btn btn-primary btn-full">Review Merge</button>
+  </div>
+</div>
+
+<!-- ===== CONFIDENTIAL TRANSFERS — CONVERT BACK ===== -->
+<div id="view-ct-convert-back" class="view hidden">
+  <div class="view-header">
+    <button id="back-from-ct-convert-back-btn" class="btn-back">‹</button>
+    <span>Convert Back</span>
+  </div>
+  <div class="remove-acct-card">
+    <div class="remove-acct-name" id="ct-convert-back-token-name"></div>
+    <div class="remove-acct-addr" id="ct-convert-back-issuer"></div>
+  </div>
+  <div style="padding:0 14px">
+    <div class="form-group">
+      <label>Spendable balance</label>
+      <div id="ct-convert-back-spendable"></div>
+    </div>
+    <div class="form-group">
+      <label for="ct-convert-back-amount">Amount to convert back to public</label>
+      <input type="number" id="ct-convert-back-amount" value="0" min="0" step="any" />
+    </div>
+    <div id="ct-convert-back-error" class="alert alert-error hidden"></div>
+    <button id="ct-convert-back-btn" class="btn btn-primary btn-full">Review Convert Back</button>
+  </div>
+</div>
+
+<!-- ===== CONFIDENTIAL TRANSFERS — SEND CONFIDENTIAL ===== -->
+<div id="view-ct-send-confidential" class="view hidden">
+  <div class="view-header">
+    <button id="back-from-ct-send-conf-btn" class="btn-back">‹</button>
+    <span>Send Confidential</span>
+  </div>
+  <div class="remove-acct-card">
+    <div class="remove-acct-name" id="ct-send-conf-token-name"></div>
+    <div class="remove-acct-addr" id="ct-send-conf-issuer"></div>
+  </div>
+  <div style="padding:0 14px">
+    <div class="form-group">
+      <label>Spendable balance</label>
+      <div id="ct-send-conf-spendable"></div>
+    </div>
+    <div class="form-group">
+      <label for="ct-send-conf-recipient">Destination</label>
+      <select id="ct-send-conf-recipient" class="input-field"></select>
+    </div>
+    <div id="ct-send-conf-manual-group" class="form-group hidden">
+      <label for="ct-send-conf-destination">Address</label>
+      <input type="text" id="ct-send-conf-destination" placeholder="rXXX…" autocomplete="off" />
+    </div>
+    <div class="form-group">
+      <label for="ct-send-conf-amount">Amount</label>
+      <input type="number" id="ct-send-conf-amount" value="0" min="0" step="any" />
+    </div>
+    <div id="ct-send-conf-error" class="alert alert-error hidden"></div>
+    <button id="ct-send-conf-btn" class="btn btn-primary btn-full">Review Send</button>
+  </div>
+</div>
+
 <!-- ===== MULTISIGN PICKER MODAL ===== -->
 <div id="ms-picker-modal" class="ms-picker-modal hidden">
   <div class="ms-picker-card">
@@ -1719,6 +2126,14 @@
     <input id="ms-picker-filter" class="input-field ms-picker-filter" type="text" placeholder="Filter by name or address…" />
     <div id="ms-picker-list" class="ms-picker-list"></div>
   </div>
+</div>
+
+<div id="ct-action-menu" class="ct-action-menu hidden" role="menu">
+  <button class="ct-action-item" data-action="send-public">Send Public</button>
+  <button class="ct-action-item" data-action="send-confidential">Send Confidential</button>
+  <button class="ct-action-item" data-action="convert">Convert</button>
+  <button class="ct-action-item" data-action="merge-inbox">Merge Inbox</button>
+  <button class="ct-action-item" data-action="convert-back">Convert Back</button>
 </div>
 
 </body>

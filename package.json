@@ -12,12 +12,14 @@
   "dependencies": {
     "@ledgerhq/hw-app-xrp": "^6.37.0",
     "@ledgerhq/hw-transport-webhid": "^6.35.0",
+    "@noble/curves": "^2.4.0",
     "@walletconnect/core": "^2.15.0",
     "@walletconnect/utils": "^2.15.0",
     "@walletconnect/web3wallet": "^1.15.0",
+    "@xrplf/mpt-crypto": "file:vendor/mpt-crypto",
     "bip39": "^3.1.0",
     "qrcode": "^1.5.4",
-    "xrpl": "^4.6.0"
+    "xrpl": "^5.1.0"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",

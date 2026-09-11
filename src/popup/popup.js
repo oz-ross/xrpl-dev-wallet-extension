@@ -1,5 +1,5 @@
 import './popup.css';
-import { Client, Wallet, dropsToXrp, xrpToDrops, encodeAccountID, decodeAccountID, decodeMPTokenMetadata, isValidClassicAddress } from 'xrpl';
+import { Client, Wallet, dropsToXrp, xrpToDrops, encodeAccountID, decodeAccountID, decodeMPTokenMetadata, encodeMPTokenMetadata, isValidClassicAddress, prepareConfidentialConvert, prepareConfidentialConvertBack, prepareConfidentialMergeInbox, prepareConfidentialSend } from 'xrpl';
 import xrplPkg from 'xrpl/package.json';
 import QRCode from 'qrcode';
 import { getSdkError } from '@walletconnect/utils';
@@ -9,6 +9,32 @@ import Xrp from '@ledgerhq/hw-app-xrp';
 import { encode, encodeForSigning, encodeForMultisigning, decode } from 'ripple-binary-codec';
 import { sign as keypairsSign, deriveAddress } from 'ripple-keypairs';
 import { createHash } from 'crypto';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+// BSGS decryption runs in a dedicated Web Worker so WASM never blocks the main thread.
+let _decryptWorker = null;
+const _decryptPending = new Map();
+let _decryptNextId = 0;
+function _getDecryptWorker() {
+  if (!_decryptWorker) {
+    _decryptWorker = new Worker(chrome.runtime.getURL('decrypt-worker.js'));
+    _decryptWorker.onmessage = ({ data: { id, result, error } }) => {
+      const cb = _decryptPending.get(id);
+      if (!cb) return;
+      _decryptPending.delete(id);
+      if (error !== undefined) cb.reject(new Error(error));
+      else cb.resolve(BigInt(result));
+    };
+    _decryptWorker.onerror = (e) => console.error('[decrypt-worker]', e);
+  }
+  return _decryptWorker;
+}
+function decryptAmountBsgs(ciphertext, privateKey) {
+  return new Promise((resolve, reject) => {
+    const id = _decryptNextId++;
+    _decryptPending.set(id, { resolve, reject });
+    _getDecryptWorker().postMessage({ id, ciphertext, privateKey });
+  });
+}
 
 // ─────────────────────────────────────────────
 // GLOBAL ERROR SUPPRESSION
@@ -163,6 +189,7 @@ const state = {
   // Multi-account
   keyrings: [],        // array of decrypted keyring objects
   activeAccount: null, // active r-address
+  elgamalKeys: {},    // { [rAddress]: { pubKey: hex, privKey: hex } } — populated from vault
 
   // Projects — groupings of accounts + per-project address books
   projects: [],          // [{ id, name, accounts: [addr, ...] }]
@@ -197,7 +224,7 @@ const state = {
   pendingLoanPay: null,
 
   // Developer settings persisted to chrome.storage.local
-  devSettings: { printTxJson: false, printWC: false, lockTimeoutSecs: 0, wideMode: false, iouDecimalPrecision: 6, multisignEnabled: false },
+  devSettings: { printTxJson: false, printWC: false, lockTimeoutSecs: 0, wideMode: false, iouDecimalPrecision: 6, multisignEnabled: false, confidentialTransfersEnabled: false },
 
   // Vaults fetched on the vault-deposit screen, keyed by VaultID
   fetchedVaults: new Map(),
@@ -523,7 +550,7 @@ async function hasVault() {
  * the raw password never has to be available.
  */
 async function saveVault(passwordOverride) {
-  const payload = { keyrings: state.keyrings, activeAccount: state.activeAccount };
+  const payload = { keyrings: state.keyrings, activeAccount: state.activeAccount, elgamalKeys: state.elgamalKeys };
 
   if (passwordOverride) {
     // Password change or initial vault creation: generate a new salt and derive a
@@ -559,6 +586,7 @@ async function loadAndDecryptVault(password) {
   const payload = await decryptVaultWithKey(key, vault); // throws DOMException on bad password
   state.keyrings      = payload.keyrings ?? [];
   state.activeAccount = payload.activeAccount ?? null;
+  state.elgamalKeys   = payload.elgamalKeys ?? {};
   _vaultKey        = key;
   _sessionPassword = password;
   await persistSession();
@@ -602,6 +630,7 @@ async function restoreFromSession() {
   const payload = await decryptVaultWithKey(key, vault);
   state.keyrings      = payload.keyrings ?? [];
   state.activeAccount = activeAccount;
+  state.elgamalKeys   = payload.elgamalKeys ?? {};
   _vaultKey = key;
   // _sessionPassword intentionally left null — the raw password is not available
   // in a key-restore session.  saveVault() uses _vaultKey for routine re-saves.
@@ -614,6 +643,7 @@ function lockWallet() {
   state.keyrings      = [];
   state.activeAccount = null;
   state.wallet        = null;
+  state.elgamalKeys   = {};
   state.client?.disconnect().catch(() => {});
   state.client = null;
   showView('unlock');
@@ -631,6 +661,7 @@ async function resetWallet() {
   state.keyrings      = [];
   state.activeAccount = null;
   state.wallet        = null;
+  state.elgamalKeys   = {};
   state.client?.disconnect().catch(() => {});
   state.client = null;
   showView('setup-password');
@@ -1140,6 +1171,7 @@ async function executeRemoveAccount() {
   }
   await saveProjects();
 
+  delete state.elgamalKeys[address];
   await saveVault();
   if (_vaultKey) await persistSession();
 
@@ -2002,6 +2034,8 @@ function updateWalletUI() {
   renderAccountDropdown(accounts, addr);
   $('multisign-nav-card').classList.toggle('hidden', !state.devSettings.multisignEnabled);
   if (state.devSettings.multisignEnabled) refreshMultisignSummary().catch(() => {});
+  $('ct-key-btn').classList.toggle('hidden',
+    !state.devSettings.confidentialTransfersEnabled || !!active?.isWatch);
 }
 
 function renderAccountDropdown(accounts, activeAddr) {
@@ -2362,9 +2396,12 @@ async function fetchMptIssuanceInfo(issuanceId) {
 
     const outstandingAmount = node.OutstandingAmount ?? '0';
     const domainId = node.DomainID ?? null;
-    return { ticker, assetScale, outstandingAmount, vaultInfo, domainId };
+    const issuerEncryptionKey = node.IssuerEncryptionKey ?? null;
+    const auditorEncryptionKey = node.AuditorEncryptionKey ?? null;
+    const confidentialOutstandingAmount = node.ConfidentialOutstandingAmount ?? null;
+    return { ticker, assetScale, outstandingAmount, vaultInfo, domainId, issuerEncryptionKey, auditorEncryptionKey, confidentialOutstandingAmount };
   } catch {
-    return { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null, domainId: null };
+    return { ticker: null, assetScale: 0, outstandingAmount: '0', vaultInfo: null, domainId: null, issuerEncryptionKey: null, auditorEncryptionKey: null, confidentialOutstandingAmount: null };
   }
 }
 
@@ -2412,14 +2449,14 @@ async function loadMptBalances() {
     const vaultObjects   = objects.filter((_, i) =>  infos[i]?.vaultInfo);
 
     const issuances = allObjects.filter(o => o.LedgerEntryType === 'MPTokenIssuance');
-    renderMptBalances(regularObjects, issuanceMap, issuances);
+    await renderMptBalances(regularObjects, issuanceMap, issuances);
     renderVaultBalances(vaultObjects, issuanceMap);
   } catch (err) {
     if (err.data?.error === 'actNotFound' || err.message?.includes('Account not found')) {
-      renderMptBalances([]);
+      await renderMptBalances([]);
       renderVaultBalances([]);
     } else {
-      renderMptBalances([], new Map());
+      await renderMptBalances([], new Map());
       renderVaultBalances([], new Map());
       console.error('[mpt balances]', err);
     }
@@ -3120,19 +3157,30 @@ function renderLoanItem(loan, asset, opts = {}) {
     </div>`;
 }
 
-function renderMptBalances(objects, issuanceMap = new Map(), issuances = []) {
+async function renderMptBalances(objects, issuanceMap = new Map(), issuances = []) {
   const listEl = $('mpt-balance-list');
+  const myGen  = ++_mptRenderGeneration;
   const held   = objects.filter(o => o.LedgerEntryType === 'MPToken');
 
   if (!held.length && !issuances.length) { listEl.innerHTML = ''; return; }
   const explorerMpt = getNetworkConfig().explorerMpt;
 
-  const heldHtml = held.map(obj => {
+  // Clear cached decrypt results when the active account changes.
+  if (_ctDecryptCacheAccount !== state.activeAccount) {
+    _ctDecryptCache.clear();
+    _ctDecryptCacheAccount = state.activeAccount;
+  }
+
+  const decryptTasks = [];
+  const heldHtml = [];
+  for (const obj of held) {
+    try {
     const issuanceId = obj.MPTokenIssuanceID ?? '';
-    const { ticker, assetScale } = issuanceMap.get(issuanceId) ?? { ticker: null, assetScale: 0 };
+    const info       = issuanceMap.get(issuanceId) ?? {};
+    const { ticker, assetScale } = info;
     const raw         = obj.MPTAmount ? parseInt(obj.MPTAmount, 10) : 0;
     const scaled      = assetScale > 0 ? raw / Math.pow(10, assetScale) : raw;
-    const amount      = scaled.toLocaleString(undefined, { maximumFractionDigits: assetScale });
+    const amount      = scaled.toLocaleString(undefined, { maximumFractionDigits: assetScale ?? 0 });
     const shortId     = issuanceId.length >= 12
       ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
       : issuanceId;
@@ -3140,24 +3188,106 @@ function renderMptBalances(objects, issuanceMap = new Map(), issuances = []) {
     const issuer        = issuerFromMptIssuanceId(issuanceId);
     const issuerDisplay = issuer ? resolveAddrDisplay(issuer) : (issuanceId.slice(8, 16) + '…');
     const href          = `${explorerMpt}${issuanceId}`;
-    return `
-      <div class="mpt-balance-item"
-           data-send-type="mpt"
-           data-mpt-id="${esc(issuanceId)}"
-           data-asset-scale="${assetScale}"
-           data-balance="${esc(amount)}"
-           data-display="${esc(displayName)}">
-        <div class="mpt-token-info">
-          <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
-          <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
-        </div>
-        <div class="mpt-balance-amount">${esc(amount)}</div>
-        <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
-      </div>`;
-  });
+
+    // CT state:
+    // A: no wallet ElGamal key → unchanged
+    // B: wallet key exists, issuance has IssuerEncryptionKey, but MPToken has no HolderEncryptionKey
+    // C: MPToken has HolderEncryptionKey (confidential balance exists)
+    const ctWalletKey  = state.elgamalKeys[state.activeAccount];
+    const holderEncKey = obj.HolderEncryptionKey ?? null;
+    const ctState = !ctWalletKey
+      ? 'A'
+      : holderEncKey
+        ? 'C'
+        : info.issuerEncryptionKey
+          ? 'B'
+          : 'A';
+
+    if (ctState === 'C') {
+      const keyMatches = holderEncKey === ctWalletKey.pubKey;
+      const scale   = info.assetScale ?? 0;
+      const divisor = scale > 0 ? 10 ** scale : 1;
+      const publicRaw = parseInt(obj.MPTAmount ?? '0', 10);
+
+      // Render immediately with placeholder; BSGS decrypt fires after innerHTML is set.
+      const subBalancesHtml = `
+        <div class="ct-sub-balances hidden">
+          <div class="ct-sub-row"><span>├ Public</span><span>${(publicRaw / divisor).toFixed(scale)}</span></div>
+          <div class="ct-sub-row ct-sub-spendable"><span>├ Confidential (spendable)</span><span>[encrypted]</span></div>
+          <div class="ct-sub-row ct-sub-inbox"><span>└ Confidential (inbox)</span><span>[encrypted]</span></div>
+        </div>`;
+
+      heldHtml.push(`
+        <div class="mpt-balance-item"
+             data-send-type="mpt"
+             data-ct-state="C"
+             data-mpt-id="${esc(issuanceId)}"
+             data-asset-scale="${assetScale ?? 0}"
+             data-balance="${esc(amount)}"
+             data-display="${esc(displayName)}"
+             data-spendable-raw=""
+             data-inbox-raw="">
+          <div class="mpt-token-info">
+            <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
+            <button class="btn-icon ct-expand-btn" aria-expanded="false" title="Expand confidential balances"></button>
+            <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
+          </div>
+          <span class="mpt-balance-amount">~${(publicRaw / divisor).toFixed(scale)}</span>
+          <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
+          ${subBalancesHtml}
+        </div>`);
+
+      if (keyMatches) {
+        decryptTasks.push({
+          issuanceId,
+          privKeyHex:  ctWalletKey.privKey,
+          spendingCt:  obj.ConfidentialBalanceSpending ?? '',
+          inboxCt:     obj.ConfidentialBalanceInbox ?? '',
+          scale,
+          divisor,
+          publicRaw,
+        });
+      }
+    } else {
+      // State A or B
+      const ctButton = ctState === 'B'
+        ? `<button class="btn-icon ct-add-confidentiality-btn" title="Add confidentiality">⛨</button>`
+        : '';
+      const extraAttrs = '';
+
+      heldHtml.push(`
+        <div class="mpt-balance-item"
+             data-send-type="mpt"
+             data-mpt-id="${esc(issuanceId)}"
+             data-asset-scale="${assetScale ?? 0}"
+             data-balance="${esc(amount)}"
+             data-display="${esc(displayName)}"
+             ${extraAttrs}>
+          <div class="mpt-token-info">
+            <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
+            ${ctButton}
+            <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
+          </div>
+          <div class="mpt-balance-amount">${esc(amount)}</div>
+          <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
+        </div>`);
+    }
+    } catch (err) { console.error('[mpt held render]', err); }
+  }
 
   const issuedHtml = issuances.map(obj => {
-    const issuanceId   = obj.MPTokenIssuanceID ?? obj.index ?? '';
+    try {
+    // Derive the 48-char Hash192 MPTokenIssuanceID from Sequence+Issuer when the
+    // account_objects response doesn't include it directly (older rippled versions).
+    let issuanceId = obj.MPTokenIssuanceID;
+    if (!issuanceId && obj.Sequence != null && obj.Issuer) {
+      try {
+        const seqHex = obj.Sequence.toString(16).padStart(8, '0').toUpperCase();
+        const accountIdHex = Buffer.from(decodeAccountID(obj.Issuer)).toString('hex').toUpperCase();
+        issuanceId = seqHex + accountIdHex;
+      } catch { /* fall through */ }
+    }
+    issuanceId = issuanceId ?? obj.index ?? '';
     const assetScale   = obj.AssetScale ?? 0;
     const rawOut       = obj.OutstandingAmount ? parseInt(obj.OutstandingAmount, 10) : 0;
     const outstanding  = assetScale > 0 ? rawOut / Math.pow(10, assetScale) : rawOut;
@@ -3172,21 +3302,92 @@ function renderMptBalances(objects, issuanceMap = new Map(), issuances = []) {
     const shortId    = issuanceId.length >= 12
       ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
       : issuanceId;
-    const displayName = ticker || shortId;
-    const href        = `${explorerMpt}${issuanceId}`;
+    const displayName  = ticker || shortId;
+    const href         = `${explorerMpt}${issuanceId}`;
+    const ctEnabled    = !!obj.IssuerEncryptionKey;
+    const hasWalletKey = !!(state.elgamalKeys && state.elgamalKeys[state.activeAccount]);
+    let ctIconHtml;
+    if (ctEnabled) {
+      ctIconHtml = `<span class="mpt-ct-icon mpt-ct-enabled" title="Confidential transfers enabled">⛨</span>`;
+    } else if (hasWalletKey) {
+      ctIconHtml = `<button class="btn-icon mpt-ct-enable-btn" data-issuance-id="${esc(issuanceId)}" title="Enable confidential transfers">⛊</button>`;
+    } else {
+      ctIconHtml = `<span class="mpt-ct-icon mpt-ct-disabled" title="Generate an Elgamal key in Settings to enable CT">⛊</span>`;
+    }
     return `
-      <div class="mpt-balance-item mpt-issuance-item">
+      <div class="mpt-balance-item mpt-issuance-item"
+           data-send-type="mpt"
+           data-mpt-id="${esc(issuanceId)}"
+           data-asset-scale="${assetScale}"
+           data-balance="${esc(outstandingFmt)}"
+           data-display="${esc(displayName)}">
         <div class="mpt-token-info">
           <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
           <span class="mpt-issuer-badge">Issuer</span>
           ${ticker ? `<span class="mpt-issuer" title="${esc(issuanceId)}">${esc(shortId)}</span>` : ''}
+          ${ctIconHtml}
         </div>
         <div class="mpt-balance-amount">${esc(outstandingFmt)}</div>
         <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
       </div>`;
+    } catch (err) { console.error('[mpt issuance render]', err); return ''; }
   });
 
+  if (myGen !== _mptRenderGeneration) return;
   listEl.innerHTML = [...heldHtml, ...issuedHtml].join('');
+
+  // Apply decrypted CT balances to a rendered row.
+  const applyCtResult = (task, spendable, inbox) => {
+    const { issuanceId, scale, divisor, publicRaw } = task;
+    const row = listEl.querySelector(`[data-mpt-id="${CSS.escape(issuanceId)}"][data-ct-state="C"]`);
+    if (!row) return;
+    const fmt         = (v) => v === null ? '[encrypted]' : (Number(v) / divisor).toFixed(scale);
+    const spendableEl = row.querySelector('.ct-sub-spendable span:last-child');
+    const inboxEl     = row.querySelector('.ct-sub-inbox span:last-child');
+    const totalEl     = row.querySelector('.mpt-balance-amount');
+    if (spendableEl) spendableEl.textContent = fmt(spendable);
+    if (inboxEl)     inboxEl.textContent     = fmt(inbox);
+    row.dataset.spendableRaw = spendable !== null ? String(spendable) : '';
+    row.dataset.inboxRaw     = inbox     !== null ? String(inbox)     : '';
+    if (totalEl && spendable !== null && inbox !== null) {
+      totalEl.textContent = (publicRaw / divisor + Number(spendable) / divisor + Number(inbox) / divisor).toFixed(scale);
+    }
+  };
+
+  // Partition tasks: cache hits are applied immediately; misses go to the worker.
+  const workerTasks = [];
+  for (const task of decryptTasks) {
+    const cacheKey = `${task.spendingCt}|${task.inboxCt}`;
+    const cached = _ctDecryptCache.get(cacheKey);
+    if (cached) {
+      applyCtResult(task, cached.spendable, cached.inbox);
+    } else {
+      workerTasks.push({ ...task, cacheKey });
+    }
+  }
+
+  if (workerTasks.length > 0) {
+    const indicator = $('mpt-decrypt-indicator');
+    if (indicator) indicator.classList.remove('hidden');
+    let pending = workerTasks.length;
+    const finishOne = () => { if (--pending === 0 && indicator) indicator.classList.add('hidden'); };
+
+    for (const task of workerTasks) {
+      (async ({ issuanceId, privKeyHex, spendingCt, inboxCt, cacheKey }) => {
+        let spendable = null, inbox = null;
+        try {
+          [spendable, inbox] = await Promise.all([
+            spendingCt ? decryptAmountBsgs(spendingCt, privKeyHex).catch(() => null) : Promise.resolve(0n),
+            inboxCt    ? decryptAmountBsgs(inboxCt,    privKeyHex).catch(() => null) : Promise.resolve(0n),
+          ]);
+          _ctDecryptCache.set(cacheKey, { spendable, inbox });
+        } catch { /* leave as [encrypted] */ }
+
+        finishOne();
+        applyCtResult(task, spendable, inbox);
+      })(task);
+    }
+  }
 }
 
 function renderVaultBalances(objects, issuanceMap = new Map()) {
@@ -4137,6 +4338,471 @@ async function openAuthMpt() {
   await populateAddressPicker($('mpt-issuer-select'));
   handlePickerChange($('mpt-issuer-select'), $('mpt-manual-group'));
   showView('auth-mpt');
+}
+
+// ─────────────────────────────────────────────
+// CREATE MPT
+// ─────────────────────────────────────────────
+
+function openCreateMptView() {
+  // Reset all fields
+  $('create-mpt-asset-scale').value        = '0';
+  $('create-mpt-max-amount').value         = '';
+  $('create-mpt-transfer-fee').value       = '';
+  $('create-mpt-flag-transfer').checked    = false;
+  $('create-mpt-flag-clawback').checked    = false;
+  $('create-mpt-flag-require-auth').checked = false;
+  $('create-mpt-flag-lock').checked        = false;
+  $('create-mpt-flag-escrow').checked        = false;
+  $('create-mpt-flag-trade').checked         = false;
+  $('create-mpt-flag-confidential').checked  = false;
+  $('create-mpt-ticker').value             = '';
+  $('create-mpt-name').value               = '';
+  $('create-mpt-issuer-name').value        = '';
+  $('create-mpt-asset-class').value        = '';
+  $('create-mpt-asset-subclass').value     = '';
+  $('create-mpt-asset-subclass-row').classList.add('hidden');
+  $('create-mpt-icon').value               = '';
+  $('create-mpt-desc').value               = '';
+  $('create-mpt-uris-list').innerHTML      = '';
+  $('create-mpt-additional-info').value    = '';
+  $('create-mpt-meta-hex').value           = '';
+  hideAlert('create-mpt-error');
+  // Reset state vars
+  _createMptPending  = null;
+  _createMptMetaMode = 'structured';
+  $('create-mpt-meta-structured').classList.remove('hidden');
+  $('create-mpt-meta-raw').classList.add('hidden');
+  $('create-mpt-meta-structured-btn').classList.add('active');
+  $('create-mpt-meta-raw-btn').classList.remove('active');
+  showView('create-mpt');
+}
+
+function addMptUri() {
+  const list = $('create-mpt-uris-list');
+  const row  = document.createElement('div');
+  row.className = 'create-mpt-uri-row';
+  row.innerHTML = `
+    <input type="text" class="uri-field"    placeholder="URI"      autocomplete="off" />
+    <input type="text" class="uri-category" placeholder="Category" autocomplete="off" />
+    <input type="text" class="uri-title"    placeholder="Title"    autocomplete="off" />
+    <button class="uri-remove-btn" title="Remove">✕</button>
+  `;
+  row.querySelector('.uri-remove-btn').addEventListener('click', () => row.remove());
+  list.appendChild(row);
+}
+
+function switchMptMetaMode(mode) {
+  if (mode === _createMptMetaMode) return;
+  if (mode === 'raw') {
+    // Serialize current structured state into the raw textarea before switching
+    const hex = buildMptMetadataHex();
+    $('create-mpt-meta-hex').value = hex ?? '';
+    $('create-mpt-meta-structured').classList.add('hidden');
+    $('create-mpt-meta-raw').classList.remove('hidden');
+    $('create-mpt-meta-structured-btn').classList.remove('active');
+    $('create-mpt-meta-raw-btn').classList.add('active');
+  } else {
+    // Switch back to structured — retain structured field values, don't parse raw
+    $('create-mpt-meta-raw').classList.add('hidden');
+    $('create-mpt-meta-structured').classList.remove('hidden');
+    $('create-mpt-meta-raw-btn').classList.remove('active');
+    $('create-mpt-meta-structured-btn').classList.add('active');
+  }
+  _createMptMetaMode = mode;
+}
+
+function buildMptMetadataHex() {
+  if (_createMptMetaMode === 'raw') {
+    return $('create-mpt-meta-hex').value.trim();
+  }
+  const obj = {};
+  const ticker = $('create-mpt-ticker').value.trim().toUpperCase();
+  if (ticker) obj.ticker = ticker;
+  const name = $('create-mpt-name').value.trim();
+  if (name) obj.name = name;
+  const issuerName = $('create-mpt-issuer-name').value.trim();
+  if (issuerName) obj.issuer_name = issuerName;
+  const assetClass = $('create-mpt-asset-class').value;
+  if (assetClass) obj.asset_class = assetClass;
+  const assetSubclass = $('create-mpt-asset-subclass').value;
+  if (assetSubclass) obj.asset_subclass = assetSubclass;
+  const icon = $('create-mpt-icon').value.trim();
+  if (icon) obj.icon = icon;
+  const desc = $('create-mpt-desc').value.trim();
+  if (desc) obj.desc = desc;
+  const uriRows = $('create-mpt-uris-list').querySelectorAll('.create-mpt-uri-row');
+  const uris = [];
+  for (const row of uriRows) {
+    const uri      = row.querySelector('.uri-field').value.trim();
+    const category = row.querySelector('.uri-category').value.trim();
+    const title    = row.querySelector('.uri-title').value.trim();
+    if (uri || category || title) {
+      uris.push({ uri, category, title });
+    }
+  }
+  if (uris.length > 0) obj.uris = uris;
+  const additionalInfoRaw = $('create-mpt-additional-info').value.trim();
+  if (additionalInfoRaw) {
+    try {
+      obj.additional_info = JSON.parse(additionalInfoRaw);
+    } catch {
+      obj.additional_info = additionalInfoRaw;
+    }
+  }
+  if (Object.keys(obj).length === 0) return '';
+  try {
+    return encodeMPTokenMetadata(obj);
+  } catch (err) {
+    showAlert('create-mpt-error', `Metadata error: ${err.message || 'Invalid metadata'}`);
+    return null;
+  }
+}
+
+function openCreateMptReview() {
+  hideAlert('create-mpt-error');
+
+  // Asset Scale
+  const assetScale = parseInt($('create-mpt-asset-scale').value, 10);
+  if (isNaN(assetScale) || assetScale < 0 || assetScale > 255) {
+    showAlert('create-mpt-error', 'Asset Scale must be an integer 0–255.');
+    return;
+  }
+
+  // Maximum Amount (optional)
+  const maxAmountRaw = $('create-mpt-max-amount').value.trim();
+  let maximumAmount = null;
+  if (maxAmountRaw) {
+    if (!/^\d+$/.test(maxAmountRaw)) {
+      showAlert('create-mpt-error', 'Maximum Amount must be a positive integer.');
+      return;
+    }
+    const maxAmt = BigInt(maxAmountRaw);
+    if (maxAmt <= 0n || maxAmt > BigInt('9223372036854775807')) {
+      showAlert('create-mpt-error', 'Maximum Amount must be between 1 and 9223372036854775807.');
+      return;
+    }
+    maximumAmount = maxAmountRaw;
+  }
+
+  // Transfer Fee (optional)
+  const transferFeeRaw = $('create-mpt-transfer-fee').value.trim();
+  let transferFee = null;
+  if (transferFeeRaw !== '') {
+    transferFee = parseInt(transferFeeRaw, 10);
+    if (isNaN(transferFee) || transferFee < 0 || transferFee > 50000) {
+      showAlert('create-mpt-error', 'Transfer Fee must be an integer 0–50000 (thousandths of 1%).');
+      return;
+    }
+  }
+
+  // Flags
+  let flags = 0;
+  if ($('create-mpt-flag-transfer').checked)     flags |= 0x0020; // tfMPTCanTransfer
+  if ($('create-mpt-flag-clawback').checked)     flags |= 0x0040; // tfMPTCanClawback
+  if ($('create-mpt-flag-require-auth').checked) flags |= 0x0004; // tfMPTRequireAuth
+  if ($('create-mpt-flag-lock').checked)         flags |= 0x0002; // tfMPTCanLock
+  if ($('create-mpt-flag-escrow').checked)       flags |= 0x0008; // tfMPTCanEscrow
+  if ($('create-mpt-flag-trade').checked)        flags |= 0x0010; // tfMPTCanTrade
+  if ($('create-mpt-flag-confidential').checked) flags |= 0x0080; // tfMPTCanHoldConfidentialBalance
+
+  // Cross-validation: TransferFee requires tfMPTCanTransfer
+  if (transferFee !== null && transferFee > 0 && !(flags & 0x0020)) {
+    showAlert('create-mpt-error', 'Transfer Fee requires the "Can Transfer" flag to be enabled.');
+    return;
+  }
+  // Cross-validation: TransferFee and tfMPTCanHoldConfidentialBalance are mutually exclusive
+  if (transferFee !== null && transferFee > 0 && (flags & 0x0080)) {
+    showAlert('create-mpt-error', 'Transfer Fee cannot be combined with "Can Hold Confidential Balances".');
+    return;
+  }
+
+  // Structured metadata field validation
+  if (_createMptMetaMode === 'structured') {
+    const ticker = $('create-mpt-ticker').value.trim();
+    if (ticker && !/^[A-Z0-9]{1,6}$/.test(ticker.toUpperCase())) {
+      showAlert('create-mpt-error', 'Ticker must be 1–6 characters, letters and digits only (A-Z 0-9).');
+      return;
+    }
+    if ($('create-mpt-asset-class').value === 'rwa' && !$('create-mpt-asset-subclass').value) {
+      showAlert('create-mpt-error', 'Asset Subclass is required when Asset Class is "rwa".');
+      return;
+    }
+  }
+
+  // Metadata
+  const metadataHex = buildMptMetadataHex();
+  if (metadataHex === null) return; // error already shown in buildMptMetadataHex
+  if (metadataHex && _createMptMetaMode === 'raw') {
+    if (metadataHex.length % 2 !== 0 || !/^[0-9A-Fa-f]+$/.test(metadataHex)) {
+      showAlert('create-mpt-error', 'Metadata hex must be a valid even-length hexadecimal string.');
+      return;
+    }
+  }
+  if (metadataHex && metadataHex.length / 2 > 1024) {
+    showAlert('create-mpt-error', 'Metadata exceeds 1024 bytes.');
+    return;
+  }
+
+  const ticker = $('create-mpt-ticker').value.trim().toUpperCase();
+  const name   = $('create-mpt-name').value.trim();
+  _createMptPending = {
+    assetScale,
+    maximumAmount,
+    transferFee,
+    flags,
+    metadataHex,
+    displayName: ticker || name || 'MPT',
+  };
+
+  openCreateMptReviewView();
+}
+
+function openCreateMptReviewView() {
+  const p = _createMptPending;
+  $('create-mpt-review-name').textContent  = p.displayName;
+  $('create-mpt-review-scale').textContent = String(p.assetScale);
+  $('create-mpt-review-max').textContent   = p.maximumAmount ?? 'Uncapped';
+  $('create-mpt-review-fee').textContent   = p.transferFee !== null
+    ? `${(p.transferFee / 1000).toFixed(3)}%`
+    : 'None';
+
+  const flagNames = [];
+  if (p.flags & 0x0020) flagNames.push('Can Transfer');
+  if (p.flags & 0x0040) flagNames.push('Can Clawback');
+  if (p.flags & 0x0004) flagNames.push('Require Auth');
+  if (p.flags & 0x0002) flagNames.push('Can Lock');
+  if (p.flags & 0x0008) flagNames.push('Can Escrow');
+  if (p.flags & 0x0010) flagNames.push('Can Trade');
+  if (p.flags & 0x0080) flagNames.push('Can Hold Confidential Balances');
+  $('create-mpt-review-flags').textContent = flagNames.length > 0
+    ? flagNames.join(', ')
+    : 'None';
+
+  if (p.metadataHex) {
+    const byteLen = p.metadataHex.length / 2;
+    const preview = p.metadataHex.length > 32
+      ? p.metadataHex.slice(0, 32) + '…'
+      : p.metadataHex;
+    $('create-mpt-review-meta').textContent = `${preview} (${byteLen} bytes)`;
+  } else {
+    $('create-mpt-review-meta').textContent = 'None';
+  }
+
+  // Build the pre-autofill TX for display
+  const displayTx = { TransactionType: 'MPTokenIssuanceCreate', Account: state.activeAccount };
+  if (p.assetScale !== 0)    displayTx.AssetScale      = p.assetScale;
+  if (p.maximumAmount)        displayTx.MaximumAmount   = p.maximumAmount;
+  if (p.transferFee !== null) displayTx.TransferFee     = p.transferFee;
+  if (p.flags !== 0)          displayTx.Flags           = p.flags;
+  if (p.metadataHex)          displayTx.MPTokenMetadata = p.metadataHex;
+
+  $('create-mpt-review-raw-json').textContent = JSON.stringify(displayTx, null, 2);
+  $('create-mpt-review-json-details').removeAttribute('open');
+  $('create-mpt-review-network-fee').textContent = '…';
+
+  hideAlert('create-mpt-review-error');
+  $('create-mpt-confirm-btn').disabled    = false;
+  $('create-mpt-confirm-btn').textContent = 'Create MPT';
+  showView('create-mpt-review');
+
+  fetchCreateMptFee(displayTx).catch(() => {
+    $('create-mpt-review-network-fee').textContent = '—';
+  });
+}
+
+async function fetchCreateMptFee(tx) {
+  if (!state.client?.isConnected()) {
+    $('create-mpt-review-network-fee').textContent = '—';
+    return;
+  }
+  try {
+    const copy = { ...tx };
+    delete copy.Fee;
+    const filled = await state.client.autofill(copy);
+    const drops = parseInt(filled.Fee ?? '12', 10);
+    const xrp = (drops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+    $('create-mpt-review-network-fee').textContent = `${xrp} XRP (${drops} drops)`;
+  } catch {
+    try {
+      const resp = await state.client.request({ command: 'fee' });
+      const drops = parseInt(resp.result.drops.open_ledger_fee ?? '12', 10);
+      const xrp = (drops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+      $('create-mpt-review-network-fee').textContent = `${xrp} XRP (${drops} drops)`;
+    } catch {
+      $('create-mpt-review-network-fee').textContent = '—';
+    }
+  }
+}
+
+async function confirmCreateMpt() {
+  const btn = $('create-mpt-confirm-btn');
+  btn.disabled    = true;
+  btn.textContent = 'Creating…';
+  hideAlert('create-mpt-review-error');
+
+  try {
+    await ensureConnected();
+    const p  = _createMptPending;
+    const tx = {
+      TransactionType: 'MPTokenIssuanceCreate',
+      Account: state.activeAccount,
+    };
+    if (p.assetScale !== 0)    tx.AssetScale     = p.assetScale;
+    if (p.maximumAmount)        tx.MaximumAmount   = p.maximumAmount;
+    if (p.transferFee !== null) tx.TransferFee     = p.transferFee;
+    if (p.flags !== 0)          tx.Flags           = p.flags;
+    if (p.metadataHex)          tx.MPTokenMetadata = p.metadataHex;
+
+    const prepared  = await state.client.autofill(tx);
+    const tx_blob   = await signWithAddress(prepared, state.activeAccount);
+    const resp      = await state.client.submitAndWait(tx_blob);
+    const txResult  = resp.result?.meta?.TransactionResult;
+
+    if (txResult !== 'tesSUCCESS') {
+      throw new Error(txResult ?? 'Unknown error');
+    }
+
+    const issuanceId = resp.result.meta?.mpt_issuance_id ?? '(ID unavailable)';
+    const alertEl    = $('create-mpt-review-error');
+    alertEl.textContent = `MPT created: ${issuanceId}`;
+    alertEl.className   = 'alert alert-success';
+    alertEl.classList.remove('hidden');
+
+    setTimeout(() => {
+      alertEl.className = 'alert alert-error hidden';
+      showView('wallet');
+      loadMptBalances();
+    }, 2000);
+  } catch (err) {
+    showAlert('create-mpt-review-error', `Failed: ${friendlyError(err)}`);
+    btn.disabled    = false;
+    btn.textContent = 'Create MPT';
+  }
+}
+
+// ─── Enable Confidential Transfers (issuer) ──────────────────────────────────
+
+function openEnableCtView(issuanceId) {
+  _enableCtIssuanceId = issuanceId;
+  const walletKey = state.elgamalKeys[state.activeAccount];
+  if (!walletKey) return;
+
+  const shortId  = issuanceId.length >= 12
+    ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
+    : issuanceId;
+  const keyPreview = walletKey.pubKey.length > 20
+    ? `${walletKey.pubKey.slice(0, 10)}…${walletKey.pubKey.slice(-10)}`
+    : walletKey.pubKey;
+
+  $('enable-ct-issuance-id').textContent  = shortId;
+  $('enable-ct-issuance-id').title        = issuanceId;
+  $('enable-ct-issuer-key').textContent   = keyPreview;
+  $('enable-ct-issuer-key').title         = walletKey.pubKey;
+  $('enable-ct-auditor-key').value        = '';
+  $('enable-ct-network-fee').textContent  = '…';
+  $('enable-ct-json-details').removeAttribute('open');
+  hideAlert('enable-ct-error');
+  $('enable-ct-confirm-btn').disabled     = false;
+  $('enable-ct-confirm-btn').textContent  = 'Enable CT';
+
+  const displayTx = {
+    TransactionType: 'MPTokenIssuanceSet',
+    Account: state.activeAccount,
+    MPTokenIssuanceID: issuanceId,
+    IssuerEncryptionKey: walletKey.pubKey,
+  };
+  $('enable-ct-raw-json').textContent = JSON.stringify(displayTx, null, 2);
+
+  showView('enable-ct');
+
+  fetchEnableCtFee(displayTx).catch(() => {
+    $('enable-ct-network-fee').textContent = '—';
+  });
+}
+
+async function fetchEnableCtFee(tx) {
+  if (!state.client?.isConnected()) {
+    $('enable-ct-network-fee').textContent = '—';
+    return;
+  }
+  try {
+    const copy = { ...tx };
+    delete copy.Fee;
+    const filled = await state.client.autofill(copy);
+    const drops  = parseInt(filled.Fee ?? '12', 10);
+    const xrp    = (drops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+    $('enable-ct-network-fee').textContent = `${xrp} XRP (${drops} drops)`;
+  } catch {
+    try {
+      const resp  = await state.client.request({ command: 'fee' });
+      const drops = parseInt(resp.result.drops.open_ledger_fee ?? '12', 10);
+      const xrp   = (drops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+      $('enable-ct-network-fee').textContent = `${xrp} XRP (${drops} drops)`;
+    } catch {
+      $('enable-ct-network-fee').textContent = '—';
+    }
+  }
+}
+
+async function confirmEnableCt() {
+  hideAlert('enable-ct-error');
+
+  const walletKey = state.elgamalKeys[state.activeAccount];
+  if (!walletKey) {
+    showAlert('enable-ct-error', 'No Elgamal key found for this account.');
+    return;
+  }
+
+  const auditorKey = $('enable-ct-auditor-key').value.trim().toUpperCase();
+  if (auditorKey && (auditorKey.length !== 66 || !/^[0-9A-F]+$/.test(auditorKey))) {
+    showAlert('enable-ct-error', 'Auditor key must be exactly 66 hex characters (33 bytes).');
+    return;
+  }
+
+  if (!_enableCtIssuanceId || _enableCtIssuanceId.length !== 48) {
+    showAlert('enable-ct-error', 'Issuance ID is invalid — please reload the wallet and try again.');
+    return;
+  }
+
+  const btn = $('enable-ct-confirm-btn');
+  btn.disabled    = true;
+  btn.textContent = 'Enabling…';
+
+  try {
+    await ensureConnected();
+    const tx = {
+      TransactionType: 'MPTokenIssuanceSet',
+      Account: state.activeAccount,
+      MPTokenIssuanceID: _enableCtIssuanceId,
+      IssuerEncryptionKey: walletKey.pubKey,
+    };
+    if (auditorKey) tx.AuditorEncryptionKey = auditorKey;
+
+    const prepared = await state.client.autofill(tx);
+    const tx_blob  = await signWithAddress(prepared, state.activeAccount);
+    const resp     = await state.client.submitAndWait(tx_blob);
+    const txResult = resp.result?.meta?.TransactionResult;
+
+    if (txResult !== 'tesSUCCESS') {
+      throw new Error(txResult ?? 'Unknown error');
+    }
+
+    const alertEl = $('enable-ct-error');
+    alertEl.textContent = 'Confidential transfers enabled';
+    alertEl.className   = 'alert alert-success';
+    alertEl.classList.remove('hidden');
+
+    setTimeout(() => {
+      alertEl.className = 'alert alert-error hidden';
+      showView('wallet');
+      loadMptBalances();
+    }, 2000);
+  } catch (err) {
+    showAlert('enable-ct-error', `Failed: ${friendlyError(err)}`);
+    btn.disabled    = false;
+    btn.textContent = 'Enable CT';
+  }
 }
 
 async function fetchAndPopulateMpts() {
@@ -7520,14 +8186,48 @@ $('iou-balance-list').addEventListener('click', (e) => {
 
 $('mpt-balance-list').addEventListener('click', (e) => {
   if (e.target.closest('.token-explorer-link')) return;
+  if (e.target.closest('.ct-expand-btn') || e.target.closest('.ct-add-confidentiality-btn') || e.target.closest('.ct-sub-balances') || e.target.closest('.mpt-ct-enable-btn')) return;
   const item = e.target.closest('[data-send-type]');
   if (!item) return;
+  if (item.dataset.ctState === 'C') {
+    openCtActionMenu(item, e);
+    return;
+  }
   openSendPayment('mpt', {
     displayName:    item.dataset.display,
     balance:        item.dataset.balance,
     mptIssuanceId:  item.dataset.mptId,
     assetScale:     parseInt(item.dataset.assetScale, 10) || 0,
   });
+});
+
+// CT delegation: expand toggle and add-confidentiality button
+$('mpt-balance-list').addEventListener('click', (e) => {
+  // Expand/collapse toggle
+  const expandBtn = e.target.closest('.ct-expand-btn');
+  if (expandBtn) {
+    const row = expandBtn.closest('.mpt-balance-item');
+    const sub = row.querySelector('.ct-sub-balances');
+    const expanded = expandBtn.getAttribute('aria-expanded') === 'true';
+    expandBtn.setAttribute('aria-expanded', String(!expanded));
+    sub.classList.toggle('hidden', expanded);
+    return;
+  }
+
+  // Add Confidentiality button (holder rows)
+  const ctBtn = e.target.closest('.ct-add-confidentiality-btn');
+  if (ctBtn) {
+    const row = ctBtn.closest('.mpt-balance-item');
+    openConfidentialConvertView(row);
+    return;
+  }
+
+  // Enable CT button (issuer rows)
+  const ctEnableBtn = e.target.closest('.mpt-ct-enable-btn');
+  if (ctEnableBtn) {
+    openEnableCtView(ctEnableBtn.dataset.issuanceId);
+    return;
+  }
 });
 
 $('amm-balance-list').addEventListener('click', (e) => {
@@ -7644,7 +8344,26 @@ $('trust-review-btn').addEventListener('click', reviewTrustSet);
 // EVENT LISTENERS — Add MPT
 // ─────────────────────────────────────────────
 
-$('add-mpt-btn').addEventListener('click', openAuthMpt);
+function openMptAddDropdown() {
+  $('mpt-add-dropdown').classList.remove('hidden');
+  setTimeout(() => {
+    document.addEventListener('click', closeMptAddDropdown, { once: true });
+  }, 0);
+}
+function closeMptAddDropdown() {
+  $('mpt-add-dropdown').classList.add('hidden');
+}
+
+$('add-mpt-btn').addEventListener('click', e => {
+  e.stopPropagation();
+  if ($('mpt-add-dropdown').classList.contains('hidden')) {
+    openMptAddDropdown();
+  } else {
+    closeMptAddDropdown();
+  }
+});
+$('mpt-dropdown-add').addEventListener('click', () => { closeMptAddDropdown(); openAuthMpt(); });
+$('mpt-dropdown-create').addEventListener('click', () => { closeMptAddDropdown(); openCreateMptView(); });
 
 $('back-from-auth-mpt-btn').addEventListener('click', () => showView('wallet'));
 
@@ -7656,6 +8375,49 @@ $('mpt-fetch-btn').addEventListener('click', fetchAndPopulateMpts);
 $('mpt-issuance-select').addEventListener('change', handleMptIssuanceChange);
 
 $('mpt-review-btn').addEventListener('click', reviewMptAuthorize);
+
+// ─────────────────────────────────────────────
+// EVENT LISTENERS — Create MPT
+// ─────────────────────────────────────────────
+
+$('back-from-create-mpt-btn').addEventListener('click', () => showView('wallet'));
+$('create-mpt-asset-class').addEventListener('change', () => {
+  const isRwa = $('create-mpt-asset-class').value === 'rwa';
+  $('create-mpt-asset-subclass-row').classList.toggle('hidden', !isRwa);
+  if (!isRwa) $('create-mpt-asset-subclass').value = '';
+});
+$('create-mpt-meta-structured-btn').addEventListener('click', () => switchMptMetaMode('structured'));
+$('create-mpt-meta-raw-btn').addEventListener('click', () => switchMptMetaMode('raw'));
+$('create-mpt-add-uri-btn').addEventListener('click', addMptUri);
+$('create-mpt-review-btn').addEventListener('click', openCreateMptReview);
+$('back-from-create-mpt-review-btn').addEventListener('click', () => showView('create-mpt'));
+$('create-mpt-review-copy-json-btn').addEventListener('click', () => {
+  navigator.clipboard.writeText($('create-mpt-review-raw-json').textContent).catch(() => {});
+});
+$('create-mpt-confirm-btn').addEventListener('click', confirmCreateMpt);
+
+// ─────────────────────────────────────────────
+// EVENT LISTENERS — Enable CT
+// ─────────────────────────────────────────────
+
+$('back-from-enable-ct-btn').addEventListener('click', () => showView('wallet'));
+$('enable-ct-auditor-key').addEventListener('input', () => {
+  const walletKey = state.elgamalKeys?.[state.activeAccount];
+  if (!walletKey || !_enableCtIssuanceId) return;
+  const auditor = $('enable-ct-auditor-key').value.trim().toUpperCase();
+  const tx = {
+    TransactionType: 'MPTokenIssuanceSet',
+    Account: state.activeAccount,
+    MPTokenIssuanceID: _enableCtIssuanceId,
+    IssuerEncryptionKey: walletKey.pubKey,
+  };
+  if (auditor) tx.AuditorEncryptionKey = auditor;
+  $('enable-ct-raw-json').textContent = JSON.stringify(tx, null, 2);
+});
+$('enable-ct-copy-json-btn').addEventListener('click', () => {
+  navigator.clipboard.writeText($('enable-ct-raw-json').textContent).catch(() => {});
+});
+$('enable-ct-confirm-btn').addEventListener('click', confirmEnableCt);
 
 // ─────────────────────────────────────────────
 // EVENT LISTENERS — Vault deposit (onboarding)
@@ -8134,6 +8896,7 @@ async function loadDevSettings() {
   $('dev-print-tx-json').checked    = state.devSettings.printTxJson;
   $('dev-print-wc').checked         = state.devSettings.printWC;
   $('dev-multisign-enabled').checked = state.devSettings.multisignEnabled;
+  $('dev-ct-enabled').checked = state.devSettings.confidentialTransfersEnabled;
   $('iou-decimal-precision').value  = state.devSettings.iouDecimalPrecision;
   $('lock-timeout-secs').value      = state.devSettings.lockTimeoutSecs;
   applyWideMode();
@@ -8191,6 +8954,12 @@ $('dev-print-wc').addEventListener('change', async (e) => {
 
 $('dev-multisign-enabled').addEventListener('change', e => {
   state.devSettings.multisignEnabled = e.target.checked;
+  chrome.storage.local.set({ devSettings: state.devSettings });
+  updateWalletUI();
+});
+
+$('dev-ct-enabled').addEventListener('change', e => {
+  state.devSettings.confidentialTransfersEnabled = e.target.checked;
   chrome.storage.local.set({ devSettings: state.devSettings });
   updateWalletUI();
 });
@@ -8457,6 +9226,531 @@ $('ms-sign-submit-btn').addEventListener('click', () => signMsTransaction().catc
     }
   }
 })();
+
+// ─────────────────────────────────────────────
+// CONFIDENTIAL TRANSFERS
+// ─────────────────────────────────────────────
+
+let _ctHideTimer = null;
+let _mptRenderGeneration = 0;
+// Keyed by `${spendingCt}|${inboxCt}` — same ciphertext always decrypts to the same value.
+// Cleared when the active account changes so stale values don't bleed across accounts.
+const _ctDecryptCache = new Map();
+let _ctDecryptCacheAccount = null;
+let _createMptPending  = null; // { assetScale, maximumAmount, transferFee, flags, metadataHex, displayName }
+let _createMptMetaMode = 'structured'; // 'structured' | 'raw'
+let _enableCtIssuanceId = null;
+let _ctConvertIssuanceId   = null;
+let _ctConvertAssetScale    = 0;
+
+let _ctActionIssuanceId     = null;
+let _ctActionAssetScale     = 0;
+let _ctActionDisplayName    = null;
+let _ctActionIssuerDisplay  = null;
+let _ctActionSpendableAmt   = null;
+let _ctActionInboxAmt       = null;
+let _ctActionPublicBalance  = null;
+
+function _bytesToUpperHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+async function generateElGamalKey() {
+  const addr = state.activeAccount;
+  if (!addr) return;
+  let privKeyBytes;
+  do {
+    privKeyBytes = crypto.getRandomValues(new Uint8Array(32));
+  } while (!secp256k1.utils.isValidSecretKey(privKeyBytes));
+  const pubKeyBytes = secp256k1.getPublicKey(privKeyBytes, true);
+  state.elgamalKeys[addr] = {
+    pubKey:  _bytesToUpperHex(pubKeyBytes),
+    privKey: _bytesToUpperHex(privKeyBytes),
+  };
+  privKeyBytes.fill(0);
+  await saveVault();
+  renderConfidentialKeyView();
+}
+
+function renderConfidentialKeyView() {
+  if (_ctHideTimer) { clearInterval(_ctHideTimer); _ctHideTimer = null; }
+  const addr   = state.activeAccount;
+  const acct   = getAllAccounts().find(a => a.address === addr);
+  $('ct-key-acct-name').textContent = acct?.label ?? 'Account';
+  $('ct-key-acct-addr').textContent = truncAddr(addr ?? '');
+  const keyPair = state.elgamalKeys[addr ?? ''];
+  if (!keyPair) {
+    $('ct-no-key-section').classList.remove('hidden');
+    $('ct-key-exists-section').classList.add('hidden');
+  } else {
+    $('ct-no-key-section').classList.add('hidden');
+    $('ct-key-exists-section').classList.remove('hidden');
+    $('ct-pubkey-value').textContent = keyPair.pubKey;
+    $('ct-reveal-controls').classList.remove('hidden');
+    $('ct-privkey-revealed').classList.add('hidden');
+    $('ct-reveal-password').value = '';
+    hideAlert('ct-reveal-error');
+  }
+}
+
+function openConfidentialKeyView() {
+  renderConfidentialKeyView();
+  showView('confidential-key');
+}
+
+async function confirmRevealElGamalPrivKey() {
+  hideAlert('ct-reveal-error');
+  const addr = state.activeAccount;
+  if (!addr) return;
+
+  const password = $('ct-reveal-password').value;
+  if (!password) { showAlert('ct-reveal-error', 'Enter your password.'); return; }
+
+  // Always re-verify against the vault — same security posture as export-key.
+  try {
+    const { vault } = await chrome.storage.local.get('vault');
+    await decryptVault(password, vault);
+  } catch {
+    showAlert('ct-reveal-error', 'Incorrect password.');
+    return;
+  }
+
+  const keyPair = state.elgamalKeys[addr];
+  if (!keyPair) return; // shouldn't happen; guard against state race
+
+  // Show the private key
+  $('ct-reveal-controls').classList.add('hidden');
+  $('ct-privkey-value').textContent = keyPair.privKey;
+  $('ct-privkey-revealed').classList.remove('hidden');
+
+  // 60-second auto-hide countdown
+  let secs = 60;
+  $('ct-hide-timer').textContent = `Key hidden in ${secs}s`;
+  if (_ctHideTimer) clearInterval(_ctHideTimer);
+  _ctHideTimer = setInterval(() => {
+    secs--;
+    if (secs <= 0) {
+      clearInterval(_ctHideTimer);
+      _ctHideTimer = null;
+      $('ct-privkey-value').textContent = '';
+      $('ct-privkey-revealed').classList.add('hidden');
+      $('ct-hide-timer').textContent = '';
+      $('ct-reveal-controls').classList.remove('hidden');
+      $('ct-reveal-password').value = '';
+    } else {
+      $('ct-hide-timer').textContent = `Key hidden in ${secs}s`;
+    }
+  }, 1000);
+}
+
+$('ct-key-btn').addEventListener('click', openConfidentialKeyView);
+$('ct-generate-btn').addEventListener('click', () => generateElGamalKey().catch(console.error));
+$('ct-pubkey-copy-btn').addEventListener('click', () => {
+  const val = $('ct-pubkey-value').textContent;
+  if (val) navigator.clipboard.writeText(val).catch(() => {});
+});
+
+$('ct-reveal-confirm-btn').addEventListener('click', () =>
+  confirmRevealElGamalPrivKey().catch(console.error));
+
+$('toggle-ct-reveal-password-btn').addEventListener('click', () =>
+  togglePasswordVisibility('ct-reveal-password'));
+
+$('ct-reveal-password').addEventListener('keydown', e => {
+  if (e.key === 'Enter') confirmRevealElGamalPrivKey().catch(console.error);
+});
+
+$('ct-privkey-copy-btn').addEventListener('click', () => {
+  const val = $('ct-privkey-value').textContent;
+  if (val) navigator.clipboard.writeText(val).catch(() => {});
+});
+
+$('back-from-ct-key-btn').addEventListener('click', () => {
+  if (_ctHideTimer) { clearInterval(_ctHideTimer); _ctHideTimer = null; }
+  $('ct-privkey-value').textContent = '';
+  showView('wallet');
+});
+
+function openConfidentialConvertView(rowEl) {
+  $('ct-convert-view-title').textContent = 'Add Confidentiality';
+
+  _ctConvertIssuanceId    = rowEl.dataset.mptId;
+  _ctConvertAssetScale    = parseInt(rowEl.dataset.assetScale ?? '0', 10);
+
+  const display  = rowEl.dataset.display ?? _ctConvertIssuanceId.slice(0, 8) + '…';
+  const balance  = rowEl.dataset.balance ?? '0';
+  const issuerEl = rowEl.querySelector('.mpt-issuer');
+
+  $('ct-convert-token-name').textContent    = display;
+  $('ct-convert-issuer').textContent        = issuerEl?.textContent ?? '';
+  $('ct-convert-public-balance').textContent = balance;
+  $('ct-convert-amount').value              = '0';
+  hideAlert('ct-convert-error');
+  showView('confidential-convert');
+}
+
+async function confirmConfidentialConvert() {
+  const issuanceId = _ctConvertIssuanceId;
+  const assetScale = _ctConvertAssetScale;
+  const account    = state.activeAccount;
+
+  const rawInput = parseFloat($('ct-convert-amount').value);
+  if (!isFinite(rawInput) || rawInput < 0) {
+    showAlert('ct-convert-error', 'Please enter a valid amount.');
+    return;
+  }
+
+  const ctKey = state.elgamalKeys[account];
+  if (!ctKey?.pubKey) {
+    showAlert('ct-convert-error', 'No confidential key found for this account.');
+    return;
+  }
+
+  const btn = $('ct-convert-btn');
+  btn.disabled = true;
+  btn.textContent = 'Preparing…';
+  hideAlert('ct-convert-error');
+
+  try {
+    const amount = BigInt(assetScale > 0
+      ? Math.round(rawInput * Math.pow(10, assetScale))
+      : Math.round(rawInput));
+
+    const txJson = await prepareConfidentialConvert(state.client, {
+      account,
+      mptIssuanceID: issuanceId,
+      amount,
+      holderKeypair: { privateKey: ctKey.privKey, publicKey: ctKey.pubKey },
+    });
+
+    const displayName  = $('ct-convert-token-name').textContent;
+    const issuerAddr   = $('ct-convert-issuer').textContent;
+    const amountDisplay = assetScale > 0
+      ? rawInput.toLocaleString(undefined, { maximumFractionDigits: assetScale })
+      : String(rawInput);
+
+    const row = (label, value, cls = '') =>
+      `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+    $('send-review-details').innerHTML = [
+      row('Type', 'Confidential Convert', 'tx-type'),
+      row('Token', esc(displayName)),
+      row('Issuer', `<span title="${esc(issuerAddr)}">${esc(truncAddr(issuerAddr))}</span>`, 'tx-address'),
+      row('Amount', rawInput === 0 ? '0 (opt-in only)' : esc(amountDisplay)),
+      row('From', `<span title="${esc(account)}">${esc(truncAddr(account))}</span>`, 'tx-address'),
+    ].join('');
+
+    state.pendingTxReview = {
+      txJson,
+      backView: 'confidential-convert',
+      successMsg: 'Confidential conversion submitted!',
+      title: 'Review Convert Transaction',
+    };
+    showView('send-review');
+  } catch (err) {
+    showAlert('ct-convert-error', err.message || 'Conversion failed. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Convert';
+  }
+}
+
+$('ct-convert-btn').addEventListener('click', () => confirmConfidentialConvert().catch(console.error));
+
+$('back-from-ct-convert-btn').addEventListener('click', () => showView('wallet'));
+
+function openCtActionMenu(rowEl, e) {
+  _ctActionIssuanceId     = rowEl.dataset.mptId;
+  _ctActionAssetScale     = parseInt(rowEl.dataset.assetScale ?? '0', 10);
+  _ctActionDisplayName    = rowEl.dataset.display ?? _ctActionIssuanceId.slice(0, 8) + '…';
+  _ctActionPublicBalance  = rowEl.dataset.balance ?? '0';
+  _ctActionSpendableAmt   = rowEl.dataset.spendableRaw ? BigInt(rowEl.dataset.spendableRaw) : null;
+  _ctActionInboxAmt       = rowEl.dataset.inboxRaw     ? BigInt(rowEl.dataset.inboxRaw)     : null;
+
+  const issuerEl = rowEl.querySelector('.mpt-issuer');
+  _ctActionIssuerDisplay = issuerEl?.textContent ?? '';
+
+  const menu = $('ct-action-menu');
+  menu.classList.remove('hidden');
+
+  setTimeout(() => {
+    document.addEventListener('click', closeCtActionMenu, { capture: true, once: true });
+  }, 0);
+}
+
+function closeCtActionMenu() {
+  $('ct-action-menu').classList.add('hidden');
+}
+
+$('ct-action-menu').addEventListener('click', (e) => {
+  const btn = e.target.closest('.ct-action-item');
+  if (!btn) return;
+  closeCtActionMenu();
+  const action = btn.dataset.action;
+  if (action === 'send-public') {
+    openSendPayment('mpt', {
+      displayName:   _ctActionDisplayName,
+      balance:       _ctActionPublicBalance,
+      mptIssuanceId: _ctActionIssuanceId,
+      assetScale:    _ctActionAssetScale,
+    });
+  } else if (action === 'send-confidential') {
+    openCtSendConfidentialView();
+  } else if (action === 'convert') {
+    openCtAdditionalConvertView();
+  } else if (action === 'merge-inbox') {
+    openCtMergeInboxView();
+  } else if (action === 'convert-back') {
+    openCtConvertBackView();
+  }
+});
+
+function openCtAdditionalConvertView() {
+  _ctConvertIssuanceId    = _ctActionIssuanceId;
+  _ctConvertAssetScale    = _ctActionAssetScale;
+
+  $('ct-convert-view-title').textContent       = 'Convert';
+  $('ct-convert-token-name').textContent       = _ctActionDisplayName;
+  $('ct-convert-issuer').textContent           = _ctActionIssuerDisplay;
+  $('ct-convert-public-balance').textContent   = _ctActionPublicBalance ?? '0';
+  $('ct-convert-amount').value                 = '0';
+  hideAlert('ct-convert-error');
+  showView('confidential-convert');
+}
+
+function openCtMergeInboxView() {
+  const scale = _ctActionAssetScale;
+  const divisor = scale > 0 ? Math.pow(10, scale) : 1;
+  const inboxDisplay = _ctActionInboxAmt !== null
+    ? (Number(_ctActionInboxAmt) / divisor).toFixed(scale)
+    : '[encrypted]';
+
+  $('ct-merge-token-name').textContent    = _ctActionDisplayName;
+  $('ct-merge-issuer').textContent        = _ctActionIssuerDisplay;
+  $('ct-merge-inbox-balance').textContent = inboxDisplay;
+  hideAlert('ct-merge-error');
+  showView('ct-merge-inbox');
+}
+
+async function confirmCtMergeInbox() {
+  const issuanceId = _ctActionIssuanceId;
+  const account    = state.activeAccount;
+  if (!issuanceId) { showAlert('ct-merge-error', 'Missing issuance data.'); return; }
+
+  const btn = $('ct-merge-btn');
+  btn.disabled = true;
+  btn.textContent = 'Preparing…';
+  hideAlert('ct-merge-error');
+
+  try {
+    const txJson = await prepareConfidentialMergeInbox(state.client, {
+      account,
+      mptIssuanceID: issuanceId,
+    });
+
+    const row = (label, value, cls = '') =>
+      `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+    $('send-review-details').innerHTML = [
+      row('Type', 'Merge Inbox', 'tx-type'),
+      row('Token', esc(_ctActionDisplayName)),
+      row('Issuer', `<span title="${esc(_ctActionIssuerDisplay)}">${esc(truncAddr(_ctActionIssuerDisplay))}</span>`, 'tx-address'),
+      row('From', `<span title="${esc(account)}">${esc(truncAddr(account))}</span>`, 'tx-address'),
+    ].join('');
+
+    state.pendingTxReview = {
+      txJson,
+      backView: 'ct-merge-inbox',
+      successMsg: 'Inbox merged successfully!',
+      title: 'Review Merge Inbox',
+    };
+    showView('send-review');
+  } catch (err) {
+    showAlert('ct-merge-error', err.message || 'Failed to prepare transaction.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Review Merge';
+  }
+}
+
+$('ct-merge-btn').addEventListener('click', () => confirmCtMergeInbox().catch(console.error));
+$('back-from-ct-merge-btn').addEventListener('click', () => showView('wallet'));
+
+function openCtConvertBackView() {
+  const scale = _ctActionAssetScale;
+  const divisor = scale > 0 ? Math.pow(10, scale) : 1;
+  const spendableDisplay = _ctActionSpendableAmt !== null
+    ? (Number(_ctActionSpendableAmt) / divisor).toFixed(scale)
+    : '[encrypted]';
+
+  $('ct-convert-back-token-name').textContent = _ctActionDisplayName;
+  $('ct-convert-back-issuer').textContent     = _ctActionIssuerDisplay;
+  $('ct-convert-back-spendable').textContent  = spendableDisplay;
+  $('ct-convert-back-amount').value           = '0';
+  hideAlert('ct-convert-back-error');
+  showView('ct-convert-back');
+}
+
+async function confirmCtConvertBack() {
+  const issuanceId = _ctActionIssuanceId;
+  const account    = state.activeAccount;
+  const assetScale = _ctActionAssetScale;
+
+  const rawInput = parseFloat($('ct-convert-back-amount').value);
+  if (!isFinite(rawInput) || rawInput <= 0) {
+    showAlert('ct-convert-back-error', 'Please enter a valid amount.');
+    return;
+  }
+
+  const ctKey = state.elgamalKeys[account];
+  if (!ctKey?.privKey) {
+    showAlert('ct-convert-back-error', 'No confidential key found for this account.');
+    return;
+  }
+
+  const btn = $('ct-convert-back-btn');
+  btn.disabled = true;
+  btn.textContent = 'Preparing…';
+  hideAlert('ct-convert-back-error');
+
+  try {
+    const amount = BigInt(assetScale > 0
+      ? Math.round(rawInput * Math.pow(10, assetScale))
+      : Math.round(rawInput));
+
+    const txJson = await prepareConfidentialConvertBack(state.client, {
+      account,
+      mptIssuanceID: issuanceId,
+      amount,
+      holderKeypair: { privateKey: ctKey.privKey, publicKey: ctKey.pubKey },
+    });
+
+    const amountDisplay = assetScale > 0
+      ? rawInput.toLocaleString(undefined, { maximumFractionDigits: assetScale })
+      : String(rawInput);
+
+    const row = (label, value, cls = '') =>
+      `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+    $('send-review-details').innerHTML = [
+      row('Type', 'Convert Back', 'tx-type'),
+      row('Token', esc(_ctActionDisplayName)),
+      row('Amount', esc(amountDisplay)),
+      row('From', `<span title="${esc(account)}">${esc(truncAddr(account))}</span>`, 'tx-address'),
+    ].join('');
+
+    state.pendingTxReview = {
+      txJson,
+      backView: 'ct-convert-back',
+      successMsg: 'Convert back submitted!',
+      title: 'Review Convert Back',
+    };
+    showView('send-review');
+  } catch (err) {
+    showAlert('ct-convert-back-error', err.message || 'Failed to prepare transaction.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Review Convert Back';
+  }
+}
+
+$('ct-convert-back-btn').addEventListener('click', () => confirmCtConvertBack().catch(console.error));
+$('back-from-ct-convert-back-btn').addEventListener('click', () => showView('wallet'));
+
+async function openCtSendConfidentialView() {
+  const scale = _ctActionAssetScale;
+  const divisor = scale > 0 ? Math.pow(10, scale) : 1;
+  const spendableDisplay = _ctActionSpendableAmt !== null
+    ? (Number(_ctActionSpendableAmt) / divisor).toFixed(scale)
+    : '[encrypted]';
+
+  $('ct-send-conf-token-name').textContent = _ctActionDisplayName;
+  $('ct-send-conf-issuer').textContent     = _ctActionIssuerDisplay;
+  $('ct-send-conf-spendable').textContent  = spendableDisplay;
+  $('ct-send-conf-amount').value           = '0';
+  hideAlert('ct-send-conf-error');
+
+  await populateAddressPicker($('ct-send-conf-recipient'));
+  handlePickerChange($('ct-send-conf-recipient'), $('ct-send-conf-manual-group'));
+
+  showView('ct-send-confidential');
+}
+
+async function confirmCtSendConfidential() {
+  const issuanceId = _ctActionIssuanceId;
+  const account    = state.activeAccount;
+  const assetScale = _ctActionAssetScale;
+
+  const destination = getPickerAddress($('ct-send-conf-recipient'), $('ct-send-conf-destination'));
+  if (!isValidClassicAddress(destination)) {
+    showAlert('ct-send-conf-error', 'Please enter a valid XRPL destination address.');
+    return;
+  }
+
+  const rawInput = parseFloat($('ct-send-conf-amount').value);
+  if (!isFinite(rawInput) || rawInput <= 0) {
+    showAlert('ct-send-conf-error', 'Please enter a valid amount.');
+    return;
+  }
+
+  const ctKey = state.elgamalKeys[account];
+  if (!ctKey?.privKey) {
+    showAlert('ct-send-conf-error', 'No confidential key found for this account.');
+    return;
+  }
+
+  const btn = $('ct-send-conf-btn');
+  btn.disabled = true;
+  btn.textContent = 'Preparing…';
+  hideAlert('ct-send-conf-error');
+
+  try {
+    const amount = BigInt(assetScale > 0
+      ? Math.round(rawInput * Math.pow(10, assetScale))
+      : Math.round(rawInput));
+
+    const txJson = await prepareConfidentialSend(state.client, {
+      account,
+      destination,
+      mptIssuanceID: issuanceId,
+      amount,
+      senderKeypair: { privateKey: ctKey.privKey, publicKey: ctKey.pubKey },
+    });
+
+    const amountDisplay = assetScale > 0
+      ? rawInput.toLocaleString(undefined, { maximumFractionDigits: assetScale })
+      : String(rawInput);
+
+    const row = (label, value, cls = '') =>
+      `<div class="tx-row"><span class="tx-label">${label}</span><span class="tx-value ${cls}">${value}</span></div>`;
+
+    $('send-review-details').innerHTML = [
+      row('Type', 'Confidential Send', 'tx-type'),
+      row('Token', esc(_ctActionDisplayName)),
+      row('Amount', esc(amountDisplay)),
+      row('To', `<span title="${esc(destination)}">${esc(truncAddr(destination))}</span>`, 'tx-address'),
+      row('From', `<span title="${esc(account)}">${esc(truncAddr(account))}</span>`, 'tx-address'),
+    ].join('');
+
+    state.pendingTxReview = {
+      txJson,
+      backView: 'ct-send-confidential',
+      successMsg: 'Confidential send submitted!',
+      title: 'Review Confidential Send',
+    };
+    showView('send-review');
+  } catch (err) {
+    showAlert('ct-send-conf-error', err.message || 'Failed to prepare transaction.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Review Send';
+  }
+}
+
+$('ct-send-conf-recipient').addEventListener('change', () =>
+  handlePickerChange($('ct-send-conf-recipient'), $('ct-send-conf-manual-group')));
+$('ct-send-conf-btn').addEventListener('click', () => confirmCtSendConfidential().catch(console.error));
+$('back-from-ct-send-conf-btn').addEventListener('click', () => showView('wallet'));
 
 // Record the time the popup was closed so the boot sequence can enforce the
 // auto-lock timeout on the next open.  localStorage is used here because it

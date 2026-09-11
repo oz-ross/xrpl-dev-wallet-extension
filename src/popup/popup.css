@@ -818,6 +818,65 @@ a.tx-history-item:hover {
   margin-left: auto;
 }
 
+/* ── MPT add dropdown ───────────────────────── */
+.mpt-decrypt-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  vertical-align: middle;
+}
+.mpt-decrypt-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--text-muted, #888);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: mpt-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes mpt-spin {
+  to { transform: rotate(360deg); }
+}
+
+.mpt-add-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.mpt-add-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  z-index: 200;
+  min-width: 130px;
+  padding: 4px 0;
+  white-space: nowrap;
+}
+
+.mpt-add-dropdown-item {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 8px 14px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.mpt-add-dropdown-item:hover { background: var(--surface-2); }
+
 .iou-balance-item {
   display: flex;
   align-items: center;
@@ -864,6 +923,7 @@ a.tx-history-item:hover {
 /* ===== MPT BALANCES ===== */
 .mpt-balance-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -874,9 +934,11 @@ a.tx-history-item:hover {
 
 .mpt-token-info {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
+  flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 
 .mpt-id {
@@ -896,6 +958,8 @@ a.tx-history-item:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: default;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .mpt-balance-amount {
@@ -2840,3 +2904,145 @@ details[open] .review-json-summary::before {
 .ms-picker-item:hover { background: var(--surface-2); }
 .ms-picker-item-name { font-size: 12px; font-weight: 500; }
 .ms-picker-item-addr { font-family: 'SF Mono', monospace; font-size: 10px; color: var(--text-3); }
+
+/* Confidential expand button — shield icon with embedded directional indicator */
+.ct-expand-btn {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+.ct-expand-btn::before {
+  content: '⛨';
+}
+.ct-expand-btn::after {
+  content: '▶';
+  font-size: 0.42em;
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  line-height: 1;
+  color: var(--text-2);
+}
+.ct-expand-btn[aria-expanded="true"]::after {
+  content: '▼';
+}
+
+/* Confidential Transfer sub-balances */
+.ct-sub-balances {
+  flex-basis: 100%;
+  padding-left: 1.2rem;
+  font-size: 0.82em;
+  color: var(--text-3);
+}
+.ct-sub-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 1px 0;
+  font-family: monospace;
+}
+.ct-action-menu {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  z-index: 200;
+  min-width: 170px;
+  padding: 4px 0;
+}
+.ct-action-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 9px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.2;
+}
+.ct-action-item:hover {
+  background: var(--surface-3, var(--surface));
+}
+
+/* ── CT issuer row icons ── */
+.mpt-ct-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.mpt-ct-enabled {
+  color: var(--accent, #6c8cff);
+}
+.mpt-ct-disabled {
+  color: var(--text-3);
+  opacity: 0.5;
+}
+
+/* ── Create MPT form ────────────────────────── */
+#view-create-mpt .label-optional {
+  display: block;
+  font-size: 9.5px;
+  margin-top: 1px;
+}
+
+.create-mpt-meta-toggle {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.create-mpt-meta-toggle-btn {
+  flex: 1;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.create-mpt-meta-toggle-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.create-mpt-uri-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.create-mpt-uri-row input {
+  min-width: 0;
+}
+
+.uri-remove-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 4px;
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.uri-remove-btn:hover { color: var(--danger); }

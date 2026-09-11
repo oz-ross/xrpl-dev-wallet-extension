@@ -134,6 +134,39 @@ xrpl-dev-wallet-extension/
 
 ---
 
+## Vendored WASM — mpt-crypto (BSGS patch)
+
+The `vendor/mpt-crypto/` directory contains a locally-built WebAssembly module for Confidential MPT (XLS-0096) cryptography. It is committed to the repository so no build toolchain is needed to use it — `npm install && npm run build` is sufficient.
+
+### What's patched
+
+The vendored WASM is built from [XRPLF/mpt-crypto](https://github.com/XRPLF/mpt-crypto) `main` (release 1.0.5, which includes [PR #130](https://github.com/XRPLF/mpt-crypto/pull/130): Baby-Step Giant-Step DLP solver) with an additional `src/bsgs_wasm.c` wrapper that exposes two new functions to the JS layer:
+
+- `_mpt_bsgs_init` — builds the BSGS baby-step table (~22 MB, one-time per popup session)
+- `_mpt_decrypt_amount_bsgs` — decrypts a ciphertext in O(√N) time, covering amounts up to 2^40 (~1 trillion)
+
+The upstream [`@xrplf/mpt-crypto`](https://github.com/XRPLF/xrpl.js/tree/main/packages/mpt-crypto) JS wrapper does not yet expose these BSGS functions. Once it does, the local patch can be replaced by a standard upstream vendor refresh.
+
+### Rebuilding the WASM
+
+> **Do not run `scripts/setup-mpt-crypto.sh`** — it pulls from xrpl.js main and will overwrite the BSGS-enabled WASM with the upstream linear-only build.
+
+To rebuild the WASM with BSGS from scratch (requires [Emscripten](https://emscripten.org/) 6.x):
+
+```bash
+git clone https://github.com/XRPLF/mpt-crypto.git /tmp/mpt-crypto
+# Copy src/bsgs_wasm.c from this repo into /tmp/mpt-crypto/src/
+# Apply the two-line patch to .github/scripts/build-wasm.sh:
+#   1. Add -DSECP256K1_BUILD_EXHAUSTIVE_TESTS=OFF to the emcmake cmake flags
+#   2. Add _mpt_bsgs_init,_mpt_decrypt_amount_bsgs to EXPORTS
+#   3. Change all three `emcc "${LINK_FLAGS[@]}"` link calls to `em++`
+cd /tmp/mpt-crypto
+NODE_OPTIONS= bash .github/scripts/build-wasm.sh
+cp emcc_out/mpt_crypto.{js,mjs,web.mjs,wasm} <repo-root>/vendor/mpt-crypto/wasm/
+```
+
+---
+
 ## Tech stack
 
 | Library | Purpose |
