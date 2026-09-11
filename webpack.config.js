@@ -120,5 +120,26 @@ module.exports = (env, argv) => {
     stats: { warnings: false },
   };
 
-  return [backgroundConfig, popupConfig];
+  // ── Decrypt Web Worker (target: webworker) ──────────────────────────────
+  // Runs BSGS WASM decryption off the main thread so the popup stays responsive.
+  // chunkFilename uses a 'wkr-' prefix to avoid colliding with the popup's
+  // mpt-crypto-wasm.js chunk; the wkr-mpt-crypto-wasm.js chunk resolves
+  // mpt_crypto.wasm relative to its own URL, which maps to dist/ — same file.
+  const decryptWorkerConfig = {
+    name: 'decrypt-worker',
+    target: 'webworker',
+    entry: { 'decrypt-worker': './src/popup/decrypt-worker.js' },
+    output: {
+      path: path.resolve(__dirname, 'dist'),
+      filename: '[name].js',
+      chunkFilename: 'wkr-[name].js',
+    },
+    plugins: [provide, define],
+    resolve: { alias, fallback },
+    devtool: isDev ? 'inline-source-map' : false,
+    performance: { hints: false },
+    stats: { warnings: false },
+  };
+
+  return [backgroundConfig, popupConfig, decryptWorkerConfig];
 };

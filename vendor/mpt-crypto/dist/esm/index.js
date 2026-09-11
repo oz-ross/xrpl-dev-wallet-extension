@@ -11,7 +11,7 @@
 export { PUBKEY_SIZE, PRIVKEY_SIZE, BLINDING_FACTOR_SIZE, ELGAMAL_TOTAL_SIZE, PEDERSEN_COMMIT_SIZE, CONTEXT_HASH_SIZE, ACCOUNT_ID_SIZE, ISSUANCE_ID_SIZE, CONVERT_PROOF_SIZE, CLAWBACK_PROOF_SIZE, CONVERT_BACK_PROOF_SIZE, SEND_PROOF_SIZE, } from './constants.js';
 export { bytesToHex, hexToBytes } from './hex.js';
 export { loadWasmModule } from './module.js';
-export { generateBlindingFactor, encryptAmount, decryptAmount, getPedersenCommitment, } from './primitives.js';
+export { generateBlindingFactor, encryptAmount, decryptAmount, decryptAmountBsgs, getPedersenCommitment, } from './primitives.js';
 export { addCiphertexts, subtractCiphertexts } from './homomorphic.js';
 export { getConvertContextHash, getConvertBackContextHash, getSendContextHash, getClawbackContextHash, } from './context.js';
 export { getConvertProof, getClawbackProof, getConvertBackProof, getConfidentialSendProof, } from './proofs.js';

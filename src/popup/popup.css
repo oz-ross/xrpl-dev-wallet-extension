@@ -819,6 +819,29 @@ a.tx-history-item:hover {
 }
 
 /* ── MPT add dropdown ───────────────────────── */
+.mpt-decrypt-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  vertical-align: middle;
+}
+.mpt-decrypt-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--text-muted, #888);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: mpt-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes mpt-spin {
+  to { transform: rotate(360deg); }
+}
+
 .mpt-add-wrapper {
   position: relative;
   display: inline-block;
@@ -2950,6 +2973,20 @@ details[open] .review-json-summary::before {
 }
 .ct-action-item:hover {
   background: var(--surface-3, var(--surface));
+}
+
+/* ── CT issuer row icons ── */
+.mpt-ct-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.mpt-ct-enabled {
+  color: var(--accent, #6c8cff);
+}
+.mpt-ct-disabled {
+  color: var(--text-3);
+  opacity: 0.5;
 }
 
 /* ── Create MPT form ────────────────────────── */

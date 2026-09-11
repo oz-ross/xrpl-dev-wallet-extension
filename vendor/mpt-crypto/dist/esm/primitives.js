@@ -103,3 +103,24 @@ export async function getPedersenCommitment(amount, blindingFactor) {
         return bytesToHex(marshaller.readBytes(outPtr, PEDERSEN_COMMIT_SIZE));
     });
 }
+let _bsgsReady = false;
+export async function decryptAmountBsgs(ciphertext, privateKey) {
+    const ct = hexToBytes(ciphertext, 'ciphertext', ELGAMAL_TOTAL_SIZE);
+    const priv = hexToBytes(privateKey, 'privateKey', PRIVKEY_SIZE);
+    return withModule((mod, marshaller) => {
+        if (!_bsgsReady) {
+            if (mod._mpt_bsgs_init() !== 1) {
+                throw new Error('mpt_bsgs_init failed — BSGS table could not be built');
+            }
+            _bsgsReady = true;
+        }
+        const ctPtr = marshaller.allocBytes(ct);
+        const privPtr = marshaller.allocBytes(priv);
+        priv.fill(0);
+        const outPtr = marshaller.alloc(U64_BYTES);
+        if (mod._mpt_decrypt_amount_bsgs(ctPtr, privPtr, outPtr) !== 1) {
+            throw new Error('mpt_decrypt_amount_bsgs failed — amount may be out of range (>2^40)');
+        }
+        return marshaller.readU64(outPtr);
+    });
+}

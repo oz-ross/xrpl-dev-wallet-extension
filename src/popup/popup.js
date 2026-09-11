@@ -10,7 +10,31 @@ import { encode, encodeForSigning, encodeForMultisigning, decode } from 'ripple-
 import { sign as keypairsSign, deriveAddress } from 'ripple-keypairs';
 import { createHash } from 'crypto';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
-import { decryptAmount } from '@xrplf/mpt-crypto';
+// BSGS decryption runs in a dedicated Web Worker so WASM never blocks the main thread.
+let _decryptWorker = null;
+const _decryptPending = new Map();
+let _decryptNextId = 0;
+function _getDecryptWorker() {
+  if (!_decryptWorker) {
+    _decryptWorker = new Worker(chrome.runtime.getURL('decrypt-worker.js'));
+    _decryptWorker.onmessage = ({ data: { id, result, error } }) => {
+      const cb = _decryptPending.get(id);
+      if (!cb) return;
+      _decryptPending.delete(id);
+      if (error !== undefined) cb.reject(new Error(error));
+      else cb.resolve(BigInt(result));
+    };
+    _decryptWorker.onerror = (e) => console.error('[decrypt-worker]', e);
+  }
+  return _decryptWorker;
+}
+function decryptAmountBsgs(ciphertext, privateKey) {
+  return new Promise((resolve, reject) => {
+    const id = _decryptNextId++;
+    _decryptPending.set(id, { resolve, reject });
+    _getDecryptWorker().postMessage({ id, ciphertext, privateKey });
+  });
+}
 
 // ─────────────────────────────────────────────
 // GLOBAL ERROR SUPPRESSION
@@ -3141,8 +3165,16 @@ async function renderMptBalances(objects, issuanceMap = new Map(), issuances = [
   if (!held.length && !issuances.length) { listEl.innerHTML = ''; return; }
   const explorerMpt = getNetworkConfig().explorerMpt;
 
+  // Clear cached decrypt results when the active account changes.
+  if (_ctDecryptCacheAccount !== state.activeAccount) {
+    _ctDecryptCache.clear();
+    _ctDecryptCacheAccount = state.activeAccount;
+  }
+
+  const decryptTasks = [];
   const heldHtml = [];
   for (const obj of held) {
+    try {
     const issuanceId = obj.MPTokenIssuanceID ?? '';
     const info       = issuanceMap.get(issuanceId) ?? {};
     const { ticker, assetScale } = info;
@@ -3172,48 +3204,17 @@ async function renderMptBalances(objects, issuanceMap = new Map(), issuances = [
           : 'A';
 
     if (ctState === 'C') {
-      const privKeyHex = ctWalletKey.privKey;
       const keyMatches = holderEncKey === ctWalletKey.pubKey;
-
-      // Use confidentialOutstandingAmount as a tight upper bound for the linear
-      // search — for devnet amounts this is effectively instant. Falls back to
-      // 10^7 if the issuance field is absent.
-      const RANGE_HIGH = info.confidentialOutstandingAmount
-        ? BigInt(info.confidentialOutstandingAmount)
-        : BigInt(10 ** 7);
-
-      let spendable, inbox;
-      if (keyMatches) {
-        [spendable, inbox] = await Promise.all([
-          obj.ConfidentialBalanceSpending
-            ? decryptAmount(obj.ConfidentialBalanceSpending, privKeyHex, RANGE_HIGH).catch(() => null)
-            : Promise.resolve(0n),
-          obj.ConfidentialBalanceInbox
-            ? decryptAmount(obj.ConfidentialBalanceInbox, privKeyHex, RANGE_HIGH).catch(() => null)
-            : Promise.resolve(0n),
-        ]);
-      } else {
-        spendable = null;
-        inbox = null;
-      }
-      if (myGen !== _mptRenderGeneration) return;
-
       const scale   = info.assetScale ?? 0;
       const divisor = scale > 0 ? 10 ** scale : 1;
-      const fmtRaw  = (v) => v === null ? '[encrypted]' : (Number(v) / divisor).toFixed(scale);
-
       const publicRaw = parseInt(obj.MPTAmount ?? '0', 10);
-      const hasNull   = spendable === null || inbox === null;
 
-      const totalDisplay = hasNull
-        ? `~${(publicRaw / divisor + (spendable !== null ? Number(spendable) / divisor : 0) + (inbox !== null ? Number(inbox) / divisor : 0)).toFixed(scale)}`
-        : ((publicRaw / divisor) + Number(spendable) / divisor + Number(inbox) / divisor).toFixed(scale);
-
+      // Render immediately with placeholder; BSGS decrypt fires after innerHTML is set.
       const subBalancesHtml = `
         <div class="ct-sub-balances hidden">
           <div class="ct-sub-row"><span>├ Public</span><span>${(publicRaw / divisor).toFixed(scale)}</span></div>
-          <div class="ct-sub-row"><span>├ Confidential (spendable)</span><span>${fmtRaw(spendable)}</span></div>
-          <div class="ct-sub-row"><span>└ Confidential (inbox)</span><span>${fmtRaw(inbox)}</span></div>
+          <div class="ct-sub-row ct-sub-spendable"><span>├ Confidential (spendable)</span><span>[encrypted]</span></div>
+          <div class="ct-sub-row ct-sub-inbox"><span>└ Confidential (inbox)</span><span>[encrypted]</span></div>
         </div>`;
 
       heldHtml.push(`
@@ -3224,17 +3225,29 @@ async function renderMptBalances(objects, issuanceMap = new Map(), issuances = [
              data-asset-scale="${assetScale ?? 0}"
              data-balance="${esc(amount)}"
              data-display="${esc(displayName)}"
-             data-spendable-raw="${spendable !== null ? String(spendable) : ''}"
-             data-inbox-raw="${inbox !== null ? String(inbox) : ''}">
+             data-spendable-raw=""
+             data-inbox-raw="">
           <div class="mpt-token-info">
             <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
             <button class="btn-icon ct-expand-btn" aria-expanded="false" title="Expand confidential balances"></button>
             <span class="mpt-issuer" title="${esc(issuer ?? issuanceId)}">${esc(issuerDisplay)}</span>
           </div>
-          <span class="mpt-balance-amount">${totalDisplay}</span>
+          <span class="mpt-balance-amount">~${(publicRaw / divisor).toFixed(scale)}</span>
           <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
           ${subBalancesHtml}
         </div>`);
+
+      if (keyMatches) {
+        decryptTasks.push({
+          issuanceId,
+          privKeyHex:  ctWalletKey.privKey,
+          spendingCt:  obj.ConfidentialBalanceSpending ?? '',
+          inboxCt:     obj.ConfidentialBalanceInbox ?? '',
+          scale,
+          divisor,
+          publicRaw,
+        });
+      }
     } else {
       // State A or B
       const ctButton = ctState === 'B'
@@ -3259,10 +3272,22 @@ async function renderMptBalances(objects, issuanceMap = new Map(), issuances = [
           <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
         </div>`);
     }
+    } catch (err) { console.error('[mpt held render]', err); }
   }
 
   const issuedHtml = issuances.map(obj => {
-    const issuanceId   = obj.MPTokenIssuanceID ?? obj.index ?? '';
+    try {
+    // Derive the 48-char Hash192 MPTokenIssuanceID from Sequence+Issuer when the
+    // account_objects response doesn't include it directly (older rippled versions).
+    let issuanceId = obj.MPTokenIssuanceID;
+    if (!issuanceId && obj.Sequence != null && obj.Issuer) {
+      try {
+        const seqHex = obj.Sequence.toString(16).padStart(8, '0').toUpperCase();
+        const accountIdHex = Buffer.from(decodeAccountID(obj.Issuer)).toString('hex').toUpperCase();
+        issuanceId = seqHex + accountIdHex;
+      } catch { /* fall through */ }
+    }
+    issuanceId = issuanceId ?? obj.index ?? '';
     const assetScale   = obj.AssetScale ?? 0;
     const rawOut       = obj.OutstandingAmount ? parseInt(obj.OutstandingAmount, 10) : 0;
     const outstanding  = assetScale > 0 ? rawOut / Math.pow(10, assetScale) : rawOut;
@@ -3277,22 +3302,92 @@ async function renderMptBalances(objects, issuanceMap = new Map(), issuances = [
     const shortId    = issuanceId.length >= 12
       ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
       : issuanceId;
-    const displayName = ticker || shortId;
-    const href        = `${explorerMpt}${issuanceId}`;
+    const displayName  = ticker || shortId;
+    const href         = `${explorerMpt}${issuanceId}`;
+    const ctEnabled    = !!obj.IssuerEncryptionKey;
+    const hasWalletKey = !!(state.elgamalKeys && state.elgamalKeys[state.activeAccount]);
+    let ctIconHtml;
+    if (ctEnabled) {
+      ctIconHtml = `<span class="mpt-ct-icon mpt-ct-enabled" title="Confidential transfers enabled">⛨</span>`;
+    } else if (hasWalletKey) {
+      ctIconHtml = `<button class="btn-icon mpt-ct-enable-btn" data-issuance-id="${esc(issuanceId)}" title="Enable confidential transfers">⛊</button>`;
+    } else {
+      ctIconHtml = `<span class="mpt-ct-icon mpt-ct-disabled" title="Generate an Elgamal key in Settings to enable CT">⛊</span>`;
+    }
     return `
-      <div class="mpt-balance-item mpt-issuance-item">
+      <div class="mpt-balance-item mpt-issuance-item"
+           data-send-type="mpt"
+           data-mpt-id="${esc(issuanceId)}"
+           data-asset-scale="${assetScale}"
+           data-balance="${esc(outstandingFmt)}"
+           data-display="${esc(displayName)}">
         <div class="mpt-token-info">
           <span class="mpt-id" title="${esc(issuanceId)}">${esc(displayName)}</span>
           <span class="mpt-issuer-badge">Issuer</span>
           ${ticker ? `<span class="mpt-issuer" title="${esc(issuanceId)}">${esc(shortId)}</span>` : ''}
+          ${ctIconHtml}
         </div>
         <div class="mpt-balance-amount">${esc(outstandingFmt)}</div>
         <a class="token-explorer-link" href="${esc(href)}" target="_blank" rel="noreferrer" title="View on explorer">↗</a>
       </div>`;
+    } catch (err) { console.error('[mpt issuance render]', err); return ''; }
   });
 
   if (myGen !== _mptRenderGeneration) return;
   listEl.innerHTML = [...heldHtml, ...issuedHtml].join('');
+
+  // Apply decrypted CT balances to a rendered row.
+  const applyCtResult = (task, spendable, inbox) => {
+    const { issuanceId, scale, divisor, publicRaw } = task;
+    const row = listEl.querySelector(`[data-mpt-id="${CSS.escape(issuanceId)}"][data-ct-state="C"]`);
+    if (!row) return;
+    const fmt         = (v) => v === null ? '[encrypted]' : (Number(v) / divisor).toFixed(scale);
+    const spendableEl = row.querySelector('.ct-sub-spendable span:last-child');
+    const inboxEl     = row.querySelector('.ct-sub-inbox span:last-child');
+    const totalEl     = row.querySelector('.mpt-balance-amount');
+    if (spendableEl) spendableEl.textContent = fmt(spendable);
+    if (inboxEl)     inboxEl.textContent     = fmt(inbox);
+    row.dataset.spendableRaw = spendable !== null ? String(spendable) : '';
+    row.dataset.inboxRaw     = inbox     !== null ? String(inbox)     : '';
+    if (totalEl && spendable !== null && inbox !== null) {
+      totalEl.textContent = (publicRaw / divisor + Number(spendable) / divisor + Number(inbox) / divisor).toFixed(scale);
+    }
+  };
+
+  // Partition tasks: cache hits are applied immediately; misses go to the worker.
+  const workerTasks = [];
+  for (const task of decryptTasks) {
+    const cacheKey = `${task.spendingCt}|${task.inboxCt}`;
+    const cached = _ctDecryptCache.get(cacheKey);
+    if (cached) {
+      applyCtResult(task, cached.spendable, cached.inbox);
+    } else {
+      workerTasks.push({ ...task, cacheKey });
+    }
+  }
+
+  if (workerTasks.length > 0) {
+    const indicator = $('mpt-decrypt-indicator');
+    if (indicator) indicator.classList.remove('hidden');
+    let pending = workerTasks.length;
+    const finishOne = () => { if (--pending === 0 && indicator) indicator.classList.add('hidden'); };
+
+    for (const task of workerTasks) {
+      (async ({ issuanceId, privKeyHex, spendingCt, inboxCt, cacheKey }) => {
+        let spendable = null, inbox = null;
+        try {
+          [spendable, inbox] = await Promise.all([
+            spendingCt ? decryptAmountBsgs(spendingCt, privKeyHex).catch(() => null) : Promise.resolve(0n),
+            inboxCt    ? decryptAmountBsgs(inboxCt,    privKeyHex).catch(() => null) : Promise.resolve(0n),
+          ]);
+          _ctDecryptCache.set(cacheKey, { spendable, inbox });
+        } catch { /* leave as [encrypted] */ }
+
+        finishOne();
+        applyCtResult(task, spendable, inbox);
+      })(task);
+    }
+  }
 }
 
 function renderVaultBalances(objects, issuanceMap = new Map()) {
@@ -4258,8 +4353,9 @@ function openCreateMptView() {
   $('create-mpt-flag-clawback').checked    = false;
   $('create-mpt-flag-require-auth').checked = false;
   $('create-mpt-flag-lock').checked        = false;
-  $('create-mpt-flag-escrow').checked      = false;
-  $('create-mpt-flag-trade').checked       = false;
+  $('create-mpt-flag-escrow').checked        = false;
+  $('create-mpt-flag-trade').checked         = false;
+  $('create-mpt-flag-confidential').checked  = false;
   $('create-mpt-ticker').value             = '';
   $('create-mpt-name').value               = '';
   $('create-mpt-issuer-name').value        = '';
@@ -4408,10 +4504,16 @@ function openCreateMptReview() {
   if ($('create-mpt-flag-lock').checked)         flags |= 0x0002; // tfMPTCanLock
   if ($('create-mpt-flag-escrow').checked)       flags |= 0x0008; // tfMPTCanEscrow
   if ($('create-mpt-flag-trade').checked)        flags |= 0x0010; // tfMPTCanTrade
+  if ($('create-mpt-flag-confidential').checked) flags |= 0x0080; // tfMPTCanHoldConfidentialBalance
 
   // Cross-validation: TransferFee requires tfMPTCanTransfer
   if (transferFee !== null && transferFee > 0 && !(flags & 0x0020)) {
     showAlert('create-mpt-error', 'Transfer Fee requires the "Can Transfer" flag to be enabled.');
+    return;
+  }
+  // Cross-validation: TransferFee and tfMPTCanHoldConfidentialBalance are mutually exclusive
+  if (transferFee !== null && transferFee > 0 && (flags & 0x0080)) {
+    showAlert('create-mpt-error', 'Transfer Fee cannot be combined with "Can Hold Confidential Balances".');
     return;
   }
 
@@ -4472,6 +4574,7 @@ function openCreateMptReviewView() {
   if (p.flags & 0x0002) flagNames.push('Can Lock');
   if (p.flags & 0x0008) flagNames.push('Can Escrow');
   if (p.flags & 0x0010) flagNames.push('Can Trade');
+  if (p.flags & 0x0080) flagNames.push('Can Hold Confidential Balances');
   $('create-mpt-review-flags').textContent = flagNames.length > 0
     ? flagNames.join(', ')
     : 'None';
@@ -4575,6 +4678,130 @@ async function confirmCreateMpt() {
     showAlert('create-mpt-review-error', `Failed: ${friendlyError(err)}`);
     btn.disabled    = false;
     btn.textContent = 'Create MPT';
+  }
+}
+
+// ─── Enable Confidential Transfers (issuer) ──────────────────────────────────
+
+function openEnableCtView(issuanceId) {
+  _enableCtIssuanceId = issuanceId;
+  const walletKey = state.elgamalKeys[state.activeAccount];
+  if (!walletKey) return;
+
+  const shortId  = issuanceId.length >= 12
+    ? `${issuanceId.slice(0, 8)}…${issuanceId.slice(-4)}`
+    : issuanceId;
+  const keyPreview = walletKey.pubKey.length > 20
+    ? `${walletKey.pubKey.slice(0, 10)}…${walletKey.pubKey.slice(-10)}`
+    : walletKey.pubKey;
+
+  $('enable-ct-issuance-id').textContent  = shortId;
+  $('enable-ct-issuance-id').title        = issuanceId;
+  $('enable-ct-issuer-key').textContent   = keyPreview;
+  $('enable-ct-issuer-key').title         = walletKey.pubKey;
+  $('enable-ct-auditor-key').value        = '';
+  $('enable-ct-network-fee').textContent  = '…';
+  $('enable-ct-json-details').removeAttribute('open');
+  hideAlert('enable-ct-error');
+  $('enable-ct-confirm-btn').disabled     = false;
+  $('enable-ct-confirm-btn').textContent  = 'Enable CT';
+
+  const displayTx = {
+    TransactionType: 'MPTokenIssuanceSet',
+    Account: state.activeAccount,
+    MPTokenIssuanceID: issuanceId,
+    IssuerEncryptionKey: walletKey.pubKey,
+  };
+  $('enable-ct-raw-json').textContent = JSON.stringify(displayTx, null, 2);
+
+  showView('enable-ct');
+
+  fetchEnableCtFee(displayTx).catch(() => {
+    $('enable-ct-network-fee').textContent = '—';
+  });
+}
+
+async function fetchEnableCtFee(tx) {
+  if (!state.client?.isConnected()) {
+    $('enable-ct-network-fee').textContent = '—';
+    return;
+  }
+  try {
+    const copy = { ...tx };
+    delete copy.Fee;
+    const filled = await state.client.autofill(copy);
+    const drops  = parseInt(filled.Fee ?? '12', 10);
+    const xrp    = (drops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+    $('enable-ct-network-fee').textContent = `${xrp} XRP (${drops} drops)`;
+  } catch {
+    try {
+      const resp  = await state.client.request({ command: 'fee' });
+      const drops = parseInt(resp.result.drops.open_ledger_fee ?? '12', 10);
+      const xrp   = (drops / 1_000_000).toFixed(6).replace(/\.?0+$/, '');
+      $('enable-ct-network-fee').textContent = `${xrp} XRP (${drops} drops)`;
+    } catch {
+      $('enable-ct-network-fee').textContent = '—';
+    }
+  }
+}
+
+async function confirmEnableCt() {
+  hideAlert('enable-ct-error');
+
+  const walletKey = state.elgamalKeys[state.activeAccount];
+  if (!walletKey) {
+    showAlert('enable-ct-error', 'No Elgamal key found for this account.');
+    return;
+  }
+
+  const auditorKey = $('enable-ct-auditor-key').value.trim().toUpperCase();
+  if (auditorKey && (auditorKey.length !== 66 || !/^[0-9A-F]+$/.test(auditorKey))) {
+    showAlert('enable-ct-error', 'Auditor key must be exactly 66 hex characters (33 bytes).');
+    return;
+  }
+
+  if (!_enableCtIssuanceId || _enableCtIssuanceId.length !== 48) {
+    showAlert('enable-ct-error', 'Issuance ID is invalid — please reload the wallet and try again.');
+    return;
+  }
+
+  const btn = $('enable-ct-confirm-btn');
+  btn.disabled    = true;
+  btn.textContent = 'Enabling…';
+
+  try {
+    await ensureConnected();
+    const tx = {
+      TransactionType: 'MPTokenIssuanceSet',
+      Account: state.activeAccount,
+      MPTokenIssuanceID: _enableCtIssuanceId,
+      IssuerEncryptionKey: walletKey.pubKey,
+    };
+    if (auditorKey) tx.AuditorEncryptionKey = auditorKey;
+
+    const prepared = await state.client.autofill(tx);
+    const tx_blob  = await signWithAddress(prepared, state.activeAccount);
+    const resp     = await state.client.submitAndWait(tx_blob);
+    const txResult = resp.result?.meta?.TransactionResult;
+
+    if (txResult !== 'tesSUCCESS') {
+      throw new Error(txResult ?? 'Unknown error');
+    }
+
+    const alertEl = $('enable-ct-error');
+    alertEl.textContent = 'Confidential transfers enabled';
+    alertEl.className   = 'alert alert-success';
+    alertEl.classList.remove('hidden');
+
+    setTimeout(() => {
+      alertEl.className = 'alert alert-error hidden';
+      showView('wallet');
+      loadMptBalances();
+    }, 2000);
+  } catch (err) {
+    showAlert('enable-ct-error', `Failed: ${friendlyError(err)}`);
+    btn.disabled    = false;
+    btn.textContent = 'Enable CT';
   }
 }
 
@@ -7959,7 +8186,7 @@ $('iou-balance-list').addEventListener('click', (e) => {
 
 $('mpt-balance-list').addEventListener('click', (e) => {
   if (e.target.closest('.token-explorer-link')) return;
-  if (e.target.closest('.ct-expand-btn') || e.target.closest('.ct-add-confidentiality-btn') || e.target.closest('.ct-sub-balances')) return;
+  if (e.target.closest('.ct-expand-btn') || e.target.closest('.ct-add-confidentiality-btn') || e.target.closest('.ct-sub-balances') || e.target.closest('.mpt-ct-enable-btn')) return;
   const item = e.target.closest('[data-send-type]');
   if (!item) return;
   if (item.dataset.ctState === 'C') {
@@ -7987,11 +8214,18 @@ $('mpt-balance-list').addEventListener('click', (e) => {
     return;
   }
 
-  // Add Confidentiality button
+  // Add Confidentiality button (holder rows)
   const ctBtn = e.target.closest('.ct-add-confidentiality-btn');
   if (ctBtn) {
     const row = ctBtn.closest('.mpt-balance-item');
     openConfidentialConvertView(row);
+    return;
+  }
+
+  // Enable CT button (issuer rows)
+  const ctEnableBtn = e.target.closest('.mpt-ct-enable-btn');
+  if (ctEnableBtn) {
+    openEnableCtView(ctEnableBtn.dataset.issuanceId);
     return;
   }
 });
@@ -8161,6 +8395,29 @@ $('create-mpt-review-copy-json-btn').addEventListener('click', () => {
   navigator.clipboard.writeText($('create-mpt-review-raw-json').textContent).catch(() => {});
 });
 $('create-mpt-confirm-btn').addEventListener('click', confirmCreateMpt);
+
+// ─────────────────────────────────────────────
+// EVENT LISTENERS — Enable CT
+// ─────────────────────────────────────────────
+
+$('back-from-enable-ct-btn').addEventListener('click', () => showView('wallet'));
+$('enable-ct-auditor-key').addEventListener('input', () => {
+  const walletKey = state.elgamalKeys?.[state.activeAccount];
+  if (!walletKey || !_enableCtIssuanceId) return;
+  const auditor = $('enable-ct-auditor-key').value.trim().toUpperCase();
+  const tx = {
+    TransactionType: 'MPTokenIssuanceSet',
+    Account: state.activeAccount,
+    MPTokenIssuanceID: _enableCtIssuanceId,
+    IssuerEncryptionKey: walletKey.pubKey,
+  };
+  if (auditor) tx.AuditorEncryptionKey = auditor;
+  $('enable-ct-raw-json').textContent = JSON.stringify(tx, null, 2);
+});
+$('enable-ct-copy-json-btn').addEventListener('click', () => {
+  navigator.clipboard.writeText($('enable-ct-raw-json').textContent).catch(() => {});
+});
+$('enable-ct-confirm-btn').addEventListener('click', confirmEnableCt);
 
 // ─────────────────────────────────────────────
 // EVENT LISTENERS — Vault deposit (onboarding)
@@ -8976,8 +9233,13 @@ $('ms-sign-submit-btn').addEventListener('click', () => signMsTransaction().catc
 
 let _ctHideTimer = null;
 let _mptRenderGeneration = 0;
+// Keyed by `${spendingCt}|${inboxCt}` — same ciphertext always decrypts to the same value.
+// Cleared when the active account changes so stale values don't bleed across accounts.
+const _ctDecryptCache = new Map();
+let _ctDecryptCacheAccount = null;
 let _createMptPending  = null; // { assetScale, maximumAmount, transferFee, flags, metadataHex, displayName }
 let _createMptMetaMode = 'structured'; // 'structured' | 'raw'
+let _enableCtIssuanceId = null;
 let _ctConvertIssuanceId   = null;
 let _ctConvertAssetScale    = 0;
 

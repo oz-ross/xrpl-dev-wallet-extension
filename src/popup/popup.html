@@ -669,6 +669,7 @@
     <div id="mpt-balance-card" class="iou-balance-card">
       <div class="iou-balance-header">
         <span>MPT Balances</span>
+        <span id="mpt-decrypt-indicator" class="mpt-decrypt-indicator hidden"><span class="mpt-decrypt-spinner"></span>Decrypting…</span>
         <div class="mpt-add-wrapper">
           <button id="add-mpt-btn" class="btn-icon btn-header-action" title="MPT actions">＋</button>
           <div id="mpt-add-dropdown" class="mpt-add-dropdown hidden">
@@ -1536,6 +1537,10 @@
         <input type="checkbox" id="create-mpt-flag-trade" />
         <span>Can Trade (allow AMM/DEX trading)</span>
       </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="create-mpt-flag-confidential" />
+        <span>Can Hold Confidential Balances (enable Confidential Transfers)</span>
+      </label>
     </div>
 
     <div class="form-group">
@@ -1665,6 +1670,48 @@
 
     <div id="create-mpt-review-error" class="alert alert-error hidden"></div>
     <button id="create-mpt-confirm-btn" class="btn btn-primary btn-full" style="margin-top:8px">Create MPT</button>
+  </div>
+
+  <!-- ===== ENABLE CONFIDENTIAL TRANSFERS ===== -->
+  <div id="view-enable-ct" class="view hidden">
+    <div class="view-header">
+      <button id="back-from-enable-ct-btn" class="btn-back">‹</button>
+      <h2>Enable Confidential Transfers</h2>
+    </div>
+
+    <div class="detail-card">
+      <div class="detail-row">
+        <span class="detail-label">Issuance</span>
+        <span id="enable-ct-issuance-id" class="detail-value detail-addr detail-break"></span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Issuer Key</span>
+        <span id="enable-ct-issuer-key" class="detail-value detail-addr detail-break"></span>
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-top:10px">
+      <label for="enable-ct-auditor-key">Auditor Key <span class="label-optional">(optional — 66 hex chars)</span></label>
+      <input type="text" id="enable-ct-auditor-key" placeholder="03…" maxlength="66" autocomplete="off" spellcheck="false" />
+    </div>
+
+    <div class="detail-card" style="margin-top:6px">
+      <div class="detail-row">
+        <span class="detail-label">Network Fee</span>
+        <span id="enable-ct-network-fee" class="detail-value">—</span>
+      </div>
+    </div>
+
+    <details id="enable-ct-json-details" class="review-json-panel">
+      <summary class="review-json-summary">Raw JSON</summary>
+      <div class="review-json-body">
+        <pre id="enable-ct-raw-json"></pre>
+        <button id="enable-ct-copy-json-btn" class="btn btn-ghost review-json-copy">Copy</button>
+      </div>
+    </details>
+
+    <div id="enable-ct-error" class="alert alert-error hidden"></div>
+    <button id="enable-ct-confirm-btn" class="btn btn-primary btn-full" style="margin-top:8px">Enable CT</button>
   </div>
 
   <!-- ===== VAULT DEPOSIT ===== -->
