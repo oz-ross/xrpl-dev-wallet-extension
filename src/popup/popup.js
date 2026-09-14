@@ -6,7 +6,7 @@ import { getSdkError } from '@walletconnect/utils';
 import { generateMnemonic, validateMnemonic } from 'bip39';
 import TransportWebHID from '@ledgerhq/hw-transport-webhid';
 import Xrp from '@ledgerhq/hw-app-xrp';
-import { encode, encodeForSigning, encodeForMultisigning, decode } from 'ripple-binary-codec';
+import { encode, encodeForSigning, encodeForSigningCounterparty, encodeForMultisigning, decode } from 'ripple-binary-codec';
 import { sign as keypairsSign, deriveAddress } from 'ripple-keypairs';
 import { createHash } from 'crypto';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
@@ -1046,9 +1046,7 @@ async function signPreparedTx(prepared, signatureTarget = null) {
       const txForSigning = { ...prepared };
       delete txForSigning.TxnSignature;
       delete txForSigning[signatureTarget + 'Signature'];
-      let messageHex = encodeForSigning(txForSigning);
-      // Lending Protocol v1.1 change - new transaction prefix for counterparty signing "CPT"
-      if(signatureTarget === "Counterparty") messageHex = messageHex.replace(/^535458/,"435054");
+      const messageHex = (signatureTarget === "Counterparty") ? encodeForSigningCounterparty(txForSigning) : encodeForSigning(txForSigning);
       TxnSignature = keypairsSign(messageHex, state.wallet.privateKey).toUpperCase();
     }
 
