@@ -8960,6 +8960,22 @@ async function applyNetworkChange() {
   }
 }
 
+$('popout-btn').addEventListener('click', () => {
+  const winW = state.devSettings.wideMode ? 586 : 396; // content + ~16px window chrome
+  const winH = 650;
+  const left = Math.max(screen.availLeft, screen.availLeft + screen.availWidth - winW);
+  const top  = screen.availTop;
+  chrome.windows.create({
+    url:    chrome.runtime.getURL('popup.html'),
+    type:   'popup',
+    width:  winW,
+    height: winH,
+    left,
+    top,
+  });
+  window.close();
+});
+
 $('wide-mode-btn').addEventListener('click', async () => {
   state.devSettings.wideMode = !state.devSettings.wideMode;
   applyWideMode();
