@@ -2211,6 +2211,17 @@ function formatPoolAsset(amount) {
   return formatCurrencyCode(amount.currency);
 }
 
+/**
+ * Native XRP on a Vault is `{ currency: "XRP" }` (no issuer), not a drop string.
+ * Treating that object as an IOU produces `{ currency: "XRP", value }` which
+ * the ledger rejects as "invalid field Amount".
+ */
+function isXrpAsset(asset) {
+  if (asset == null || typeof asset === 'string') return true;
+  if (asset.mpt_issuance_id) return false;
+  return !asset.currency || asset.currency === 'XRP';
+}
+
 async function loadIouBalances() {
   if (!state.activeAccount || !state.client) return;
   try {
@@ -3670,14 +3681,14 @@ function reviewVaultDW() {
     amountDisplayLabel = 'shares';
   } else {
     // Deposit, or withdraw specifying underlying asset amount
-    if (!vaultAsset || typeof vaultAsset === 'string') {
+    if (isXrpAsset(vaultAsset)) {
       txAmount = xrpToDrops(amountStr);
-    } else if (vaultAsset.currency) {
-      txAmount = { currency: vaultAsset.currency, issuer: vaultAsset.issuer, value: amountStr };
     } else if (vaultAsset.mpt_issuance_id) {
       const scale = assetScale ?? 0;
       const raw = scale > 0 ? Math.round(amountNum * Math.pow(10, scale)) : Math.round(amountNum);
       txAmount = { mpt_issuance_id: vaultAsset.mpt_issuance_id, value: String(raw) };
+    } else if (vaultAsset.currency) {
+      txAmount = { currency: vaultAsset.currency, issuer: vaultAsset.issuer, value: amountStr };
     } else {
       txAmount = xrpToDrops(amountStr);
     }
@@ -5099,12 +5110,12 @@ function reviewNewVaultDeposit() {
   const asset = info?.asset ?? null;
 
   let txAmount;
-  if (!asset || typeof asset === 'string') {
+  if (isXrpAsset(asset)) {
     txAmount = xrpToDrops(amountStr);
-  } else if (asset.currency) {
-    txAmount = { currency: asset.currency, issuer: asset.issuer, value: amountStr };
   } else if (asset.mpt_issuance_id) {
     txAmount = { mpt_issuance_id: asset.mpt_issuance_id, value: amountStr };
+  } else if (asset.currency) {
+    txAmount = { currency: asset.currency, issuer: asset.issuer, value: amountStr };
   } else {
     txAmount = xrpToDrops(amountStr);
   }
@@ -5231,10 +5242,8 @@ function reviewLoanPay() {
   }
 
   let txAmount;
-  if (!asset || typeof asset === 'string') {
+  if (isXrpAsset(asset)) {
     txAmount = xrpToDrops(amountStr);
-  } else if (asset.currency) {
-    txAmount = { currency: asset.currency, issuer: asset.issuer, value: ceilIouAmount(amountStr) };
   } else if (asset.mpt_issuance_id) {
     // Only convert decimal → integer when the amount has a decimal point.
     // If the input is already the raw MPT integer (no dot), use it directly —
@@ -5243,6 +5252,8 @@ function reviewLoanPay() {
       ? decimalToMptInteger(amountStr, assetScale)
       : amountStr;
     txAmount = { mpt_issuance_id: asset.mpt_issuance_id, value: intValue };
+  } else if (asset.currency) {
+    txAmount = { currency: asset.currency, issuer: asset.issuer, value: ceilIouAmount(amountStr) };
   } else {
     txAmount = xrpToDrops(amountStr);
   }
