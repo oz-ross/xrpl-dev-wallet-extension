@@ -2022,7 +2022,11 @@ function updateWalletUI() {
   badge.className = `network-badge ${net.group}`;
 
   const readOnly = isActiveAccountReadOnly();
-  $('faucet-btn').classList.toggle('hidden', !net.faucet || readOnly);
+  const canFund = net.faucet || state.network === 'manual';
+  $('faucet-btn').classList.toggle('hidden', !canFund || readOnly);
+  $('faucet-btn').title = net.faucet
+    ? 'Request XRP from the faucet'
+    : `Send ${GENESIS_FUND_XRP} XRP from the genesis account`;
   $('send-xrp-btn').classList.toggle('hidden', readOnly);
 
   // Project switcher
@@ -5668,8 +5672,33 @@ function stopAutoRefresh() {
 // FAUCET
 // ─────────────────────────────────────────────
 
+// Standard rippled genesis account (master key) — used to fund accounts on
+// custom networks (e.g. standalone/local rippled) that have no faucet.
+const GENESIS_SEED     = 'snoPBrXtMeMyMHUVTgbuqAfg1SUTb';
+const GENESIS_FUND_XRP = '100';
+
+async function fundFromGenesis() {
+  await ensureConnected();
+  const genesis = Wallet.fromSeed(GENESIS_SEED);
+  const tx = await state.client.autofill({
+    TransactionType: 'Payment',
+    Account:         genesis.address,
+    Destination:     state.activeAccount,
+    Amount:          xrpToDrops(GENESIS_FUND_XRP),
+  });
+  const { tx_blob } = genesis.sign(tx);
+  const resp = await state.client.request({ command: 'submit', tx_blob });
+  const code = resp.result.engine_result;
+  if (code !== 'tesSUCCESS' && code !== 'terQUEUED') {
+    throw new Error(`${code}: ${resp.result.engine_result_message}`);
+  }
+  // Standalone rippled won't close ledgers on its own; harmless error elsewhere.
+  await state.client.request({ command: 'ledger_accept' }).catch(() => {});
+}
+
 async function fundFromFaucet() {
   if (!state.activeAccount) return;
+  const faucetUrl = getNetworkConfig().faucet;
   const btn      = $('faucet-btn');
   const statusEl = $('faucet-status');
   btn.disabled = true;
@@ -5679,14 +5708,19 @@ async function fundFromFaucet() {
   statusEl.classList.remove('hidden');
 
   try {
-    const resp = await fetch(getNetworkConfig().faucet, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ destination: state.activeAccount }),
-    });
-    if (!resp.ok) throw new Error(`Faucet returned HTTP ${resp.status}`);
+    if (faucetUrl) {
+      const resp = await fetch(faucetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ destination: state.activeAccount }),
+      });
+      if (!resp.ok) throw new Error(`Faucet returned HTTP ${resp.status}`);
+      statusEl.textContent = '✓ Faucet request sent — balance will update shortly.';
+    } else {
+      await fundFromGenesis();
+      statusEl.textContent = `✓ Sent ${GENESIS_FUND_XRP} XRP from genesis — balance will update shortly.`;
+    }
 
-    statusEl.textContent = '✓ Faucet request sent — balance will update shortly.';
     statusEl.className = 'faucet-status ok';
 
     setTimeout(async () => {
