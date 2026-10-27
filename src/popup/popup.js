@@ -2752,8 +2752,27 @@ function decimalToMptInteger(decStr, assetScale) {
   return combined.replace(/^0+/, '') || '0';
 }
 
+// Loan/LoanBroker Number fields for an XRP asset are denominated in drops.
+// Convert to an XRP decimal string with pure string arithmetic, ceiling any
+// fractional drop so a pre-filled repayment never underpays.
+function loanDropsToXrp(value) {
+  let s = extractAmountValue(value).trim();
+  if (!s) return s;
+  if (/e/i.test(s)) s = Math.ceil(Number(s)).toString();
+  const dot = s.indexOf('.');
+  if (dot !== -1) {
+    const intPart = s.slice(0, dot) || '0';
+    s = /[1-9]/.test(s.slice(dot + 1)) ? (BigInt(intPart) + 1n).toString() : intPart;
+  }
+  const padded  = s.padStart(7, '0');
+  const intPart = padded.slice(0, -6).replace(/^0+(?=\d)/, '');
+  const frac    = padded.slice(-6).replace(/0+$/, '');
+  return frac ? `${intPart}.${frac}` : intPart;
+}
+
 function formatLoanAmount(numStr, asset, maxDecimals = null) {
   if (numStr == null) return '—';
+  if (asset && isXrpAsset(asset)) numStr = loanDropsToXrp(numStr);
   const src = extractAmountValue(numStr);
   const n = parseFloat(src);
   if (!Number.isFinite(n)) return src;
@@ -5190,16 +5209,21 @@ async function openLoanPay(item) {
   const nextPaymentDueXrpl   = item.dataset.nextPaymentDue ? parseInt(item.dataset.nextPaymentDue, 10) : null;
   const brokerID             = item.dataset.brokerId;
   const brokerName           = item.dataset.brokerName;
-  const asset                = JSON.parse(decodeURIComponent(item.dataset.asset || 'null'));
+  // A missing asset is treated as XRP, matching reviewLoanPay().
+  const asset                = JSON.parse(decodeURIComponent(item.dataset.asset || 'null')) ?? { currency: 'XRP' };
   const assetScale           = parseInt(item.dataset.assetScale, 10) || 0;
-  const assetLabel           = asset ? formatPoolAsset(asset) : 'XRP';
+  const assetLabel           = formatPoolAsset(asset);
 
   // For IOU assets, ceil the periodic payment to 16 sig digits before
   // displaying it so the pre-filled amount is always valid for the ledger
-  // and any rounding always increases (never underpays).
-  const displayPayment = (asset?.currency && periodicPayment)
-    ? ceilIouAmount(periodicPayment)
+  // and any rounding always increases (never underpays). XRP loan values are
+  // in drops, so convert them to XRP for the amount input.
+  const displayPayment = !periodicPayment ? periodicPayment
+    : isXrpAsset(asset) ? loanDropsToXrp(periodicPayment)
+    : asset.currency    ? ceilIouAmount(periodicPayment)
     : periodicPayment;
+  // formatLoanAmount() expects ledger units (it converts XRP drops itself).
+  const ledgerPayment = isXrpAsset(asset) ? periodicPayment : displayPayment;
 
   state.pendingLoanPay = { loanId, asset, assetScale, assetLabel, periodicPayment: displayPayment };
 
@@ -5213,7 +5237,7 @@ async function openLoanPay(item) {
   $('loan-pay-details').innerHTML = [
     row('Total Outstanding',    esc(formatLoanAmount(totalOutstanding, asset))),
     row('Principal Outstanding',esc(formatLoanAmount(principalOutstanding, asset))),
-    row('Periodic Payment',     esc(formatLoanAmount(displayPayment, asset))),
+    row('Periodic Payment',     esc(formatLoanAmount(ledgerPayment, asset))),
     row('Payments Remaining',   esc(String(paymentRemaining))),
     row('Next Payment Due',     `<span class="${overdue ? 'loan-due-overdue' : ''}">${esc(nextDueStr)}</span>`),
   ].filter(Boolean).join('');
@@ -5222,7 +5246,7 @@ async function openLoanPay(item) {
   $('loan-pay-amount').value = displayPayment ?? '';
   $('loan-pay-amount-exact').value = displayPayment ?? '';
   $('loan-pay-periodic-hint').textContent = displayPayment
-    ? `Periodic payment: ${formatLoanAmount(displayPayment, asset)}`
+    ? `Periodic payment: ${formatLoanAmount(ledgerPayment, asset)}`
     : '';
 
   $('loan-pay-flag-overpayment').checked  = false;
@@ -5237,7 +5261,7 @@ async function openLoanPay(item) {
 
   try {
     let balStr;
-    if (!asset) {
+    if (isXrpAsset(asset)) {
       const xrp = await state.client.getXrpBalance(state.activeAccount);
       balStr = `${parseFloat(xrp).toLocaleString(undefined, { maximumFractionDigits: 6 })} XRP`;
     } else {
