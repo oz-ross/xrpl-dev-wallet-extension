@@ -167,6 +167,27 @@ cp emcc_out/mpt_crypto.{js,mjs,web.mjs,wasm} <repo-root>/vendor/mpt-crypto/wasm/
 
 ---
 
+## Security review
+
+This project is checked with the `tool-submission-review` Claude Code skill (from `xrpl-tooling-agent-rules`), an
+AI-assisted preliminary security review run as part of the XRPL tooling contribution intake process. It runs
+[osv-scanner](https://github.com/google/osv-scanner) (dependency CVEs), [gitleaks](https://github.com/gitleaks/gitleaks)
+(secrets) and [semgrep](https://semgrep.dev/) (OWASP Top 10 / CWE Top 25 patterns), triages the results, and posts
+the curated findings as a GitHub issue.
+
+Latest review: [#11](https://github.com/oz-ross/xrpl-dev-wallet-extension/issues/11) — no findings above the
+confidence threshold (commit `b54d780`).
+
+To re-run it (requires `gh`, `osv-scanner`, `gitleaks`, `semgrep`, `hadolint` and `zizmor` on your `PATH`):
+
+```
+/tool-submission-review init https://github.com/oz-ross/xrpl-dev-wallet-extension
+```
+
+This is a preliminary filter, not a substitute for a full InfoSec review.
+
+---
+
 ## Tech stack
 
 | Library | Purpose |
