@@ -6,3 +6,6 @@ dist/
 wallets.txt
 .env
 .superpowers/
+
+# tool-submission-review clone and drafts
+workspace/
