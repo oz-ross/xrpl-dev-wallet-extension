@@ -1832,8 +1832,9 @@ async function unlock() {
       showAlert('unlock-error', `Unlock failed: ${err.message}`);
       btn.disabled    = false;
       btn.textContent = 'Unlock';
+      // Stringify so chrome://extensions shows more than "[object DOMException]".
+      console.error(`[unlock] ${err.name}: ${err.message}`, err);
     }
-    console.error('[unlock]', err);
   }
 }
 
