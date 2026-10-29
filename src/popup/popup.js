@@ -124,7 +124,9 @@ const NETWORK_SERVERS = {
 function getNetworkConfig() {
   if (state.network === 'manual') {
     const { wsUrl = '' } = state.manualNetwork ?? {};
-    const b = wsUrl ? `https://custom.xrpl.org/${wsUrl}` : '';
+    // custom.xrpl.org expects host:port, without the ws:// or wss:// scheme.
+    const host = wsUrl.replace(/^wss?:\/\//i, '').replace(/\/+$/, '');
+    const b = host ? `https://custom.xrpl.org/${host}` : '';
     return {
       name: 'Custom', group: 'custom',
       chainId:         'xrpl:0',
